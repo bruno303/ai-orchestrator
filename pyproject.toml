@@ -1,0 +1,26 @@
+[project]
+name = "orchestrator"
+version = "0.1.0"
+description = "LangGraph orchestrator: GitHub Issues -> OpenCode plan/build/review -> PR"
+readme = "README.md"
+authors = [
+    { name = "Bruno Oliveira", email = "brunooliveira812@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+orchestrator = "orchestrator.main:main"
+
+[build-system]
+requires = ["uv_build>=0.11.3,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
