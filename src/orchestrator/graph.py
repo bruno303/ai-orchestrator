@@ -132,16 +132,22 @@ def create_pr(state: TaskState) -> dict[str, Any]:
             print(f"[{_now()}] create_pr: no changes to commit", flush=True)
             return _fail(state, "no changes to commit")
         title = f"feat: {state['issue_title']}"[:72]
-        body = f"Closes #{state['issue_number']}"
+        commit_body = f"Closes #{state['issue_number']}"
         if git.has_changes(ws):
-            git.commit_all(ws, f"{title}\n\n{body}")
+            git.commit_all(ws, f"{title}\n\n{commit_body}")
         git.push_branch(ws, branch)
         existing_pr = github.find_open_pr(repository, branch)
         if existing_pr is not None:
             pr_number = existing_pr
             print(f"[{_now()}] create_pr: reusing existing PR #{pr_number} (force-pushed)", flush=True)
+            current_body = github.get_pull_request(repository, pr_number).body
+            new_body = _pr_body(state, current_body=current_body)
+            if new_body != current_body:
+                github.update_pull_request_body(repository, pr_number, new_body)
         else:
-            pr_number = github.create_pull_request(repository, title, body, head=branch, base=base)
+            pr_number = github.create_pull_request(
+                repository, title, _pr_body(state), head=branch, base=base
+            )
     except (git.GitError, github.GitHubError) as exc:
         print(f"[{_now()}] create_pr: ERROR {exc}", flush=True)
         return _fail(state, str(exc))
@@ -265,6 +271,36 @@ Do NOT modify any files.
 def parse_verdict(output: str) -> str:
     match = re.search(r"VERDICT:\s*(APPROVED|CHANGES_REQUIRED|NEEDS_CLARIFICATION)", output)
     return match.group(1) if match else state_mod.VERDICT_NEEDS_CLARIFICATION
+
+
+def _review_section(state: TaskState) -> str | None:
+    """Markdown section for a non-approved review, or None if there is nothing to flag."""
+    verdict = state.get("review_verdict")
+    result = state.get("review_result")
+    if not verdict or verdict == state_mod.VERDICT_APPROVED or not result:
+        return None
+    return f"## Review: {verdict}\n\n{result.rstrip()}"
+
+
+def _pr_body(state: TaskState, current_body: str | None = None) -> str:
+    """PR body: `Closes #n` first, then review sections (most recent to oldest).
+
+    The `Closes #n` line is always the first line; a leading `Closes #n` line
+    in `current_body` is stripped so it is never duplicated. All other text in
+    `current_body` is kept below the new section (history preserved).
+    """
+    closes = f"Closes #{state['issue_number']}"
+    section = _review_section(state)
+    if section is None:
+        return current_body if current_body else closes
+    remainder = ""
+    if current_body:
+        remainder = current_body.lstrip("\n")
+        if remainder.startswith(closes):
+            remainder = remainder[len(closes):].lstrip("\n")
+    if remainder:
+        return f"{closes}\n\n{section}\n\n{remainder}"
+    return f"{closes}\n\n{section}"
 
 
 # ---------------------------------------------------------------- graph

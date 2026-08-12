@@ -11,6 +11,11 @@ from orchestrator.graph import build_graph, parse_verdict
 from orchestrator.persistence import TaskStore
 
 
+class _FakePR:
+    def __init__(self, body: str):
+        self.body = body
+
+
 def _seed(remote_repo: str, issue_number: int = 1) -> dict:
     return {
         "task_id": f"company/backend#{issue_number}",
@@ -90,13 +95,21 @@ def test_opencode_failure_fails_task(remote_repo, allowlist, store, monkeypatch)
 
 def test_changes_required_still_creates_pr(remote_repo, allowlist, store, monkeypatch):
     monkeypatch.setenv("FAKE_OPCODE_VERDICT", "CHANGES_REQUIRED")
-    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 43)
+    captured: dict = {}
+    monkeypatch.setattr(
+        "orchestrator.github.create_pull_request",
+        lambda *a, **k: captured.update(body=a[2]) or 43,
+    )
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
     graph = build_graph(store.checkpointer())
     result = graph.invoke(_seed(remote_repo, 3), config={"configurable": {"thread_id": "company/backend#3"}})
     assert result["status"] == state_mod.COMPLETED
     assert result["review_verdict"] == "CHANGES_REQUIRED"
     assert result["pr_number"] == 43
+    body = captured["body"]
+    assert body.startswith("Closes #3")
+    assert "## Review: CHANGES_REQUIRED" in body
+    assert "VERDICT: CHANGES_REQUIRED" in body
 
 
 def test_create_pr_with_existing_commit(remote_repo, allowlist, store, monkeypatch):
@@ -135,6 +148,10 @@ def test_create_pr_reuses_existing_pr(remote_repo, allowlist, store, monkeypatch
     created: list = []
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: 77)
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: created.append(1) or 0)
+    monkeypatch.setattr(
+        "orchestrator.github.get_pull_request",
+        lambda *a, **k: _FakePR("Closes #5"),
+    )
 
     updates = create_pr(seed)
     assert updates["status"] == state_mod.COMPLETED
@@ -146,3 +163,70 @@ def test_parse_verdict():
     assert parse_verdict("all good\nVERDICT: APPROVED\n") == "APPROVED"
     assert parse_verdict("VERDICT: CHANGES_REQUIRED") == "CHANGES_REQUIRED"
     assert parse_verdict("no verdict here") == "NEEDS_CLARIFICATION"
+
+
+def test_create_pr_reuse_prepends_review_section(remote_repo, allowlist, store, monkeypatch):
+    """On reuse, non-approved review text is prepended after `Closes #n`, keeping history."""
+    from orchestrator import git as git_mod
+    from orchestrator.graph import create_pr
+
+    seed = _seed(remote_repo, 6)
+    ws = workspace.task_workspace("company/backend", 6)
+    repo_dir = git_mod.ensure_base_clone("company/backend", f"file://{remote_repo}")
+    git_mod.create_worktree(repo_dir, ws, seed["branch"], "main")
+    (ws / "work.txt").write_text("hello\ncommitted\n")
+    git_mod.commit_all(ws, "feat: agent committed\n\nCloses #6")
+    seed.update(
+        {
+            "workspace": str(ws),
+            "status": state_mod.REVIEWING,
+            "review_verdict": "CHANGES_REQUIRED",
+            "review_result": "VERDICT: CHANGES_REQUIRED\nNew issues found.",
+        }
+    )
+
+    old_body = "Closes #6\n\n## Review: CHANGES_REQUIRED\n\nVERDICT: CHANGES_REQUIRED\nOld issues."
+    edited: list = []
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: 77)
+    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 0)
+    monkeypatch.setattr("orchestrator.github.get_pull_request", lambda *a, **k: _FakePR(old_body))
+    monkeypatch.setattr(
+        "orchestrator.github.update_pull_request_body",
+        lambda *a, **k: edited.append((a[1], a[2])),
+    )
+
+    updates = create_pr(seed)
+    assert updates["status"] == state_mod.COMPLETED
+    pr_number, new_body = edited[0]
+    assert pr_number == 77
+    assert new_body.startswith("Closes #6")
+    assert new_body.count("Closes #6") == 1
+    assert "## Review: CHANGES_REQUIRED" in new_body
+    assert new_body.index("New issues found.") < new_body.index("Old issues.")
+
+
+def test_create_pr_reuse_approved_does_not_edit(remote_repo, allowlist, store, monkeypatch):
+    """On reuse with an approved (or absent) review, the PR body is left untouched."""
+    from orchestrator import git as git_mod
+    from orchestrator.graph import create_pr
+
+    seed = _seed(remote_repo, 7)
+    ws = workspace.task_workspace("company/backend", 7)
+    repo_dir = git_mod.ensure_base_clone("company/backend", f"file://{remote_repo}")
+    git_mod.create_worktree(repo_dir, ws, seed["branch"], "main")
+    (ws / "work.txt").write_text("hello\ncommitted\n")
+    git_mod.commit_all(ws, "feat: agent committed\n\nCloses #7")
+    seed.update({"workspace": str(ws), "status": state_mod.REVIEWING})
+
+    edited: list = []
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: 77)
+    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 0)
+    monkeypatch.setattr("orchestrator.github.get_pull_request", lambda *a, **k: _FakePR("Closes #7"))
+    monkeypatch.setattr(
+        "orchestrator.github.update_pull_request_body",
+        lambda *a, **k: edited.append(1),
+    )
+
+    updates = create_pr(seed)
+    assert updates["status"] == state_mod.COMPLETED
+    assert edited == []  # approved -> no PR body edit

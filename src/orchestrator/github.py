@@ -116,6 +116,11 @@ def create_pull_request(repository: str, title: str, body: str, head: str, base:
     return int(url.rstrip("/").split("/")[-1])
 
 
+def update_pull_request_body(repository: str, pr_number: int, body: str) -> None:
+    """Replace the body of an open PR (`gh pr edit`)."""
+    _run_gh(["pr", "edit", str(pr_number), "--repo", repository, "--body", body])
+
+
 def find_open_pr(repository: str, head_branch: str) -> int | None:
     """Return the number of the open PR for `head_branch`, if any."""
     out = _run_gh(

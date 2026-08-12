@@ -149,6 +149,91 @@ def test_resume_drops_failed_checkpoint(allowlist, tmp_path, monkeypatch, capsys
     assert writes == 0
 
 
+def test_reset_deletes_task(allowlist, tmp_path, monkeypatch, capsys):
+    """reset removes the tasks row + checkpoints and does not run the graph."""
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("company/backend#7", "company/backend", 7)
+    store.conn.execute(
+        "CREATE TABLE IF NOT EXISTS checkpoints (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, checkpoint TEXT, metadata TEXT)"
+    )
+    store.conn.execute(
+        "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, checkpoint, metadata) VALUES (?, ?, ?, ?, ?)",
+        ("company/backend#7", "", "1", "{}", "{}"),
+    )
+    store.conn.commit()
+    store.update_task("company/backend#7", status="FAILED", error="old error")
+
+    started: list[str] = []
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+    monkeypatch.setattr("orchestrator.main.build_graph", lambda checkpointer, on_node_start=None: FakeGraph(started))
+
+    main.main(["reset", "company/backend#7"])
+
+    assert store.get_task("company/backend#7") is None
+    row = store.conn.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id = 'company/backend#7'").fetchone()[0]
+    assert row == 0
+    assert started == []
+    assert "deleted; will re-run on next poll" in capsys.readouterr().out
+
+
+def test_poll_reruns_deleted_task(allowlist, tmp_path, monkeypatch, capsys):
+    """After reset (task row deleted), the next poll re-runs the issue."""
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("company/backend#9", "company/backend", 9)
+    store.conn.execute("DELETE FROM tasks WHERE task_id = 'company/backend#9'")
+    store.conn.commit()
+
+    issue = github.Issue(number=9, title="t", body="b", html_url="u")
+    monkeypatch.setattr(github, "list_open_issues", lambda repo, label=None: [issue])
+    monkeypatch.setattr(github, "list_open_pull_requests", lambda repo: [])
+    monkeypatch.setattr(github, "list_issue_comments", lambda repo, number: [])
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+    monkeypatch.setattr("orchestrator.github.get_issue", lambda repo, n: issue)
+
+    started: list[str] = []
+    monkeypatch.setattr("orchestrator.main.build_graph", lambda checkpointer, on_node_start=None: FakeGraph(started))
+
+    cmd_poll(type("A", (), {"once": True})())
+    out = capsys.readouterr().out
+    assert "new issue: company/backend#9" in out
+    assert started == ["company/backend#9"]
+
+
+def test_reset_unknown_task_hint(allowlist, tmp_path, monkeypatch, capsys):
+    """reset on a nonexistent id prints the list hint and exits non-zero."""
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+
+    with pytest.raises(SystemExit) as exc:
+        main.main(["reset", "company/backend#404"])
+    assert "orchestrator list" in str(exc.value)
+
+
+def test_list_shows_ids(allowlist, tmp_path, monkeypatch, capsys):
+    """cmd_list prints the task id in owner/repo#issue format clearly."""
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("company/backend#7", "company/backend", 7)
+    store.update_task("company/backend#7", status="COMPLETED", pr_number=42)
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+
+    main.cmd_list(type("A", (), {}))
+    out = capsys.readouterr().out
+    assert "company/backend#7" in out
+    assert "id (owner/repo#issue)" in out
+
+
 def test_poll_once_label_filter(allowlist, tmp_path, monkeypatch, capsys):
     """Repos with a configured label only get issues carrying that label."""
     from orchestrator import main

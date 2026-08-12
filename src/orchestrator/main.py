@@ -157,12 +157,16 @@ def _drop_latest_checkpoint(store: TaskStore, task_id: str) -> None:
     store.conn.commit()
 
 
+def _not_found_hint(task_id: str) -> str:
+    return f"task {task_id} not found; run 'orchestrator list' to see task ids (format owner/repo#issue)"
+
+
 def cmd_resume(args: argparse.Namespace) -> None:
     task_id = args.task_id
     store = TaskStore()
     task = store.get_task(task_id)
     if task is None:
-        sys.exit(f"task {task_id} not found")
+        sys.exit(_not_found_hint(task_id))
     graph = build_graph(store.checkpointer())
     config_dict = {"configurable": {"thread_id": task_id}}
     current = graph.get_state(config_dict).values
@@ -170,6 +174,35 @@ def cmd_resume(args: argparse.Namespace) -> None:
         _drop_latest_checkpoint(store, task_id)
     result = _run_graph(store, None, task_id)
     _persist_result(store, result)
+
+
+def cmd_reset(args: argparse.Namespace) -> None:
+    """Delete a task entirely so the next poll re-runs it from scratch.
+
+    Standalone and non-running: it only clears DB state (tasks/checkpoints/writes)
+    and the worktree/branch. It does not invoke the graph. Because the tasks row is
+    removed, the already-running poll picks the issue up again on its next iteration
+    via the existing new-issue flow.
+    """
+    repository, issue_number = _parse_ref(args.issue_ref)
+    store = TaskStore()
+    task_id = f"{repository}#{issue_number}"
+    if store.get_task(task_id) is None:
+        sys.exit(_not_found_hint(task_id))
+    branch = f"ai/issue-{issue_number}"
+    ws = workspace.task_workspace(repository, issue_number)
+    if ws.exists():
+        try:
+            git.remove_worktree(git.base_repo_dir(repository), ws, branch)
+        except git.GitError as exc:
+            print(f"[{_now()}] reset: warning: could not remove worktree: {exc}", flush=True)
+    tables = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in ("checkpoints", "writes"):
+        if table in tables:
+            store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
+    store.conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
+    store.conn.commit()
+    print(f"[{_now()}] reset {task_id}: deleted; will re-run on next poll", flush=True)
 
 
 def _persist_result(store: TaskStore, result: dict) -> None:
@@ -204,8 +237,9 @@ def cmd_list(args: argparse.Namespace) -> None:
     if not tasks:
         print("no tasks")
         return
+    print(f"{'id (owner/repo#issue)':<28} {'status':<12} {'created_at'}{'pr':>8} error")
     for t in tasks:
-        pr = f" PR#{t['pr_number']}" if t["pr_number"] else ""
+        pr = f" #{t['pr_number']}" if t["pr_number"] else ""
         err = f" ({t['error']})" if t["error"] else ""
         print(f"{t['task_id']:<28} {t['status']:<12} {t['created_at']}{pr}{err}")
 
@@ -214,7 +248,7 @@ def cmd_status(args: argparse.Namespace) -> None:
     store = TaskStore()
     task = store.get_task(args.task_id)
     if task is None:
-        sys.exit(f"task {args.task_id} not found")
+        sys.exit(_not_found_hint(args.task_id))
     for key, value in task.items():
         print(f"{key}: {value}")
     print("---")
@@ -241,6 +275,9 @@ def _format_elapsed(node_started_at: str | None, updated_at: str | None) -> str:
 def cmd_watch(args: argparse.Namespace) -> None:
     store = TaskStore()
     while True:
+        if not args.once:
+            sys.stdout.write("\x1b[2J\x1b[H")
+            sys.stdout.flush()
         print(f"\n[{_now()}] tasks ({config.LOGS_DIR})")
         for task in store.list_tasks():
             node = task.get("current_node") or ""
@@ -575,6 +612,10 @@ def main(argv: list[str] | None = None) -> None:
     p_resume = sub.add_parser("resume", help="resume an interrupted task")
     p_resume.add_argument("task_id")
     p_resume.set_defaults(func=cmd_resume)
+
+    p_reset = sub.add_parser("reset", help="delete a task so the next poll re-runs it from scratch")
+    p_reset.add_argument("issue_ref", help="owner/repo#issue")
+    p_reset.set_defaults(func=cmd_reset)
 
     p_logs = sub.add_parser("logs", help="list or tail a task's node logs")
     p_logs.add_argument("task_id")
