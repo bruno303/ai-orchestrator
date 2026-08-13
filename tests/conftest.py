@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _git_identity():
+    subprocess.run(["git", "config", "--global", "user.email", "test@test"], check=True, capture_output=True)
+    subprocess.run(["git", "config", "--global", "user.name", "test"], check=True, capture_output=True)
 
 _TMP = Path(tempfile.mkdtemp(prefix="orchestrator-test-"))
 os.environ["ORCHESTRATOR_DATA_DIR"] = str(_TMP / "data")
