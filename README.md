@@ -31,7 +31,22 @@ repositories:
     label: ai-agent
 ```
 
-Paths and limits (env overrides):
+Optional global model config (applies to all repositories). `primary` is used
+for the first attempt of each phase; if a phase degenerates into a loop, it is
+retried once with `fallback`. Omitting the section keeps opencode's default
+model (no `-m`/`--variant` flags):
+
+```yaml
+model:
+  primary:
+    name: verboo/deepseek-v4-flash
+    variant: high
+  fallback:
+    name: verboo/glm-4.7-flash
+    variant: high
+```
+
+Paths, limits, model and loop detection (env overrides):
 
 | Variable | Default |
 |---|---|
@@ -41,6 +56,15 @@ Paths and limits (env overrides):
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
+| `ORCHESTRATOR_MODEL_PRIMARY_NAME` | (none — opencode default) |
+| `ORCHESTRATOR_MODEL_PRIMARY_VARIANT` | (none — opencode default) |
+| `ORCHESTRATOR_MODEL_FALLBACK_NAME` | (none) |
+| `ORCHESTRATOR_MODEL_FALLBACK_VARIANT` | (none) |
+| `ORCHESTRATOR_PHASE_MAX_ATTEMPTS` | `2` |
+| `ORCHESTRATOR_LOOP_REPEAT_THRESHOLD` | `20` (identical lines within window) |
+| `ORCHESTRATOR_LOOP_REPEAT_WINDOW` | `100` (lines) |
+| `ORCHESTRATOR_LOOP_RATIO_THRESHOLD` | `0.1` (distinct-line ratio) |
+| `ORCHESTRATOR_LOOP_CHECK_INTERVAL` | `25` (lines) |
 
 ## Usage
 
@@ -88,6 +112,12 @@ triggers a full re-run of the task with the comment body added as extra context:
 - **Implement**: `opencode run --agent build` explicitly invokes the
   `subagent-plan-execution` skill, which executes the plan by dispatching
   fresh implementer/reviewer subagents per task, then runs the quality gate.
+- **Model**: each phase runs opencode with the configured model — `primary`
+  for the first attempt, and if the phase degenerates into a loop (repetitive
+  output: identical-line flood or low distinct-line ratio), it is aborted and
+  retried once with `fallback`; after `ORCHESTRATOR_PHASE_MAX_ATTEMPTS` the
+  task fails. The model and variant are logged for every attempt of every
+  phase (visible via `orchestrator logs <task> --node <node>`).
 - **Test**: a standalone opencode run executes the project's test suite; a
   non-zero exit fails the task.
 - **Review**: `opencode run --agent plan` reviews issue + plan + diff and must

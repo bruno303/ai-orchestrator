@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
@@ -40,10 +41,52 @@ MAX_CONCURRENT_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_CONCURRENT", "1"))
 # A task/comment with no activity for this long is considered dead (process died).
 STALE_SECONDS = int(os.environ.get("ORCHESTRATOR_STALE_SECONDS", str(2 * 60 * 60)))
 
+# Loop-detection knobs: max attempts per phase and the thresholds that classify
+# repeated work as a loop.
+PHASE_MAX_ATTEMPTS = int(os.environ.get("ORCHESTRATOR_PHASE_MAX_ATTEMPTS", "2"))
+LOOP_REPEAT_THRESHOLD = int(os.environ.get("ORCHESTRATOR_LOOP_REPEAT_THRESHOLD", "20"))
+LOOP_REPEAT_WINDOW = int(os.environ.get("ORCHESTRATOR_LOOP_REPEAT_WINDOW", "100"))
+LOOP_RATIO_THRESHOLD = float(os.environ.get("ORCHESTRATOR_LOOP_RATIO_THRESHOLD", "0.1"))
+LOOP_CHECK_INTERVAL = int(os.environ.get("ORCHESTRATOR_LOOP_CHECK_INTERVAL", "25"))
+
 SKILL_SUBAGENT_PLAN_EXECUTION = os.environ.get(
     "ORCHESTRATOR_SKILL_SUBAGENT_PLAN_EXECUTION",
     "/home/bruno/.agents/skills/subagent-plan-execution",
 )
+
+
+@dataclass
+class ModelConfig:
+    """Model selection for a single role (primary or fallback)."""
+
+    name: str | None
+    variant: str | None
+
+
+@lru_cache(maxsize=1)
+def load_model_config() -> dict[str, ModelConfig | None]:
+    """Load the model: section from the config file. Returns {"primary": ..., "fallback": ...}."""
+    if not CONFIG_FILE.exists():
+        data = {}
+    else:
+        with CONFIG_FILE.open() as fh:
+            data = yaml.safe_load(fh) or {}
+    result: dict[str, ModelConfig | None] = {}
+    for role in ("primary", "fallback"):
+        prefix = f"ORCHESTRATOR_MODEL_{role.upper()}"
+        name = os.environ.get(f"{prefix}_NAME")
+        variant = os.environ.get(f"{prefix}_VARIANT")
+        entry = (data.get("model") or {}).get(role) or {}
+        if name is None:
+            name = entry.get("name")
+        if variant is None:
+            variant = entry.get("variant")
+        result[role] = ModelConfig(name=name, variant=variant) if name or variant else None
+    return result
+
+
+MODEL_PRIMARY = load_model_config().get("primary")
+MODEL_FALLBACK = load_model_config().get("fallback")
 
 
 @lru_cache(maxsize=1)

@@ -230,3 +230,53 @@ def test_create_pr_reuse_approved_does_not_edit(remote_repo, allowlist, store, m
     updates = create_pr(seed)
     assert updates["status"] == state_mod.COMPLETED
     assert edited == []  # approved -> no PR body edit
+
+
+def test_implement_retries_once_then_succeeds(remote_repo, allowlist, store, monkeypatch, tmp_path):
+    """The implement phase loops on the primary model; the fallback succeeds. Both must be attempted.
+
+    FAKE_OPCODE_LOOP_PROMPT scopes the loop to the implement phase only, so the
+    plan/test/review phases run normally and the retry is genuinely exercised by
+    implement (not consumed by an earlier phase).
+    """
+    # MODEL_PRIMARY/MODEL_FALLBACK are bound at import time, so the cache clear in
+    # clear_config_cache cannot change them per-test; patch the module attributes
+    # directly since graph.py reads config.MODEL_PRIMARY at call time.
+    monkeypatch.setattr(config, "MODEL_PRIMARY", config.ModelConfig("verboo/deepseek-v4-flash", "high"))
+    monkeypatch.setattr(config, "MODEL_FALLBACK", config.ModelConfig("verboo/glm-4.7-flash", "high"))
+    monkeypatch.setenv("FAKE_OPCODE_LOOP_ONCE", "verboo/deepseek-v4-flash")
+    monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "implementing GitHub issue")
+    model_file = tmp_path / "models.txt"
+    monkeypatch.setenv("FAKE_OPCODE_MODEL_FILE", str(model_file))
+    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 42)
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
+    graph = build_graph(store.checkpointer())
+    result = graph.invoke(_seed(remote_repo, 10), config={"configurable": {"thread_id": "company/backend#10"}})
+    assert result["status"] == state_mod.COMPLETED
+    # The fake writes a line for every opencode invocation (plan, implement x2, test, review),
+    # so both the primary and the fallback model must appear in the file.
+    lines = model_file.read_text().splitlines()
+    assert any("model=verboo/deepseek-v4-flash" in line for line in lines)
+    assert any("model=verboo/glm-4.7-flash" in line for line in lines)
+    # The implement phase looped once, so the retry was recorded.
+    assert result["phase_attempts"] == 2
+
+
+def test_implement_fails_after_max_attempts(remote_repo, allowlist, store, monkeypatch):
+    """Degenerate output in implement on every attempt must fail the task after PHASE_MAX_ATTEMPTS.
+
+    FAKE_OPCODE_LOOP_PROMPT scopes the loop to implement, so plan/test/review run
+    normally and the failure comes from the implement phase itself.
+    """
+    # See test_implement_retries_once_then_succeeds: import-time binding of the
+    # MODEL_PRIMARY/MODEL_FALLBACK constants requires direct module attribute patching.
+    monkeypatch.setattr(config, "MODEL_PRIMARY", config.ModelConfig("verboo/deepseek-v4-flash", "high"))
+    monkeypatch.setattr(config, "MODEL_FALLBACK", config.ModelConfig("verboo/glm-4.7-flash", "high"))
+    monkeypatch.setenv("FAKE_OPCODE_LOOP", "1")
+    monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "implementing GitHub issue")
+    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 42)
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
+    graph = build_graph(store.checkpointer())
+    result = graph.invoke(_seed(remote_repo, 11), config={"configurable": {"thread_id": "company/backend#11"}})
+    assert result["status"] == state_mod.FAILED
+    assert "degenerate output" in result["error"]

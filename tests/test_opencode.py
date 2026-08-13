@@ -65,3 +65,60 @@ def test_run_opencode_streams_to_log_file(tmp_path, clean_env, monkeypatch):
     content = log_file.read_text()
     assert "Plan written" in content
     assert result_holder["result"].exit_code == 0
+
+
+def test_run_opencode_detects_repeat_loop(tmp_path, clean_env, monkeypatch):
+    """Degenerate repeated output must raise DegenerateOutputError."""
+    monkeypatch.setenv("FAKE_OPCODE_LOOP", "1")
+    with pytest.raises(opencode.DegenerateOutputError):
+        opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
+
+
+def test_run_opencode_no_false_positive(tmp_path, clean_env):
+    """Normal output must not trip the loop detector."""
+    result = opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
+    assert result.exit_code == 0
+    assert "Plan written" in result.stdout
+
+
+def test_run_opencode_passes_model_flags(tmp_path, clean_env, monkeypatch):
+    model_file = tmp_path / "models.txt"
+    monkeypatch.setenv("FAKE_OPCODE_MODEL_FILE", str(model_file))
+    opencode.run_opencode(
+        tmp_path,
+        "plan",
+        "planning the implementation of issue",
+        model="verboo/glm-4.7-flash",
+        variant="high",
+    )
+    line = model_file.read_text()
+    assert "model=verboo/glm-4.7-flash variant=high" in line
+
+
+def test_run_opencode_logs_model_header(tmp_path, clean_env, monkeypatch):
+    log_file = tmp_path / "plan.log"
+    opencode.run_opencode(
+        tmp_path,
+        "plan",
+        "planning the implementation of issue",
+        log_file=log_file,
+        model="verboo/deepseek-v4-flash",
+        variant="high",
+    )
+    content = log_file.read_text()
+    assert content.startswith("[orchestrator] opencode run --agent plan --model verboo/deepseek-v4-flash --variant high")
+
+
+def test_detect_loop_unit():
+    loop_line = "PERMIT ME NOW to emit exactly one invocation card"
+    identical = [loop_line] * 100
+    assert opencode.detect_loop(identical, 100, 20, 0.1)
+
+    healthy = [f"progress line {i}" for i in range(100)]
+    assert not opencode.detect_loop(healthy, 100, 20, 0.1)
+
+    # 50 lines alternating between 3 unique values: distinct/window = 3/50 = 0.06 <= 0.1.
+    alternating = [f"step {i % 3}" for i in range(50)]
+    assert opencode.detect_loop(alternating, 100, 20, 0.1)
+
+    assert not opencode.detect_loop([], 100, 20, 0.1)

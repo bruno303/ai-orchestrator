@@ -28,24 +28,77 @@ def _run_opencode(
     state: TaskState, node: str, agent: str, prompt: str
 ) -> tuple[dict[str, Any], opencode.OpenCodeResult | None]:
     log_path = workspace.task_log_path(state["task_id"], node)
-    print(f"[{_now()}] {node}: starting opencode (agent={agent}, log={log_path})", flush=True)
-    try:
-        result = opencode.run_opencode(
-            workspace=state["workspace"],
-            agent=agent,
-            prompt=prompt,
-            log_file=log_path,
+    # Per-phase attempt budget: each phase starts at 1 regardless of retries in
+    # earlier phases. phase_attempts is written to state for observability only
+    # and must never feed back into the counter (state is shared across nodes).
+    attempt = 1
+    retried = False
+    while attempt <= config.PHASE_MAX_ATTEMPTS:
+        model_cfg = config.MODEL_PRIMARY if attempt == 1 else config.MODEL_FALLBACK
+        model = model_cfg.name if model_cfg else None
+        variant = model_cfg.variant if model_cfg else None
+        model_label = model or "default"
+        variant_label = variant or "-"
+        print(
+            f"[{_now()}] {node}: starting opencode (agent={agent}, attempt={attempt}, "
+            f"model={model_label}, variant={variant_label}, log={log_path})",
+            flush=True,
         )
-    except opencode.OpenCodeError as exc:
-        print(f"[{_now()}] {node}: ERROR {exc}", flush=True)
-        return _fail(state, str(exc)), None
-    print(
-        f"[{_now()}] {node}: finished in {result.duration_seconds:.0f}s (exit={result.exit_code})",
-        flush=True,
+        try:
+            result = opencode.run_opencode(
+                workspace=state["workspace"],
+                agent=agent,
+                prompt=prompt,
+                log_file=log_path,
+                model=model,
+                variant=variant,
+            )
+        except opencode.DegenerateOutputError:
+            next_cfg = config.MODEL_FALLBACK
+            next_model = next_cfg.name if next_cfg else None
+            next_variant = next_cfg.variant if next_cfg else None
+            print(
+                f"[{_now()}] {node}: degenerate output (attempt={attempt}, model={model_label}, "
+                f"variant={variant_label}), retrying with model={next_model or 'default'}, "
+                f"variant={next_variant or '-'}",
+                flush=True,
+            )
+            attempt += 1
+            retried = True
+            if attempt > config.PHASE_MAX_ATTEMPTS:
+                return (
+                    _fail(
+                        state,
+                        f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
+                    ),
+                    None,
+                )
+            continue
+        except opencode.OpenCodeError as exc:
+            print(
+                f"[{_now()}] {node}: ERROR {exc} "
+                f"(attempt={attempt}, model={model_label}, variant={variant_label})",
+                flush=True,
+            )
+            return _fail(state, str(exc)), None
+        print(
+            f"[{_now()}] {node}: finished in {result.duration_seconds:.0f}s "
+            f"(exit={result.exit_code}, attempt={attempt}, model={model_label}, variant={variant_label})",
+            flush=True,
+        )
+        if result.exit_code != 0:
+            return _fail(state, f"opencode ({agent}) exited with {result.exit_code}"), result
+        updates: dict[str, Any] = {}
+        if retried:
+            updates["phase_attempts"] = attempt
+        return updates, result
+    return (
+        _fail(
+            state,
+            f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
+        ),
+        None,
     )
-    if result.exit_code != 0:
-        return _fail(state, f"opencode ({agent}) exited with {result.exit_code}"), result
-    return {}, result
 
 
 # ---------------------------------------------------------------- nodes
@@ -86,9 +139,10 @@ def prepare_workspace(state: TaskState) -> dict[str, Any]:
 def plan(state: TaskState) -> dict[str, Any]:
     prompt = plan_prompt(state)
     updates, result = _run_opencode(state, "plan", "plan", prompt)
-    if updates:
+    if updates.get("status") == state_mod.FAILED:
         return updates
     return {
+        **updates,
         "plan_path": PLAN_FILE,
         "plan_summary": result.stdout[:4000] if result else None,
         "status": state_mod.PLANNING,
@@ -97,24 +151,33 @@ def plan(state: TaskState) -> dict[str, Any]:
 
 def implement(state: TaskState) -> dict[str, Any]:
     updates, result = _run_opencode(state, "implement", "build", implement_prompt(state))
-    if updates:
+    if updates.get("status") == state_mod.FAILED:
         return updates
-    return {"implementation_result": result.stdout[:4000] if result else None, "status": state_mod.IMPLEMENTING}
+    return {
+        **updates,
+        "implementation_result": result.stdout[:4000] if result else None,
+        "status": state_mod.IMPLEMENTING,
+    }
 
 
 def test(state: TaskState) -> dict[str, Any]:
     updates, result = _run_opencode(state, "test", "build", test_prompt(state))
-    if updates:
+    if updates.get("status") == state_mod.FAILED:
         return updates
-    return {"test_result": result.stdout[:4000] if result else None, "status": state_mod.TESTING}
+    return {
+        **updates,
+        "test_result": result.stdout[:4000] if result else None,
+        "status": state_mod.TESTING,
+    }
 
 
 def review(state: TaskState) -> dict[str, Any]:
     updates, result = _run_opencode(state, "review", "plan", review_prompt(state))
-    if updates:
+    if updates.get("status") == state_mod.FAILED:
         return updates
     verdict = parse_verdict(result.stdout) if result else state_mod.VERDICT_NEEDS_CLARIFICATION
     return {
+        **updates,
         "review_result": result.stdout[:4000] if result else None,
         "review_verdict": verdict,
         "status": state_mod.REVIEWING,

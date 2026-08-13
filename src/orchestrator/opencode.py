@@ -15,12 +15,34 @@ class OpenCodeError(Exception):
     pass
 
 
+class DegenerateOutputError(OpenCodeError):
+    pass
+
+
 @dataclass
 class OpenCodeResult:
     exit_code: int
     stdout: str
     stderr: str
     duration_seconds: float
+
+
+def detect_loop(
+    lines: list[str],
+    window: int,
+    repeat_threshold: int,
+    ratio_threshold: float,
+) -> bool:
+    """True if the last `window` lines look like degenerate repeated output."""
+    sample = [line.rstrip() for line in lines[-window:]]
+    if not sample:
+        return False
+    counts: dict[str, int] = {}
+    for line in sample:
+        counts[line] = counts.get(line, 0) + 1
+    if max(counts.values()) >= repeat_threshold:
+        return True
+    return len(counts) / len(sample) <= ratio_threshold
 
 
 def run_opencode(
@@ -30,11 +52,13 @@ def run_opencode(
     *,
     timeout: int | None = None,
     log_file: Path | None = None,
+    model: str | None = None,
+    variant: str | None = None,
 ) -> OpenCodeResult:
     """Run `opencode run --agent <agent> --auto` in the given workspace.
 
     Output is streamed live to `log_file` (if given) while also captured for the
-    returned result.
+    returned result. `model`/`variant` are passed through as `-m`/`--variant`.
     """
     workspace = Path(workspace)
     if not workspace.exists():
@@ -47,8 +71,12 @@ def run_opencode(
         "--auto",
         "--dir",
         str(workspace),
-        prompt,
     ]
+    if model is not None:
+        cmd += ["-m", model]
+    if variant is not None:
+        cmd += ["--variant", variant]
+    cmd.append(prompt)
     timeout = timeout or config.OPENCODE_TIMEOUT_SECONDS
     start = time.monotonic()
     try:
@@ -68,6 +96,13 @@ def run_opencode(
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = log_file.open("a")
+        header = f"[orchestrator] opencode run --agent {agent}"
+        if model is not None:
+            header += f" --model {model}"
+        if variant is not None:
+            header += f" --variant {variant}"
+        fh.write(header + "\n")
+        fh.flush()
     deadline = time.monotonic() + timeout
     try:
         assert proc.stdout is not None
@@ -89,6 +124,18 @@ def run_opencode(
             if fh is not None:
                 fh.write(line)
                 fh.flush()
+            if len(lines) % config.LOOP_CHECK_INTERVAL == 0 and detect_loop(
+                lines,
+                config.LOOP_REPEAT_WINDOW,
+                config.LOOP_REPEAT_THRESHOLD,
+                config.LOOP_RATIO_THRESHOLD,
+            ):
+                proc.kill()
+                proc.wait()
+                if fh is not None:
+                    fh.write("[orchestrator] degenerate output detected, killing\n")
+                    fh.flush()
+                raise DegenerateOutputError(f"degenerate output detected after {len(lines)} lines")
         proc.wait()
     except subprocess.TimeoutExpired as exc:
         proc.kill()
