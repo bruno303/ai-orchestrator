@@ -59,3 +59,4 @@ class TaskState(TypedDict, total=False):
     error: str | None
 
     iteration: int
+    phase_attempts: int

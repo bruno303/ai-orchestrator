@@ -37,6 +37,7 @@ def _seed_state(store: TaskStore, repository: str, issue_number: int) -> dict:
         "branch": f"ai/issue-{issue_number}",
         "status": state_mod.RECEIVED,
         "iteration": 1,
+        "phase_attempts": 1,
     }
 
 
@@ -443,6 +444,7 @@ def _poll_once(store: TaskStore, once: bool) -> None:
                 "branch": f"ai/issue-{issue.number}",
                 "status": state_mod.RECEIVED,
                 "iteration": 1,
+                "phase_attempts": 1,
             }
             store.create_task(seed["task_id"], repository, issue.number)
             result = _run_graph(store, seed, seed["task_id"])
@@ -573,6 +575,7 @@ def _trigger_comment_run(
         "branch": f"ai/issue-{issue_number}",
         "status": state_mod.RECEIVED,
         "iteration": 1,
+        "phase_attempts": 1,
         "pr_number": found_pr,
         "extra_context": context,
     }

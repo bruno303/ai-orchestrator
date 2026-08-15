@@ -1,3 +1,13 @@
+# Global model selection for opencode runs. Optional: if the model: section is
+# omitted, opencode's default model is used (no -m/--variant flags are passed).
+model:
+  primary:
+    name: verboo/deepseek-v4-flash
+    variant: high
+  fallback:
+    name: xiaomi/mimo-v2.5
+    variant: high
+
 # Repositories allowed to trigger the orchestrator.
 # Only repos listed here can be processed (CLI, poll, and graph all enforce this).
 #
@@ -11,6 +21,7 @@ repositories:
     label: ai-agent
   - name: bruno303/planning-poker
     label: ai-agent
-  #- name: bruno303/ai-orchestrator
-  # - name: company/frontend
-  #   default_branch: main
+    default_branch: main
+  - name: bruno303/ai-orchestrator
+    label: ai-agent
+    default_branch: main
