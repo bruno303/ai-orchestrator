@@ -89,8 +89,24 @@ def test_opencode_failure_fails_task(remote_repo, allowlist, store, monkeypatch)
     result = graph.invoke(_seed(remote_repo, 2), config={"configurable": {"thread_id": "company/backend#2"}})
     assert result["status"] == state_mod.FAILED
     assert "exited with 1" in result["error"]
+    assert result["phase_attempts"] == 1
     # Cleanup only runs on success: the worktree is kept for debugging.
     assert workspace.task_workspace("company/backend", 2).exists()
+
+
+def test_opencode_error_fails_task_with_current_attempt(remote_repo, allowlist, store, monkeypatch):
+    from orchestrator import opencode
+
+    def raise_opencode_error(*args, **kwargs):
+        raise opencode.OpenCodeError("opencode unavailable")
+
+    monkeypatch.setattr("orchestrator.opencode.run_opencode", raise_opencode_error)
+    graph = build_graph(store.checkpointer())
+    result = graph.invoke(_seed(remote_repo, 12), config={"configurable": {"thread_id": "company/backend#12"}})
+
+    assert result["status"] == state_mod.FAILED
+    assert result["error"] == "opencode unavailable"
+    assert result["phase_attempts"] == 1
 
 
 def test_changes_required_still_creates_pr(remote_repo, allowlist, store, monkeypatch):
@@ -258,8 +274,8 @@ def test_implement_retries_once_then_succeeds(remote_repo, allowlist, store, mon
     lines = model_file.read_text().splitlines()
     assert any("model=verboo/deepseek-v4-flash" in line for line in lines)
     assert any("model=verboo/glm-4.7-flash" in line for line in lines)
-    # The implement phase looped once, so the retry was recorded.
-    assert result["phase_attempts"] == 2
+    # The implement phase looped once, but the later first-attempt phases overwrite it.
+    assert result["phase_attempts"] == 1
 
 
 def test_implement_fails_after_max_attempts(remote_repo, allowlist, store, monkeypatch):
@@ -280,3 +296,4 @@ def test_implement_fails_after_max_attempts(remote_repo, allowlist, store, monke
     result = graph.invoke(_seed(remote_repo, 11), config={"configurable": {"thread_id": "company/backend#11"}})
     assert result["status"] == state_mod.FAILED
     assert "degenerate output" in result["error"]
+    assert result["phase_attempts"] == config.PHASE_MAX_ATTEMPTS

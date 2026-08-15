@@ -32,7 +32,6 @@ def _run_opencode(
     # earlier phases. phase_attempts is written to state for observability only
     # and must never feed back into the counter (state is shared across nodes).
     attempt = 1
-    retried = False
     while attempt <= config.PHASE_MAX_ATTEMPTS:
         model_cfg = config.MODEL_PRIMARY if attempt == 1 else config.MODEL_FALLBACK
         model = model_cfg.name if model_cfg else None
@@ -64,13 +63,15 @@ def _run_opencode(
                 flush=True,
             )
             attempt += 1
-            retried = True
             if attempt > config.PHASE_MAX_ATTEMPTS:
                 return (
-                    _fail(
-                        state,
-                        f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
-                    ),
+                    {
+                        **_fail(
+                            state,
+                            f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
+                        ),
+                        "phase_attempts": config.PHASE_MAX_ATTEMPTS,
+                    },
                     None,
                 )
             continue
@@ -80,23 +81,29 @@ def _run_opencode(
                 f"(attempt={attempt}, model={model_label}, variant={variant_label})",
                 flush=True,
             )
-            return _fail(state, str(exc)), None
+            return {**_fail(state, str(exc)), "phase_attempts": attempt}, None
         print(
             f"[{_now()}] {node}: finished in {result.duration_seconds:.0f}s "
             f"(exit={result.exit_code}, attempt={attempt}, model={model_label}, variant={variant_label})",
             flush=True,
         )
         if result.exit_code != 0:
-            return _fail(state, f"opencode ({agent}) exited with {result.exit_code}"), result
-        updates: dict[str, Any] = {}
-        if retried:
-            updates["phase_attempts"] = attempt
-        return updates, result
+            return (
+                {
+                    **_fail(state, f"opencode ({agent}) exited with {result.exit_code}"),
+                    "phase_attempts": attempt,
+                },
+                result,
+            )
+        return {"phase_attempts": attempt}, result
     return (
-        _fail(
-            state,
-            f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
-        ),
+        {
+            **_fail(
+                state,
+                f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
+            ),
+            "phase_attempts": config.PHASE_MAX_ATTEMPTS,
+        },
         None,
     )
 
