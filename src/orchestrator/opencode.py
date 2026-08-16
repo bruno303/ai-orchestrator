@@ -54,6 +54,7 @@ def run_opencode(
     log_file: Path | None = None,
     model: str | None = None,
     variant: str | None = None,
+    detect_degenerate: bool = True,
 ) -> OpenCodeResult:
     """Run `opencode run --agent <agent> --auto` in the given workspace.
 
@@ -124,7 +125,7 @@ def run_opencode(
             if fh is not None:
                 fh.write(line)
                 fh.flush()
-            if len(lines) % config.LOOP_CHECK_INTERVAL == 0 and detect_loop(
+            if detect_degenerate and len(lines) % config.LOOP_CHECK_INTERVAL == 0 and detect_loop(
                 lines,
                 config.LOOP_REPEAT_WINDOW,
                 config.LOOP_REPEAT_THRESHOLD,

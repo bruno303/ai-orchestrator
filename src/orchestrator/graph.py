@@ -20,6 +20,11 @@ def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _clean_terminal_output(text: str) -> str:
+    """Remove terminal control sequences before persisting model output."""
+    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).replace("\r", "")
+
+
 def _fail(state: TaskState, error: str) -> dict[str, Any]:
     return {"status": state_mod.FAILED, "error": error}
 
@@ -32,7 +37,8 @@ def _run_opencode(
     # earlier phases. phase_attempts is written to state for observability only
     # and must never feed back into the counter (state is shared across nodes).
     attempt = 1
-    while attempt <= config.PHASE_MAX_ATTEMPTS:
+    max_attempts = config.PHASE_MAX_ATTEMPTS if config.MODEL_FALLBACK_ENABLED else 1
+    while attempt <= max_attempts:
         model_cfg = config.MODEL_PRIMARY if attempt == 1 else config.MODEL_FALLBACK
         model = model_cfg.name if model_cfg else None
         variant = model_cfg.variant if model_cfg else None
@@ -51,6 +57,7 @@ def _run_opencode(
                 log_file=log_path,
                 model=model,
                 variant=variant,
+                detect_degenerate=config.MODEL_FALLBACK_ENABLED,
             )
         except opencode.DegenerateOutputError:
             next_cfg = config.MODEL_FALLBACK
@@ -63,14 +70,14 @@ def _run_opencode(
                 flush=True,
             )
             attempt += 1
-            if attempt > config.PHASE_MAX_ATTEMPTS:
+            if attempt > max_attempts:
                 return (
                     {
                         **_fail(
                             state,
-                            f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
+                            f"{node} produced degenerate output after {max_attempts} attempts",
                         ),
-                        "phase_attempts": config.PHASE_MAX_ATTEMPTS,
+                        "phase_attempts": max_attempts,
                     },
                     None,
                 )
@@ -100,9 +107,9 @@ def _run_opencode(
         {
             **_fail(
                 state,
-                f"{node} produced degenerate output after {config.PHASE_MAX_ATTEMPTS} attempts",
+                f"{node} produced degenerate output after {max_attempts} attempts",
             ),
-            "phase_attempts": config.PHASE_MAX_ATTEMPTS,
+            "phase_attempts": max_attempts,
         },
         None,
     )
@@ -148,6 +155,14 @@ def plan(state: TaskState) -> dict[str, Any]:
     updates, result = _run_opencode(state, "plan", "plan", prompt)
     if updates.get("status") == state_mod.FAILED:
         return updates
+    plan_path = Path(state["workspace"]) / PLAN_FILE
+    if not plan_path.is_file() and result and result.stdout.strip():
+        plan_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_path.write_text(_clean_terminal_output(result.stdout).strip() + "\n")
+    if not plan_path.is_file():
+        return _fail(state, f"planning completed without creating {PLAN_FILE}")
+    if not plan_path.read_text().strip():
+        return _fail(state, f"planning completed with an empty {PLAN_FILE}")
     return {
         **updates,
         "plan_path": PLAN_FILE,
@@ -268,13 +283,14 @@ Use the plan-implementation skill.
 
 Requirements:
 1. Analyze the issue and the repository.
-2. Write the implementation plan to {PLAN_FILE} in this workspace.
-   The plan must use the format required by the subagent-plan-execution skill:
+2. Produce the implementation plan in your final response. The orchestrator
+   will save your response to {PLAN_FILE} in this workspace. The plan must use
+   the format required by the subagent-plan-execution skill:
    clearly separated tasks, each with **Files:** and **Dependencies:**, detailed enough for an implementer unfamiliar with the project.
 3. The plan must cover: requirements, implementation steps, files likely to change, tests required, potential risks, and open questions if the requirements are ambiguous.
 
 Restrictions:
-- Do NOT modify any repository files. Planning only.
+- Do NOT modify or create repository files. Planning only.
 - Do NOT create a pull request.
 - Do NOT run tests or builds.
 """

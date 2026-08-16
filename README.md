@@ -32,12 +32,13 @@ repositories:
 ```
 
 Optional global model config (applies to all repositories). `primary` is used
-for the first attempt of each phase; if a phase degenerates into a loop, it is
-retried once with `fallback`. Omitting the section keeps opencode's default
-model (no `-m`/`--variant` flags):
+for the first attempt of each phase. When `fallback_enabled` is true, a phase
+that degenerates into a loop is retried once with `fallback`. Omitting the
+section keeps opencode's default model (no `-m`/`--variant` flags):
 
 ```yaml
 model:
+  fallback_enabled: true
   primary:
     name: verboo/deepseek-v4-flash
     variant: high
@@ -45,6 +46,15 @@ model:
     name: verboo/glm-4.7-flash
     variant: high
 ```
+
+Set `fallback_enabled` to `false` (or omit it) to disable loop detection and
+fallback retries entirely. The environment override is
+`ORCHESTRATOR_MODEL_FALLBACK_ENABLED`.
+
+The planning phase must produce `.agents/plans/plan.md`. The read-only planning
+agent returns the plan in its response, and the orchestrator persists it. The
+planner must not modify repository files. The orchestrator validates the
+artifact before starting implementation.
 
 Paths, limits, model and loop detection (env overrides):
 
@@ -60,6 +70,7 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_MODEL_PRIMARY_VARIANT` | (none — opencode default) |
 | `ORCHESTRATOR_MODEL_FALLBACK_NAME` | (none) |
 | `ORCHESTRATOR_MODEL_FALLBACK_VARIANT` | (none) |
+| `ORCHESTRATOR_MODEL_FALLBACK_ENABLED` | `false` |
 | `ORCHESTRATOR_PHASE_MAX_ATTEMPTS` | `2` |
 | `ORCHESTRATOR_LOOP_REPEAT_THRESHOLD` | `20` (identical lines within window) |
 | `ORCHESTRATOR_LOOP_REPEAT_WINDOW` | `100` (lines) |

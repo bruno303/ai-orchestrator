@@ -74,6 +74,17 @@ def test_run_opencode_detects_repeat_loop(tmp_path, clean_env, monkeypatch):
         opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
 
 
+def test_run_opencode_skips_loop_detection_when_disabled(tmp_path, clean_env, monkeypatch):
+    monkeypatch.setenv("FAKE_OPCODE_LOOP", "1")
+    result = opencode.run_opencode(
+        tmp_path,
+        "plan",
+        "planning the implementation of issue",
+        detect_degenerate=False,
+    )
+    assert result.exit_code == 0
+
+
 def test_run_opencode_no_false_positive(tmp_path, clean_env):
     """Normal output must not trip the loop detector."""
     result = opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")

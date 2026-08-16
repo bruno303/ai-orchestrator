@@ -63,6 +63,26 @@ class ModelConfig:
     variant: str | None
 
 
+def _parse_bool(value: str | bool | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+@lru_cache(maxsize=1)
+def load_fallback_enabled() -> bool:
+    env_value = os.environ.get("ORCHESTRATOR_MODEL_FALLBACK_ENABLED")
+    if env_value is not None:
+        return _parse_bool(env_value)
+    if not CONFIG_FILE.exists():
+        return False
+    with CONFIG_FILE.open() as fh:
+        data = yaml.safe_load(fh) or {}
+    return _parse_bool((data.get("model") or {}).get("fallback_enabled"))
+
+
 @lru_cache(maxsize=1)
 def load_model_config() -> dict[str, ModelConfig | None]:
     """Load the model: section from the config file. Returns {"primary": ..., "fallback": ...}."""
@@ -87,6 +107,7 @@ def load_model_config() -> dict[str, ModelConfig | None]:
 
 MODEL_PRIMARY = load_model_config().get("primary")
 MODEL_FALLBACK = load_model_config().get("fallback")
+MODEL_FALLBACK_ENABLED = load_fallback_enabled()
 
 
 @lru_cache(maxsize=1)

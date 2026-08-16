@@ -24,3 +24,16 @@ def test_model_config_env_override(model_config, monkeypatch):
     fallback = config.load_model_config()["fallback"]
     assert fallback.name == "verboo/some-other-model"
     assert fallback.variant == "low"
+
+
+def test_model_fallback_disabled_by_default(allowlist):
+    assert config.MODEL_FALLBACK_ENABLED is False
+
+
+def test_model_fallback_enabled_from_config(model_config):
+    assert config.load_fallback_enabled() is True
+
+
+def test_model_fallback_enabled_env_override(allowlist, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_MODEL_FALLBACK_ENABLED", "true")
+    assert config.load_fallback_enabled() is True

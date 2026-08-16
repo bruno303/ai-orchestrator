@@ -109,6 +109,57 @@ def test_opencode_error_fails_task_with_current_attempt(remote_repo, allowlist, 
     assert result["phase_attempts"] == 1
 
 
+def test_plan_persists_planner_output_when_artifact_is_missing(tmp_path, monkeypatch):
+    from orchestrator import opencode
+    from orchestrator.graph import plan
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    monkeypatch.setattr(
+        "orchestrator.opencode.run_opencode",
+        lambda **kwargs: opencode.OpenCodeResult(0, "# Implementation Plan\n\nDo the work.", "", 1.0),
+    )
+    result = plan(
+        {
+            "task_id": "company/backend#13",
+            "workspace": str(workspace_path),
+            "issue_number": 13,
+            "repository": "company/backend",
+            "issue_title": "Add a feature",
+            "issue_body": "Please implement the feature.",
+        }
+    )
+
+    assert result["status"] == state_mod.PLANNING
+    assert result["plan_path"] == ".agents/plans/plan.md"
+    assert (workspace_path / ".agents/plans/plan.md").read_text() == "# Implementation Plan\n\nDo the work.\n"
+
+
+def test_plan_fails_when_planner_output_is_empty(tmp_path, monkeypatch):
+    from orchestrator import opencode
+    from orchestrator.graph import plan
+
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    monkeypatch.setattr(
+        "orchestrator.opencode.run_opencode",
+        lambda **kwargs: opencode.OpenCodeResult(0, "", "", 1.0),
+    )
+    result = plan(
+        {
+            "task_id": "company/backend#14",
+            "workspace": str(workspace_path),
+            "issue_number": 14,
+            "repository": "company/backend",
+            "issue_title": "Add a feature",
+            "issue_body": "Please implement the feature.",
+        }
+    )
+
+    assert result["status"] == state_mod.FAILED
+    assert result["error"] == "planning completed without creating .agents/plans/plan.md"
+
+
 def test_changes_required_still_creates_pr(remote_repo, allowlist, store, monkeypatch):
     monkeypatch.setenv("FAKE_OPCODE_VERDICT", "CHANGES_REQUIRED")
     captured: dict = {}
@@ -260,6 +311,7 @@ def test_implement_retries_once_then_succeeds(remote_repo, allowlist, store, mon
     # directly since graph.py reads config.MODEL_PRIMARY at call time.
     monkeypatch.setattr(config, "MODEL_PRIMARY", config.ModelConfig("verboo/deepseek-v4-flash", "high"))
     monkeypatch.setattr(config, "MODEL_FALLBACK", config.ModelConfig("verboo/glm-4.7-flash", "high"))
+    monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", True)
     monkeypatch.setenv("FAKE_OPCODE_LOOP_ONCE", "verboo/deepseek-v4-flash")
     monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "implementing GitHub issue")
     model_file = tmp_path / "models.txt"
@@ -288,6 +340,7 @@ def test_implement_fails_after_max_attempts(remote_repo, allowlist, store, monke
     # MODEL_PRIMARY/MODEL_FALLBACK constants requires direct module attribute patching.
     monkeypatch.setattr(config, "MODEL_PRIMARY", config.ModelConfig("verboo/deepseek-v4-flash", "high"))
     monkeypatch.setattr(config, "MODEL_FALLBACK", config.ModelConfig("verboo/glm-4.7-flash", "high"))
+    monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", True)
     monkeypatch.setenv("FAKE_OPCODE_LOOP", "1")
     monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "implementing GitHub issue")
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 42)

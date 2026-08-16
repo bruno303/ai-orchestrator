@@ -115,9 +115,11 @@ def fake_opencode_bin() -> Path:
 def clear_config_cache():
     config.load_repository_config.cache_clear()
     config.load_model_config.cache_clear()
+    config.load_fallback_enabled.cache_clear()
     yield
     config.load_repository_config.cache_clear()
     config.load_model_config.cache_clear()
+    config.load_fallback_enabled.cache_clear()
 
 
 @pytest.fixture
@@ -137,6 +139,7 @@ def model_config():
         "repositories:\n"
         "  - name: company/backend\n"
         "model:\n"
+        "  fallback_enabled: true\n"
         "  primary:\n"
         "    name: verboo/deepseek-v4-flash\n"
         "    variant: high\n"
