@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from orchestrator import config, state as state_mod, workspace
-from orchestrator.graph import build_graph, parse_verdict
+from orchestrator.graph import build_graph, cleanup, create_pr, parse_verdict, prepare_workspace
 from orchestrator.persistence import TaskStore
+from orchestrator.providers import ExecutionResult, PublicationResult, WorkspaceResult
 
 
 class _FakePR:
@@ -43,8 +45,11 @@ def test_full_flow(remote_repo, allowlist, store, monkeypatch):
     result = graph.invoke(_seed(remote_repo), config={"configurable": {"thread_id": "company/backend#1"}})
 
     assert result["status"] == state_mod.COMPLETED
-    assert result["pr_number"] == 42
-    assert result["workspace"] == str(workspace.task_workspace("company/backend", 1))
+    assert result["output"]["provider_state"]["pr_number"] == 42
+    assert result["workspace"]["path"] == str(workspace.task_workspace("company/backend", 1))
+    assert result["input"]["data"]["number"] == 1
+    assert result["processing"]["review_verdict"] == "APPROVED"
+    assert result["output"]["provider_state"]["pr_number"] == 42
 
     # Cleanup ran: worktree and local branch are gone.
     ws = workspace.task_workspace("company/backend", 1)
@@ -109,6 +114,289 @@ def test_opencode_error_fails_task_with_current_attempt(remote_repo, allowlist, 
     assert result["phase_attempts"] == 1
 
 
+def test_graph_uses_injected_executor(remote_repo, allowlist, store, monkeypatch):
+    calls: list[tuple[str, str]] = []
+
+    class FakeExecutor:
+        def execute(self, request):
+            calls.append((request.agent, request.prompt))
+            if request.agent == "plan" and "Review the implementation" not in request.prompt:
+                return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.", provider_state={"executor_run": "plan"})
+            if request.agent == "build":
+                if "You are implementing" in request.prompt:
+                    Path(request.workspace, "work.txt").write_text("implemented\n")
+                return ExecutionResult(True, 0, stdout="implemented", provider_state={"executor_run": "implement"})
+            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED", provider_state={"executor_run": "review"})
+
+    monkeypatch.setattr("orchestrator.opencode.run_opencode", lambda **kwargs: pytest.fail("direct OpenCode call"))
+    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 45)
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
+    graph = build_graph(store.checkpointer(), executor=FakeExecutor())
+    result = graph.invoke(_seed(remote_repo, 15), config={"configurable": {"thread_id": "company/backend#15"}})
+
+    assert result["status"] == state_mod.COMPLETED
+    assert [agent for agent, _ in calls] == ["plan", "build", "build", "plan"]
+    assert result["processing"]["provider_state"] == {"executor_run": "review"}
+
+
+def test_executor_provider_state_survives_failure(remote_repo, allowlist, store, monkeypatch):
+    class FailingExecutor:
+        def execute(self, request):
+            return ExecutionResult(False, 1, provider_state={"executor_run": "failed"})
+
+    graph = build_graph(store.checkpointer(), executor=FailingExecutor())
+    result = graph.invoke(_seed(remote_repo, 16), config={"configurable": {"thread_id": "company/backend#16"}})
+
+    assert result["status"] == state_mod.FAILED
+    assert result["processing"]["provider_state"] == {"executor_run": "failed"}
+    assert "provider_state" not in result
+
+
+def test_graph_uses_injected_workspace_and_destination(tmp_path, allowlist, store):
+    workspace_path = tmp_path / "workspace"
+    calls: list[str] = []
+
+    class FakeWorkspaceManager:
+        def prepare(self, request):
+            calls.append("prepare")
+            workspace_path.mkdir()
+            return WorkspaceResult(
+                str(workspace_path), request.branch,
+                {"base_branch": "main", "provider_token": "keep-me"},
+            )
+
+        def cleanup(self, result):
+            calls.append("cleanup")
+            assert result.provider_state == {"base_branch": "main", "provider_token": "keep-me"}
+
+    class FakeDestination:
+        def publish(self, request):
+            calls.append("publish")
+            return PublicationResult(number=99)
+
+    class FakeExecutor:
+        def execute(self, request):
+            if request.agent == "plan" and "Review the implementation" not in request.prompt:
+                return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.")
+            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED")
+
+    result = build_graph(
+        store.checkpointer(), executor=FakeExecutor(), workspace_manager=FakeWorkspaceManager(),
+        destination=FakeDestination(),
+    ).invoke(_seed("unused", 20), config={"configurable": {"thread_id": "company/backend#20"}})
+    assert result["status"] == state_mod.COMPLETED
+    assert result["output"]["provider_state"]["pr_number"] == 99
+    assert calls == ["prepare", "publish", "cleanup"]
+
+
+def test_prepare_workspace_uses_manager_default_when_base_branch_is_missing(allowlist, tmp_path):
+    class FakeWorkspaceManager:
+        def prepare(self, request):
+            assert request.base_branch == ""
+            return WorkspaceResult(
+                str(tmp_path / "workspace"), request.branch,
+                {"base_branch": "develop", "provider_token": "resolved"},
+            )
+
+        def cleanup(self, result):
+            raise AssertionError("cleanup should not be called")
+
+    seed = _seed("unused", 21)
+    seed.pop("base_branch")
+    result = prepare_workspace(seed, FakeWorkspaceManager())
+
+    assert result["workspace"]["base_branch"] == "develop"
+    assert result["workspace"]["provider_state"] == {"base_branch": "develop", "provider_token": "resolved"}
+
+
+def test_namespace_only_state_preserves_review_metadata():
+    from orchestrator.graph import _pr_body
+
+    state = {
+        "input": {"data": {"number": 8}},
+        "processing": {
+            "review_verdict": "CHANGES_REQUIRED",
+            "review_result": "FINDINGS:\n- keep the metadata",
+        },
+    }
+    assert "keep the metadata" in _pr_body(state)
+
+
+def test_new_graph_updates_are_namespace_only(allowlist, tmp_path):
+    class FakeWorkspaceManager:
+        provider_type = "custom_workspace"
+
+        def prepare(self, request):
+            return WorkspaceResult(str(tmp_path / "workspace"), request.branch, {"base_branch": "main"})
+
+        def cleanup(self, result):
+            pass
+
+    seed = {
+        "task_id": "company/backend#30",
+        "input": {"provider": "custom_input", "data": {"repository": "company/backend", "number": 30}},
+        "processing": {},
+        "workspace": {"branch": "ai/issue-30", "base_branch": "main"},
+        "output": {},
+        "status": state_mod.RECEIVED,
+    }
+    update = prepare_workspace(seed, FakeWorkspaceManager())
+
+    assert set(update) <= {"input", "workspace", "status"}
+    assert not {"repository", "issue_number", "branch", "workspace_path", "provider_state"} & set(update)
+    assert update["input"]["provider"] == "custom_input"
+
+
+def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_path):
+    class FakeWorkspaceManager:
+        provider_type = "custom_workspace"
+
+        def prepare(self, request):
+            path = tmp_path / "workspace"
+            path.mkdir()
+            return WorkspaceResult(str(path), request.branch, {"base_branch": "main"})
+
+        def cleanup(self, result):
+            pass
+
+    class FakeExecutor:
+        def execute(self, request):
+            if request.agent == "plan" and "Review the implementation" not in request.prompt:
+                return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.")
+            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED")
+
+    class FakeDestination:
+        provider_type = "custom_destination"
+
+        def publish(self, request):
+            return PublicationResult(number=123, provider_state={"remote_id": "123"})
+
+    seed = {
+        "task_id": "company/backend#31",
+        "input": {"provider": "custom_input", "data": {"repository": "company/backend", "number": 31,
+            "title": "Title", "body": "Body"}, "provider_state": {}},
+        "processing": {},
+        "workspace": {"branch": "ai/issue-31", "base_branch": "main"},
+        "output": {}, "status": state_mod.RECEIVED,
+    }
+    graph = build_graph(
+        store.checkpointer(), executor=FakeExecutor(), workspace_manager=FakeWorkspaceManager(),
+        destination=FakeDestination(),
+    )
+    result = graph.invoke(seed, config={"configurable": {"thread_id": seed["task_id"]}})
+
+    assert result["processing"]["review_verdict"] == "APPROVED"
+    assert result["output"]["provider_state"]["remote_id"] == "123"
+    assert not {"repository", "issue_number", "review_verdict", "pr_number"} & set(result)
+
+
+def test_injected_provider_identity_is_written_to_namespaces(allowlist, tmp_path):
+    class NamedWorkspace:
+        provider_type = "remote_workspace"
+
+        def prepare(self, request):
+            return WorkspaceResult(str(tmp_path / "workspace"), request.branch, {"base_branch": "main"})
+
+        def cleanup(self, result):
+            pass
+
+    result = prepare_workspace(_seed("unused", 30), NamedWorkspace())
+    assert result["workspace"]["provider"] == "remote_workspace"
+
+    class NamedDestination:
+        provider_type = "remote_destination"
+
+        def publish(self, request):
+            return PublicationResult(number=301, provider_state={"remote_id": "301"})
+
+    state = {**_seed("unused", 31), "workspace": {"path": str(tmp_path), "branch": "branch", "base_branch": "main"},
+             "processing": {"review_verdict": "APPROVED"}}
+    result = create_pr(state, NamedDestination())
+    assert result["output"]["provider"] == "remote_destination"
+    assert result["output"]["provider_state"]["remote_id"] == "301"
+
+
+def test_cleanup_recovers_repository_for_old_git_checkpoint(monkeypatch, tmp_path):
+    from orchestrator import git
+
+    captured = {}
+    monkeypatch.setattr(git, "base_repo_dir", lambda repository: tmp_path / repository.replace("/", "-"))
+    monkeypatch.setattr(git, "remove_worktree", lambda *args: captured.update(args=args))
+    result = cleanup({
+        "task_id": "company/backend#32",
+        "input": {"data": {"repository": "company/backend", "number": 32}},
+        "workspace": {"path": str(tmp_path / "worktree"), "branch": "ai/issue-32", "provider_state": {}},
+    })
+    assert result["status"] == state_mod.COMPLETED
+    assert captured["args"][0] == tmp_path / "company-backend"
+
+
+def test_workspace_provider_state_is_validated_at_graph_boundary(allowlist):
+    class InvalidWorkspace:
+        def prepare(self, request):
+            return WorkspaceResult("/tmp/workspace", request.branch, {"invalid": object()})
+
+        def cleanup(self, result):
+            pass
+
+    result = prepare_workspace(_seed("unused", 33), InvalidWorkspace())
+    assert result["status"] == state_mod.FAILED
+    assert "JSON-serializable" in result["error"]
+
+
+def test_injected_workspace_prepare_failure_does_not_cleanup(allowlist, store):
+    calls: list[str] = []
+
+    class FailingWorkspaceManager:
+        def prepare(self, request):
+            calls.append("prepare")
+            raise RuntimeError("provider unavailable")
+
+        def cleanup(self, result):
+            calls.append("cleanup")
+
+    result = build_graph(
+        store.checkpointer(), workspace_manager=FailingWorkspaceManager(),
+    ).invoke(_seed("unused", 22), config={"configurable": {"thread_id": "company/backend#22"}})
+
+    assert result["status"] == state_mod.FAILED
+    assert result["error"] == "provider unavailable"
+    assert calls == ["prepare"]
+
+
+def test_injected_workspace_cleanup_failure_does_not_fail_task(tmp_path, allowlist, store):
+    workspace_path = tmp_path / "workspace"
+
+    class WorkspaceManager:
+        def prepare(self, request):
+            workspace_path.mkdir()
+            return WorkspaceResult(
+                str(workspace_path), request.branch,
+                {"base_branch": "main", "provider_token": "lifecycle"},
+            )
+
+        def cleanup(self, result):
+            assert result.provider_state["provider_token"] == "lifecycle"
+            raise RuntimeError("cleanup unavailable")
+
+    class FakeExecutor:
+        def execute(self, request):
+            if request.agent == "plan":
+                return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.")
+            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED")
+
+    class FakeDestination:
+        def publish(self, request):
+            return PublicationResult(number=100)
+
+    result = build_graph(
+        store.checkpointer(), executor=FakeExecutor(), workspace_manager=WorkspaceManager(),
+        destination=FakeDestination(),
+    ).invoke(_seed("unused", 23), config={"configurable": {"thread_id": "company/backend#23"}})
+
+    assert result["status"] == state_mod.COMPLETED
+
+
 def test_plan_persists_planner_output_when_artifact_is_missing(tmp_path, monkeypatch):
     from orchestrator import opencode
     from orchestrator.graph import plan
@@ -131,7 +419,7 @@ def test_plan_persists_planner_output_when_artifact_is_missing(tmp_path, monkeyp
     )
 
     assert result["status"] == state_mod.PLANNING
-    assert result["plan_path"] == ".agents/plans/plan.md"
+    assert result["processing"]["plan_path"] == ".agents/plans/plan.md"
     assert (workspace_path / ".agents/plans/plan.md").read_text() == "# Implementation Plan\n\nDo the work.\n"
 
 
@@ -171,8 +459,8 @@ def test_changes_required_still_creates_pr(remote_repo, allowlist, store, monkey
     graph = build_graph(store.checkpointer())
     result = graph.invoke(_seed(remote_repo, 3), config={"configurable": {"thread_id": "company/backend#3"}})
     assert result["status"] == state_mod.COMPLETED
-    assert result["review_verdict"] == "CHANGES_REQUIRED"
-    assert result["pr_number"] == 43
+    assert result["processing"]["review_verdict"] == "CHANGES_REQUIRED"
+    assert result["output"]["provider_state"]["pr_number"] == 43
     body = captured["body"]
     assert body.startswith("Closes #3")
     assert "## Last Review report" in body
@@ -199,7 +487,7 @@ def test_create_pr_with_existing_commit(remote_repo, allowlist, store, monkeypat
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
     updates = create_pr(seed)
     assert updates["status"] == state_mod.COMPLETED
-    assert updates["pr_number"] == 44
+    assert updates["output"]["provider_state"]["pr_number"] == 44
 
 
 def test_create_pr_reuses_existing_pr(remote_repo, allowlist, store, monkeypatch):
@@ -225,7 +513,7 @@ def test_create_pr_reuses_existing_pr(remote_repo, allowlist, store, monkeypatch
 
     updates = create_pr(seed)
     assert updates["status"] == state_mod.COMPLETED
-    assert updates["pr_number"] == 77
+    assert updates["output"]["provider_state"]["pr_number"] == 77
     assert created == []  # no new PR created
 
 

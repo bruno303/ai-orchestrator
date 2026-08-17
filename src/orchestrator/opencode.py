@@ -7,8 +7,10 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from orchestrator import config
+from orchestrator.providers import ExecutionRequest, ExecutionResult
 
 
 class OpenCodeError(Exception):
@@ -25,6 +27,33 @@ class OpenCodeResult:
     stdout: str
     stderr: str
     duration_seconds: float
+
+
+class OpenCodeExecutor:
+    """Executor implementation backed by the existing OpenCode wrapper."""
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = dict(options or {})
+
+    def execute(self, request: ExecutionRequest) -> ExecutionResult:
+        options = {**self.options, **request.provider_state}
+        result = run_opencode(
+            workspace=request.workspace,
+            agent=request.agent,
+            prompt=request.prompt,
+            log_file=Path(options["log_file"]) if options.get("log_file") else None,
+            model=request.model,
+            variant=request.variant,
+            timeout=options.get("timeout"),
+            detect_degenerate=options.get("detect_degenerate", True),
+        )
+        return ExecutionResult(
+            success=result.exit_code == 0,
+            exit_code=result.exit_code,
+            stdout=result.stdout,
+            stderr=result.stderr,
+            duration_seconds=result.duration_seconds,
+        )
 
 
 def detect_loop(
