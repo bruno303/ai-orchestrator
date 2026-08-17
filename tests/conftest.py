@@ -90,7 +90,11 @@ EOF
     ;;
   *"Review the implementation"*)
     verdict="${FAKE_OPCODE_VERDICT:-APPROVED}"
-    echo "VERDICT: $verdict"
+    echo "REVIEW_STATUS: $verdict"
+    if [[ "$verdict" != "APPROVED" ]]; then
+      echo "FINDINGS:"
+      echo "- Missing structured findings in the review output."
+    fi
     ;;
   *)
     echo "unknown prompt: $PROMPT"
