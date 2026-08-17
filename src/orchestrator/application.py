@@ -18,12 +18,13 @@ class Runtime:
     executor: Executor
     workspace_manager: WorkspaceManager
     destination: Destination
+    input_provider: str | None = None
 
 
 def compose_runtime(store: Any) -> Runtime:
     """Construct the configured provider pipeline with explicit dependencies."""
     pipeline = config.load_pipeline_config()
-    runtime = Runtime(
+    return Runtime(
         input_source=config.INPUT_PROVIDERS.create(
             pipeline.input_source.type, {**pipeline.input_source.options, "store": store, "_runtime": True}
         ),
@@ -36,13 +37,8 @@ def compose_runtime(store: Any) -> Runtime:
         destination=config.DESTINATION_PROVIDERS.create(
             pipeline.destination.type, {**pipeline.destination.options, "_runtime": True}
         ),
+        input_provider=pipeline.input_source.type,
     )
-    for component, provider_type in zip(
-        (runtime.input_source, runtime.executor, runtime.workspace_manager, runtime.destination),
-        (pipeline.input_source.type, pipeline.executor.type, pipeline.workspace_manager.type, pipeline.destination.type),
-    ):
-        setattr(component, "provider_type", provider_type)
-    return runtime
 
 
 def _input_seed(
@@ -84,6 +80,7 @@ class PollingApplication:
         reset_task: Callable[[Any, str, int, str], None],
         github_client: Any = github,
         now: Callable[[], str] | None = None,
+        input_provider: str | None = None,
     ) -> None:
         self.store = store
         self.input_source = input_source
@@ -92,6 +89,7 @@ class PollingApplication:
         self.reset_task = reset_task
         self.github = github_client
         self.now = now or (lambda: "--:--:--")
+        self.input_provider = input_provider
 
     def poll_once(self, once: bool = False) -> None:
         for event in self.input_source.poll():
@@ -108,7 +106,7 @@ class PollingApplication:
         # in this polling snapshot.
         if self.store.exists(event.repository, event.number):
             return
-        seed = _input_seed(event, task_id, provider=_input_provider(self.input_source))
+        seed = _input_seed(event, task_id, provider=self.input_provider or _input_provider(self.input_source))
         print(f"[{self.now()}] new issue: {task_id} - {event.title}")
         self.store.create_task(task_id, event.repository, event.number)
         self.persist_result(self.store, self.run_graph(self.store, seed, task_id))
@@ -148,7 +146,7 @@ class PollingApplication:
             except self.github.GitHubError:
                 pass
         context.append(comment.body)
-        seed = _input_seed(event, task_id, provider=_input_provider(self.input_source), extra_context=context)
+        seed = _input_seed(event, task_id, provider=self.input_provider or _input_provider(self.input_source), extra_context=context)
         seed["input"]["data"]["title"] = issue.title
         seed["input"]["data"]["body"] = issue.body
         seed["input"]["data"]["pr_number"] = pr_number

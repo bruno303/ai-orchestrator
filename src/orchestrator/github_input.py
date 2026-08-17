@@ -39,6 +39,7 @@ def _pr_context_block(pr: github.PullRequestDetail) -> str:
 class GitHubPollingInputSource:
     """Translate the existing GitHub polling protocol into input events."""
 
+    provider_type = "github_polling"
     store: Any
     github_client: Any = github
     config_module: Any = config

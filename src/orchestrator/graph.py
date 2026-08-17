@@ -216,14 +216,18 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None)
         return _fail(state, f"repository {repository} is not in the allowlist")
     try:
         current_workspace = _workspace(state)
+        workspace_provider_state = validate_provider_state(current_workspace["provider_state"])
         branch = current_workspace["branch"] or f"ai/issue-{source['issue_number']}"
         ws = str(current_workspace["path"] or workspace.task_workspace(repository, source["issue_number"]))
         result = (manager or GitWorkspaceManager()).prepare(
             WorkspaceRequest(
                 task_id=state["task_id"], repository=repository, branch=branch,
                 base_branch=current_workspace["base_branch"],
-                provider_state={"repository_url": source["provider_state"].get("repository_url", state.get("repository_url")),
-                                "workspace": ws},
+                provider_state={
+                    **workspace_provider_state,
+                    "repository_url": source["provider_state"].get("repository_url", state.get("repository_url")),
+                    "workspace": ws,
+                },
             )
         )
         provider_state = validate_provider_state(result.provider_state)

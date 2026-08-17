@@ -244,15 +244,25 @@ def _result_pr_number(result: dict) -> int | None:
     return None
 
 
+def _result_url(result: dict) -> str | None:
+    output = result.get("output")
+    if isinstance(output, dict):
+        url = output.get("url")
+        return str(url) if url is not None else None
+    return None
+
+
 def _persist_result(store: TaskStore, result: dict) -> None:
     status = result.get("status", state_mod.FAILED)
     pr_number = _result_pr_number(result)
+    publication_url = _result_url(result)
     store.update_task(
         result["task_id"],
         status=status,
         workspace=(result.get("workspace") or {}).get("path") if isinstance(result.get("workspace"), dict) else result.get("workspace"),
         branch=(result.get("workspace") or {}).get("branch") if isinstance(result.get("workspace"), dict) else result.get("branch"),
         pr_number=pr_number,
+        publication_url=publication_url,
         error=result.get("error") if status != state_mod.COMPLETED else None,
         input_provider=(result.get("input") or {}).get("provider"),
         output_provider=(result.get("output") or {}).get("provider"),
@@ -265,10 +275,12 @@ def _persist_result(store: TaskStore, result: dict) -> None:
         event="task_end",
         status=status,
         pr_number=pr_number,
+        publication_url=publication_url,
         error=(result.get("error") or "")[:200] if status != state_mod.COMPLETED else None,
     )
     if status == state_mod.COMPLETED:
-        print(f"[{_now()}] COMPLETED: PR #{pr_number} for {result['task_id']}")
+        reference = f"PR #{pr_number}" if pr_number is not None else publication_url or "published result"
+        print(f"[{_now()}] COMPLETED: {reference} for {result['task_id']}")
     else:
         print(f"[{_now()}] {status}: {result.get('error', 'no error')}")
 
@@ -281,7 +293,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         return
     print(f"{'id (owner/repo#issue)':<28} {'status':<12} {'created_at'}{'pr':>8} error")
     for t in tasks:
-        pr = f" #{t['pr_number']}" if t["pr_number"] else ""
+        pr = f" #{t['pr_number']}" if t["pr_number"] else f" {t['publication_url']}" if t.get("publication_url") else ""
         err = f" ({t['error']})" if t["error"] else ""
         print(f"{t['task_id']:<28} {t['status']:<12} {t['created_at']}{pr}{err}")
 
@@ -428,6 +440,7 @@ def cmd_poll(args: argparse.Namespace) -> None:
             _persist_result,
             _reset_task,
             now=_now,
+            input_provider=runtime.input_provider,
         )
         while True:
             _detect_stale_tasks(store)

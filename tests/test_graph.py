@@ -255,6 +255,25 @@ def test_prepare_workspace_preserves_requested_base_branch(allowlist, tmp_path):
     assert result["workspace"]["base_branch"] == "main"
 
 
+def test_prepare_workspace_forwards_provider_state(allowlist, tmp_path):
+    class StatefulWorkspaceManager:
+        def prepare(self, request):
+            assert request.provider_state["remote_id"] == "workspace-1"
+            return WorkspaceResult(str(tmp_path / "workspace"), request.branch, request.provider_state)
+
+        def cleanup(self, result):
+            raise AssertionError("cleanup should not be called")
+
+    seed = _seed("unused", 23)
+    seed["workspace"] = {
+        "branch": "ai/issue-23",
+        "base_branch": "main",
+        "provider_state": {"remote_id": "workspace-1"},
+    }
+
+    prepare_workspace(seed, StatefulWorkspaceManager())
+
+
 def test_namespace_only_state_preserves_review_metadata():
     from orchestrator.graph import _pr_body
 

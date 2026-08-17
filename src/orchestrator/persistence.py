@@ -64,6 +64,7 @@ class TaskStore:
             ("node_started_at", "TEXT"),
             ("input_provider", "TEXT"),
             ("output_provider", "TEXT"),
+            ("publication_url", "TEXT"),
         ):
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {ddl}")
@@ -107,6 +108,7 @@ class TaskStore:
         error: str | None = None,
         input_provider: str | None = None,
         output_provider: str | None = None,
+        publication_url: str | None = None,
     ) -> None:
         fields: list[str] = []
         values: list[object] = []
@@ -131,6 +133,9 @@ class TaskStore:
         if output_provider is not None:
             fields.append("output_provider = ?")
             values.append(output_provider)
+        if publication_url is not None:
+            fields.append("publication_url = ?")
+            values.append(publication_url)
         if not fields:
             return
         fields.append("updated_at = datetime('now')")

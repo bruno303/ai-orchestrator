@@ -27,6 +27,14 @@ def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
     assert row["output_provider"] == "github"
 
 
+def test_publication_url_is_persisted(tmp_path):
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("r#2", "r", 2)
+    store.update_task("r#2", publication_url="https://example.test/run/2")
+
+    assert store.get_task("r#2")["publication_url"] == "https://example.test/run/2"
+
+
 def test_checkpoint_store_uses_same_database(tmp_path):
     store = TaskStore(tmp_path / "state.sqlite")
     assert store.checkpointer() is not None

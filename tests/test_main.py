@@ -605,6 +605,22 @@ def test_persist_namespace_only_completed_result(allowlist, tmp_path, monkeypatc
     assert "COMPLETED: PR #43 for company/backend#2" in capsys.readouterr().out
 
 
+def test_persist_url_only_completed_result(allowlist, tmp_path, capsys):
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("company/backend#3", "company/backend", 3)
+    main._persist_result(store, {
+        "task_id": "company/backend#3",
+        "status": "COMPLETED",
+        "output": {"url": "https://example.test/run/3", "provider": "artifact_store"},
+    })
+
+    assert store.get_task("company/backend#3")["publication_url"] == "https://example.test/run/3"
+    assert "COMPLETED: https://example.test/run/3 for company/backend#3" in capsys.readouterr().out
+
+
 def test_migration_and_touch(tmp_path):
     """Existing old-schema DBs gain the new columns; touch tracks the node."""
     import sqlite3
