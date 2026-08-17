@@ -175,8 +175,11 @@ def test_changes_required_still_creates_pr(remote_repo, allowlist, store, monkey
     assert result["pr_number"] == 43
     body = captured["body"]
     assert body.startswith("Closes #3")
-    assert "## Review: CHANGES_REQUIRED" in body
-    assert "VERDICT: CHANGES_REQUIRED" in body
+    assert "## Last Review report" in body
+    assert "- status: CHANGES_REQUIRED" in body
+    assert "- findings:" in body
+    assert "Missing structured findings in the review output." in body
+    assert "VERDICT: CHANGES_REQUIRED" not in body
 
 
 def test_create_pr_with_existing_commit(remote_repo, allowlist, store, monkeypatch):
@@ -248,11 +251,11 @@ def test_create_pr_reuse_prepends_review_section(remote_repo, allowlist, store, 
             "workspace": str(ws),
             "status": state_mod.REVIEWING,
             "review_verdict": "CHANGES_REQUIRED",
-            "review_result": "VERDICT: CHANGES_REQUIRED\nNew issues found.",
+            "review_result": "REVIEW_STATUS: CHANGES_REQUIRED\nFINDINGS:\n- New issues found.",
         }
     )
 
-    old_body = "Closes #6\n\n## Review: CHANGES_REQUIRED\n\nVERDICT: CHANGES_REQUIRED\nOld issues."
+    old_body = "Closes #6\n\n## Last Review report\n- status: CHANGES_REQUIRED\n- findings:\n  - Old issues."
     edited: list = []
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: 77)
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 0)
@@ -268,7 +271,8 @@ def test_create_pr_reuse_prepends_review_section(remote_repo, allowlist, store, 
     assert pr_number == 77
     assert new_body.startswith("Closes #6")
     assert new_body.count("Closes #6") == 1
-    assert "## Review: CHANGES_REQUIRED" in new_body
+    assert "## Last Review report" in new_body
+    assert "- findings:" in new_body
     assert new_body.index("New issues found.") < new_body.index("Old issues.")
 
 

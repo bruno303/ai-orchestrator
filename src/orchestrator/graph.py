@@ -342,10 +342,12 @@ Use the review-changes skill.
 
 Analyze: adherence to the issue requirements, adherence to the plan, code quality, test coverage, and possible regressions.
 
-End your response with exactly one verdict line:
-VERDICT: APPROVED
-VERDICT: CHANGES_REQUIRED
-VERDICT: NEEDS_CLARIFICATION
+End your response with exactly this machine-readable block and nothing else:
+REVIEW_STATUS: APPROVED|CHANGES_REQUIRED|NEEDS_CLARIFICATION
+FINDINGS:
+- only the unapproved findings, one per bullet
+
+If the review is APPROVED, omit the FINDINGS block entirely.
 
 Do NOT modify any files.
 """
@@ -355,8 +357,29 @@ Do NOT modify any files.
 
 
 def parse_verdict(output: str) -> str:
-    match = re.search(r"VERDICT:\s*(APPROVED|CHANGES_REQUIRED|NEEDS_CLARIFICATION)", output)
+    match = re.search(r"(?:REVIEW_STATUS|VERDICT):\s*(APPROVED|CHANGES_REQUIRED|NEEDS_CLARIFICATION)", output)
     return match.group(1) if match else state_mod.VERDICT_NEEDS_CLARIFICATION
+
+
+def _review_findings(output: str) -> list[str]:
+    findings: list[str] = []
+    in_findings = False
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if in_findings:
+                continue
+            continue
+        if line.startswith("FINDINGS:"):
+            in_findings = True
+            continue
+        if re.match(r"^[A-Z_]+:\s*", line):
+            if in_findings:
+                break
+            continue
+        if in_findings and line.startswith("- "):
+            findings.append(line[2:].strip())
+    return findings
 
 
 def _review_section(state: TaskState) -> str | None:
@@ -365,7 +388,12 @@ def _review_section(state: TaskState) -> str | None:
     result = state.get("review_result")
     if not verdict or verdict == state_mod.VERDICT_APPROVED or not result:
         return None
-    return f"## Review: {verdict}\n\n{result.rstrip()}"
+    findings = _review_findings(result)
+    if not findings:
+        return None
+    lines = ["## Last Review report", f"- status: {verdict}", "- findings:"]
+    lines.extend(f"  - {finding}" for finding in findings)
+    return "\n".join(lines)
 
 
 def _pr_body(state: TaskState, current_body: str | None = None) -> str:
