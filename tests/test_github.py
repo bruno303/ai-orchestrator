@@ -13,7 +13,7 @@ from orchestrator import github
 def fake_gh(monkeypatch):
     calls: list[list[str]] = []
 
-    def run(args: list[str]) -> str:
+    def run(args: list[str], input_text: str | None = None) -> str:
         calls.append(args)
         joined = " ".join(args)
         if "issues?state=open" in joined:
@@ -149,9 +149,11 @@ def test_get_repository(fake_gh):
 
 
 def test_create_pull_request(fake_gh):
-    number = github.create_pull_request("company/backend", "feat: x", "Closes #7", "ai/issue-7", "main")
+    number = github.create_pull_request("company/backend", "feat: x", "Closes #7\n\n## Summary", "ai/issue-7", "main")
     assert number == 42
     assert fake_gh[-1][:3] == ["pr", "create", "--repo"]
+    assert "--body-file" in fake_gh[-1]
+    assert fake_gh[-1][-1] == "main"
 
 
 def test_gh_failure_raises(monkeypatch):

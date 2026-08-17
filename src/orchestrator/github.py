@@ -11,9 +11,10 @@ class GitHubError(Exception):
     pass
 
 
-def _run_gh(args: list[str]) -> str:
+def _run_gh(args: list[str], *, input_text: str | None = None) -> str:
     proc = subprocess.run(
         ["gh", *args],
+        input=input_text,
         capture_output=True,
         text=True,
         check=False,
@@ -104,13 +105,14 @@ def create_pull_request(repository: str, title: str, body: str, head: str, base:
             repository,
             "--title",
             title,
-            "--body",
-            body,
+            "--body-file",
+            "-",
             "--head",
             head,
             "--base",
             base,
-        ]
+        ],
+        input_text=body,
     )
     url = out.strip().splitlines()[-1]
     return int(url.rstrip("/").split("/")[-1])
@@ -118,7 +120,7 @@ def create_pull_request(repository: str, title: str, body: str, head: str, base:
 
 def update_pull_request_body(repository: str, pr_number: int, body: str) -> None:
     """Replace the body of an open PR (`gh pr edit`)."""
-    _run_gh(["pr", "edit", str(pr_number), "--repo", repository, "--body", body])
+    _run_gh(["pr", "edit", str(pr_number), "--repo", repository, "--body-file", "-"], input_text=body)
 
 
 def find_open_pr(repository: str, head_branch: str) -> int | None:
