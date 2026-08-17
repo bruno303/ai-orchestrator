@@ -227,7 +227,11 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None)
             )
         )
         provider_state = validate_provider_state(result.provider_state)
-        resolved_base_branch = provider_state.get("base_branch", state.get("base_branch", ""))
+        resolved_base_branch = (
+            provider_state.get("base_branch")
+            or current_workspace["base_branch"]
+            or state.get("base_branch", "")
+        )
     except Exception as exc:
         print(f"[{_now()}] prepare_workspace: ERROR {exc}", flush=True)
         return _fail(state, str(exc))
@@ -337,6 +341,8 @@ def create_pr(state: TaskState, destination: Destination | None = None) -> dict[
     output = dict(state.get("output") or {})
     output.update({"provider": _provider_name(destination, "github"),
                    "provider_state": {**publication_state, "pr_number": pr_number}})
+    if result.url is not None:
+        output["url"] = result.url
     return {"status": state_mod.COMPLETED, "output": output}
 
 

@@ -65,6 +65,7 @@ class OutputState(TypedDict, total=False):
     """Provider-owned publication result."""
 
     provider: str
+    url: str
     provider_state: dict[str, Any]
 
 

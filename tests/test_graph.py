@@ -241,6 +241,20 @@ def test_prepare_workspace_uses_manager_default_when_base_branch_is_missing(allo
     assert result["workspace"]["provider_state"] == {"base_branch": "develop", "provider_token": "resolved"}
 
 
+def test_prepare_workspace_preserves_requested_base_branch(allowlist, tmp_path):
+    class FakeWorkspaceManager:
+        def prepare(self, request):
+            assert request.base_branch == "main"
+            return WorkspaceResult(str(tmp_path / "workspace"), request.branch, {})
+
+        def cleanup(self, result):
+            raise AssertionError("cleanup should not be called")
+
+    result = prepare_workspace(_seed("unused", 22), FakeWorkspaceManager())
+
+    assert result["workspace"]["base_branch"] == "main"
+
+
 def test_namespace_only_state_preserves_review_metadata():
     from orchestrator.graph import _pr_body
 
@@ -346,6 +360,25 @@ def test_injected_provider_identity_is_written_to_namespaces(allowlist, tmp_path
     result = create_pr(state, NamedDestination())
     assert result["output"]["provider"] == "remote_destination"
     assert result["output"]["provider_state"]["remote_id"] == "301"
+
+
+def test_destination_publication_url_is_retained(allowlist, tmp_path):
+    class DestinationWithUrl:
+        provider_type = "artifact_store"
+
+        def publish(self, request):
+            return PublicationResult(url="https://artifacts.example/run/1")
+
+    state = {
+        **_seed("unused", 34),
+        "input": {"data": {"repository": "company/backend", "number": 34, "title": "Title", "body": "Body"}},
+        "workspace": {"path": str(tmp_path), "branch": "branch", "base_branch": "main"},
+        "processing": {},
+    }
+
+    result = create_pr(state, DestinationWithUrl())
+
+    assert result["output"]["url"] == "https://artifacts.example/run/1"
 
 
 def test_cleanup_recovers_repository_for_old_git_checkpoint(monkeypatch, tmp_path):
