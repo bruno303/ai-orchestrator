@@ -62,6 +62,8 @@ class TaskStore:
         for column, ddl in (
             ("current_node", "TEXT"),
             ("node_started_at", "TEXT"),
+            ("input_provider", "TEXT"),
+            ("output_provider", "TEXT"),
         ):
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {ddl}")
@@ -103,6 +105,8 @@ class TaskStore:
         branch: str | None = None,
         pr_number: int | None = None,
         error: str | None = None,
+        input_provider: str | None = None,
+        output_provider: str | None = None,
     ) -> None:
         fields: list[str] = []
         values: list[object] = []
@@ -121,6 +125,12 @@ class TaskStore:
         if error is not None:
             fields.append("error = ?")
             values.append(error)
+        if input_provider is not None:
+            fields.append("input_provider = ?")
+            values.append(input_provider)
+        if output_provider is not None:
+            fields.append("output_provider = ?")
+            values.append(output_provider)
         if not fields:
             return
         fields.append("updated_at = datetime('now')")
