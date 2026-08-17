@@ -6,20 +6,12 @@ import pytest
 
 from orchestrator import opencode
 from orchestrator.config import OPENCODE_BIN
-from orchestrator.providers import ExecutionRequest, ExecutionResult
 
 
 def test_run_opencode_success(tmp_path, clean_env):
     result = opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
     assert result.exit_code == 0
     assert "Plan written" in result.stdout
-
-
-def test_opencode_executor_adapts_run_result(tmp_path, clean_env):
-    result = opencode.OpenCodeExecutor().execute(
-        ExecutionRequest("task-1", str(tmp_path), "planning the implementation of issue", "plan")
-    )
-    assert result == ExecutionResult(True, 0, stdout=result.stdout, duration_seconds=result.duration_seconds)
 
 
 def test_run_opencode_passes_flags(tmp_path, clean_env, monkeypatch):

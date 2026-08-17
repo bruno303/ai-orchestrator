@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import inspect
 import re
 import sys
 import time
@@ -12,7 +11,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orchestrator import config, git, github, state as state_mod, workspace
-from orchestrator.application import PollingApplication, compose_runtime
 from orchestrator.graph import build_graph
 from orchestrator.persistence import PersistenceError, TaskStore
 
@@ -32,9 +30,11 @@ def _seed_state(store: TaskStore, repository: str, issue_number: int) -> dict:
     store.create_task(task_id, repository, issue_number)
     return {
         "task_id": task_id,
-        "input": {"provider": "github", "data": {"repository": repository, "number": issue_number,
-            "title": issue.title, "body": issue.body}, "provider_state": {}},
-        "processing": {}, "workspace": {"branch": f"ai/issue-{issue_number}"}, "output": {},
+        "repository": repository,
+        "issue_number": issue_number,
+        "issue_title": issue.title,
+        "issue_body": issue.body,
+        "branch": f"ai/issue-{issue_number}",
         "status": state_mod.RECEIVED,
         "iteration": 1,
         "phase_attempts": 1,
@@ -45,27 +45,13 @@ def _now() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _run_graph(
-    store: TaskStore,
-    seed: dict | None,
-    task_id: str,
-    *,
-    executor=None,
-    workspace_manager=None,
-    destination=None,
-) -> dict:
+def _run_graph(store: TaskStore, seed: dict | None, task_id: str) -> dict:
     """Run (or resume) the graph, streaming per-node progress to stdout and DB.
 
     The graph is built per run so the heartbeat callback knows the task_id.
     Status persistence is best-effort: a PersistenceError never crashes the run
     (the LangGraph checkpoint remains the source of truth).
     """
-    if executor is None and workspace_manager is None and destination is None:
-        runtime = compose_runtime(store)
-        executor = runtime.executor
-        workspace_manager = runtime.workspace_manager
-        destination = runtime.destination
-
     node_starts: dict[str, float] = {}
 
     def on_node_start(node: str, state: dict) -> None:
@@ -76,16 +62,7 @@ def _run_graph(
         except PersistenceError as exc:
             print(f"[{_now()}] [{node}] warning: heartbeat failed: {exc}", flush=True)
 
-    graph_kwargs = {"on_node_start": on_node_start}
-    supported = inspect.signature(build_graph).parameters
-    for name, value in (
-        ("executor", executor),
-        ("workspace_manager", workspace_manager),
-        ("destination", destination),
-    ):
-        if value is not None and (name in supported or any(p.kind == p.VAR_KEYWORD for p in supported.values())):
-            graph_kwargs[name] = value
-    graph = build_graph(store.checkpointer(), **graph_kwargs)
+    graph = build_graph(store.checkpointer(), on_node_start=on_node_start)
     config_dict = {"configurable": {"thread_id": task_id}}
     for chunk in graph.stream(seed, config=config_dict, stream_mode="updates"):
         for node, update in chunk.items():
@@ -98,12 +75,10 @@ def _run_graph(
                     store.update_task(
                         task_id,
                         status=status,
-                        workspace=(update.get("workspace") or {}).get("path") if isinstance(update.get("workspace"), dict) else update.get("workspace"),
-                        branch=(update.get("workspace") or {}).get("branch") if isinstance(update.get("workspace"), dict) else update.get("branch"),
-                        pr_number=(update.get("output") or {}).get("provider_state", {}).get("pr_number") if isinstance(update.get("output"), dict) else update.get("pr_number"),
+                        workspace=update.get("workspace"),
+                        branch=update.get("branch"),
+                        pr_number=update.get("pr_number"),
                         error=update.get("error"),
-                        input_provider=(update.get("input") or {}).get("provider"),
-                        output_provider=(update.get("output") or {}).get("provider"),
                     )
                     workspace.append_event(
                         task_id,
@@ -231,31 +206,15 @@ def cmd_reset(args: argparse.Namespace) -> None:
     print(f"[{_now()}] reset {task_id}: deleted; will re-run on next poll", flush=True)
 
 
-def _result_pr_number(result: dict) -> int | None:
-    """Read the canonical PR number, with a fallback for pre-Task 5 results."""
-    output = result.get("output")
-    if isinstance(output, dict):
-        provider_state = output.get("provider_state")
-        if isinstance(provider_state, dict):
-            return provider_state.get("pr_number")
-        return None
-    if "output" not in result:
-        return result.get("pr_number")
-    return None
-
-
 def _persist_result(store: TaskStore, result: dict) -> None:
     status = result.get("status", state_mod.FAILED)
-    pr_number = _result_pr_number(result)
     store.update_task(
         result["task_id"],
         status=status,
-        workspace=(result.get("workspace") or {}).get("path") if isinstance(result.get("workspace"), dict) else result.get("workspace"),
-        branch=(result.get("workspace") or {}).get("branch") if isinstance(result.get("workspace"), dict) else result.get("branch"),
-        pr_number=pr_number,
+        workspace=result.get("workspace"),
+        branch=result.get("branch"),
+        pr_number=result.get("pr_number"),
         error=result.get("error") if status != state_mod.COMPLETED else None,
-        input_provider=(result.get("input") or {}).get("provider"),
-        output_provider=(result.get("output") or {}).get("provider"),
     )
     if status == state_mod.COMPLETED:
         store.clear_error(result["task_id"])
@@ -264,11 +223,11 @@ def _persist_result(store: TaskStore, result: dict) -> None:
         result["task_id"],
         event="task_end",
         status=status,
-        pr_number=pr_number,
+        pr_number=result.get("pr_number"),
         error=(result.get("error") or "")[:200] if status != state_mod.COMPLETED else None,
     )
     if status == state_mod.COMPLETED:
-        print(f"[{_now()}] COMPLETED: PR #{pr_number} for {result['task_id']}")
+        print(f"[{_now()}] COMPLETED: PR #{result['pr_number']} for {result['task_id']}")
     else:
         print(f"[{_now()}] {status}: {result.get('error', 'no error')}")
 
@@ -413,26 +372,10 @@ def cmd_poll(args: argparse.Namespace) -> None:
     lock_fd = _acquire_poll_lock()
     try:
         store = TaskStore()
-        runtime = compose_runtime(store)
-        application = PollingApplication(
-            store,
-            runtime.input_source,
-            lambda current_store, seed, task_id: _run_graph(
-                current_store,
-                seed,
-                task_id,
-                executor=runtime.executor,
-                workspace_manager=runtime.workspace_manager,
-                destination=runtime.destination,
-            ),
-            _persist_result,
-            _reset_task,
-            now=_now,
-        )
         while True:
             _detect_stale_tasks(store)
             try:
-                application.poll_once(args.once)
+                _poll_once(store, args.once)
             except PersistenceError as exc:
                 print(f"[{_now()}] poll: persistence error (continuing): {exc}", flush=True)
             if args.once:
@@ -494,9 +437,11 @@ def _poll_once(store: TaskStore, once: bool) -> None:
             print(f"[{_now()}] new issue: {repository}#{issue.number} - {issue.title}")
             seed = {
                 "task_id": f"{repository}#{issue.number}",
-                "input": {"provider": "github", "data": {"repository": repository, "number": issue.number,
-                    "title": issue.title, "body": issue.body}, "provider_state": {}},
-                "processing": {}, "workspace": {"branch": f"ai/issue-{issue.number}"}, "output": {},
+                "repository": repository,
+                "issue_number": issue.number,
+                "issue_title": issue.title,
+                "issue_body": issue.body,
+                "branch": f"ai/issue-{issue.number}",
                 "status": state_mod.RECEIVED,
                 "iteration": 1,
                 "phase_attempts": 1,
@@ -623,13 +568,16 @@ def _trigger_comment_run(
     context.append(comment.body)
     seed = {
         "task_id": task_id,
-        "input": {"provider": "github", "data": {"repository": repository, "number": issue_number,
-            "title": issue.title, "body": issue.body, "extra_context": context,
-            "pr_number": found_pr}, "provider_state": {}},
-        "processing": {}, "workspace": {"branch": f"ai/issue-{issue_number}"}, "output": {},
+        "repository": repository,
+        "issue_number": issue_number,
+        "issue_title": issue.title,
+        "issue_body": issue.body,
+        "branch": f"ai/issue-{issue_number}",
         "status": state_mod.RECEIVED,
         "iteration": 1,
         "phase_attempts": 1,
+        "pr_number": found_pr,
+        "extra_context": context,
     }
 
     store.create_task(task_id, repository, issue_number)

@@ -7,16 +7,8 @@ import shutil
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
 
 import yaml
-
-from orchestrator.providers import (
-    DESTINATION_PROVIDERS,
-    EXECUTOR_PROVIDERS,
-    INPUT_PROVIDERS,
-    WORKSPACE_PROVIDERS,
-)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", REPO_ROOT / "data"))
@@ -69,63 +61,6 @@ class ModelConfig:
 
     name: str | None
     variant: str | None
-
-
-@dataclass(frozen=True)
-class ProviderConfig:
-    type: str
-    options: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class PipelineConfig:
-    input_source: ProviderConfig
-    executor: ProviderConfig
-    workspace_manager: ProviderConfig
-    destination: ProviderConfig
-
-
-_PIPELINE_DEFAULTS = {
-    "input_source": ("input", "github_polling"),
-    "executor": ("executor", "opencode"),
-    "workspace_manager": ("workspace", "git"),
-    "destination": ("destination", "github"),
-}
-
-
-def _provider_config(key: str, pipeline: dict[str, Any]) -> ProviderConfig:
-    section_name, default_type = _PIPELINE_DEFAULTS[key]
-    raw = pipeline.get(key, pipeline.get(section_name)) or {}
-    if isinstance(raw, str):
-        provider_type, options = raw, {}
-    else:
-        provider_type = raw.get("type", default_type)
-        options = {k: v for k, v in raw.items() if k != "type"}
-    registries = {
-        "input_source": INPUT_PROVIDERS,
-        "executor": EXECUTOR_PROVIDERS,
-        "workspace_manager": WORKSPACE_PROVIDERS,
-        "destination": DESTINATION_PROVIDERS,
-    }
-    registries[key].get(provider_type)
-    return ProviderConfig(type=provider_type, options=options)
-
-
-@lru_cache(maxsize=1)
-def load_pipeline_config() -> PipelineConfig:
-    """Load provider selections from the optional ``pipeline`` config section."""
-    if not CONFIG_FILE.exists():
-        data = {}
-    else:
-        with CONFIG_FILE.open() as fh:
-            data = yaml.safe_load(fh) or {}
-    pipeline = data.get("pipeline") or {}
-    return PipelineConfig(
-        input_source=_provider_config("input_source", pipeline),
-        executor=_provider_config("executor", pipeline),
-        workspace_manager=_provider_config("workspace_manager", pipeline),
-        destination=_provider_config("destination", pipeline),
-    )
 
 
 def _parse_bool(value: str | bool | None, default: bool = False) -> bool:
