@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator import config, state as state_mod, workspace
-from orchestrator.graph import build_graph, cleanup, create_pr, parse_verdict, prepare_workspace
+from orchestrator.graph import _run_opencode, build_graph, cleanup, create_pr, parse_verdict, prepare_workspace
 from orchestrator.persistence import TaskStore
 from orchestrator.providers import ExecutionResult, PublicationResult, WorkspaceResult
 
@@ -97,6 +97,38 @@ def test_opencode_failure_fails_task(remote_repo, allowlist, store, monkeypatch)
     assert result["phase_attempts"] == 1
     # Cleanup only runs on success: the worktree is kept for debugging.
     assert workspace.task_workspace("company/backend", 2).exists()
+
+
+def test_executor_reported_failure_fails_even_with_zero_exit_code(remote_repo, allowlist, store):
+    class FailingExecutor:
+        def execute(self, request):
+            return ExecutionResult(False, 0, provider_state={"executor_run": "rejected"})
+
+    graph = build_graph(store.checkpointer(), executor=FailingExecutor())
+    result = graph.invoke(_seed(remote_repo, 13), config={"configurable": {"thread_id": "company/backend#13"}})
+
+    assert result["status"] == state_mod.FAILED
+    assert "reported failure" in result["error"]
+    assert result["processing"]["provider_state"] == {"executor_run": "rejected"}
+
+
+def test_executor_provider_state_is_forwarded_to_next_phase(tmp_path):
+    calls: list[dict] = []
+
+    class StatefulExecutor:
+        def execute(self, request):
+            calls.append(request.provider_state)
+            return ExecutionResult(True, 0, provider_state={"session_id": "session-1"})
+
+    state = {
+        "task_id": "company/backend#14",
+        "workspace": {"path": str(tmp_path)},
+        "processing": {},
+    }
+    first_update, _ = _run_opencode(state, "plan", "plan", "plan", StatefulExecutor())
+    _run_opencode({**state, **first_update}, "implement", "build", "implement", StatefulExecutor())
+
+    assert calls[1]["session_id"] == "session-1"
 
 
 def test_opencode_error_fails_task_with_current_attempt(remote_repo, allowlist, store, monkeypatch):

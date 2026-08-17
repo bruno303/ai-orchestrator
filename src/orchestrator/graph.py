@@ -118,6 +118,9 @@ def _run_opencode(
             f"model={model_label}, variant={variant_label}, log={log_path})",
             flush=True,
         )
+        previous_provider_state = validate_provider_state(
+            _processing(state).get("provider_state", {})
+        )
         try:
             result = executor.execute(
                 ExecutionRequest(
@@ -128,6 +131,7 @@ def _run_opencode(
                     model=model,
                     variant=variant,
                     provider_state={
+                        **previous_provider_state,
                         "log_file": str(log_path),
                         "detect_degenerate": config.MODEL_FALLBACK_ENABLED,
                     },
@@ -164,7 +168,9 @@ def _run_opencode(
             )
             return {**_fail(state, str(exc)), "phase_attempts": attempt}, None
         try:
-            provider_state = validate_provider_state(result.provider_state)
+            provider_state = validate_provider_state(
+                {**previous_provider_state, **result.provider_state}
+            )
         except TypeError as exc:
             return {**_fail(state, str(exc)), "phase_attempts": attempt}, None
         print(
@@ -172,10 +178,15 @@ def _run_opencode(
             f"(exit={result.exit_code}, attempt={attempt}, model={model_label}, variant={variant_label})",
             flush=True,
         )
-        if result.exit_code != 0:
+        if not result.success or result.exit_code != 0:
+            error = (
+                f"{node} executor ({agent}) reported failure"
+                if result.exit_code == 0
+                else f"opencode ({agent}) exited with {result.exit_code}"
+            )
             return (
                 {
-                    **_fail(state, f"opencode ({agent}) exited with {result.exit_code}"),
+                    **_fail(state, error),
                     "phase_attempts": attempt,
                     "processing": _processing(state, {"provider_state": provider_state}),
                 },

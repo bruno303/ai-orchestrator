@@ -55,3 +55,23 @@ def test_configured_input_provider_identity_is_persisted(tmp_path):
 
     assert seeds[0]["input"]["provider"] == "custom_input"
     assert "provider" not in seeds[0]
+
+
+def test_issue_event_is_skipped_if_task_was_created_by_an_earlier_event(tmp_path):
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    started = []
+    store.create_task("r#3", "r", 3)
+    event = InputEvent("issue:r#3", "r", "Fix", number=3, metadata={"kind": "issue"})
+
+    app = PollingApplication(
+        store,
+        FakeSource([event]),
+        lambda *args: started.append(args),
+        lambda *args: None,
+        lambda *args: None,
+    )
+    app.poll_once(once=True)
+
+    assert started == []

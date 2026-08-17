@@ -104,6 +104,10 @@ class PollingApplication:
 
     def _run_issue(self, event: InputEvent) -> None:
         task_id = f"{event.repository}#{event.number}"
+        # A command comment for the same issue may have been processed earlier
+        # in this polling snapshot.
+        if self.store.exists(event.repository, event.number):
+            return
         seed = _input_seed(event, task_id, provider=_input_provider(self.input_source))
         print(f"[{self.now()}] new issue: {task_id} - {event.title}")
         self.store.create_task(task_id, event.repository, event.number)
