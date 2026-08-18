@@ -6,6 +6,7 @@ from typing import Any
 
 from orchestrator import git, github
 from orchestrator.providers import PublicationRequest, PublicationResult
+from orchestrator.review import findings
 
 
 def _review_section(provider_state: dict) -> str | None:
@@ -13,17 +14,10 @@ def _review_section(provider_state: dict) -> str | None:
     result = provider_state.get("review_result")
     if not verdict or verdict == "APPROVED" or not result:
         return None
-    findings: list[str] = []
-    in_findings = False
-    for raw_line in result.splitlines():
-        line = raw_line.strip()
-        if line.startswith("FINDINGS:"):
-            in_findings = True
-        elif in_findings and line.startswith("- "):
-            findings.append(line[2:].strip())
-    if not findings:
+    review_findings = findings(result)
+    if not review_findings:
         return None
-    return "\n".join(["## Last Review report", f"- status: {verdict}", "- findings:", *[f"  - {item}" for item in findings]])
+    return "\n".join(["## Last Review report", f"- status: {verdict}", "- findings:", *[f"  - {item}" for item in review_findings]])
 
 
 def _body(issue_number: int, provider_state: dict, current_body: str | None = None) -> str:

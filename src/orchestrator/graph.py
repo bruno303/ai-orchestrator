@@ -16,6 +16,7 @@ from orchestrator.providers import (
     Destination, ExecutionRequest, ExecutionResult, Executor, PublicationRequest,
     WorkspaceManager, WorkspaceRequest, WorkspaceResult, validate_provider_state,
 )
+from orchestrator.review import findings
 from orchestrator.state import TaskState
 
 PLAN_FILE = ".agents/plans/plan.md"
@@ -481,27 +482,6 @@ def parse_verdict(output: str) -> str:
     return match.group(1) if match else state_mod.VERDICT_NEEDS_CLARIFICATION
 
 
-def _review_findings(output: str) -> list[str]:
-    findings: list[str] = []
-    in_findings = False
-    for raw_line in output.splitlines():
-        line = raw_line.strip()
-        if not line:
-            if in_findings:
-                continue
-            continue
-        if line.startswith("FINDINGS:"):
-            in_findings = True
-            continue
-        if re.match(r"^[A-Z_]+:\s*", line):
-            if in_findings:
-                break
-            continue
-        if in_findings and line.startswith("- "):
-            findings.append(line[2:].strip())
-    return findings
-
-
 def _review_section(state: TaskState) -> str | None:
     """Markdown section for a non-approved review, or None if there is nothing to flag."""
     processing = _processing(state)
@@ -509,11 +489,11 @@ def _review_section(state: TaskState) -> str | None:
     result = processing.get("review_result")
     if not verdict or verdict == state_mod.VERDICT_APPROVED or not result:
         return None
-    findings = _review_findings(result)
-    if not findings:
+    review_findings = findings(result)
+    if not review_findings:
         return None
     lines = ["## Last Review report", f"- status: {verdict}", "- findings:"]
-    lines.extend(f"  - {finding}" for finding in findings)
+    lines.extend(f"  - {finding}" for finding in review_findings)
     return "\n".join(lines)
 
 

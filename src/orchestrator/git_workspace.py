@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,4 @@ class GitWorkspaceManager:
         repo_dir = Path(provider_state.get("repo_dir") or git.base_repo_dir(provider_state["repository"]))
         git.remove_worktree(repo_dir, Path(result.workspace), result.branch)
         if Path(result.workspace).exists():
-            import shutil
-
             shutil.rmtree(Path(result.workspace), ignore_errors=True)

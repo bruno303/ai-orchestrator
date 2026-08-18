@@ -101,6 +101,9 @@ class PollingApplication:
                 return
 
     def _run_issue(self, event: InputEvent) -> None:
+        if event.number is None:
+            print(f"[{self.now()}] skipping issue event without a number: {event.event_id}", flush=True)
+            return
         task_id = f"{event.repository}#{event.number}"
         # A command comment for the same issue may have been processed earlier
         # in this polling snapshot.
@@ -112,7 +115,10 @@ class PollingApplication:
         self.persist_result(self.store, self.run_graph(self.store, seed, task_id))
 
     def _run_comment(self, event: InputEvent) -> None:
-        comment = event.metadata["comment"]
+        comment = event.metadata.get("comment")
+        if comment is None or event.number is None:
+            print(f"[{self.now()}] skipping malformed comment event: {event.event_id}", flush=True)
+            return
         task_id = f"{event.repository}#{event.number}"
         task = self.store.get_task(task_id)
         if task and task["status"] in self._active_statuses():

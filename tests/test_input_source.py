@@ -75,3 +75,41 @@ def test_issue_event_is_skipped_if_task_was_created_by_an_earlier_event(tmp_path
     app.poll_once(once=True)
 
     assert started == []
+
+
+def test_malformed_comment_event_does_not_crash_polling(tmp_path):
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    started = []
+    event = InputEvent("comment:1", "r", "", number=1, metadata={"kind": "comment"})
+    app = PollingApplication(
+        store,
+        FakeSource([event]),
+        lambda *args: started.append(args),
+        lambda *args: None,
+        lambda *args: None,
+    )
+
+    app.poll_once(once=True)
+
+    assert started == []
+
+
+def test_issue_without_number_is_skipped_polling(tmp_path):
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    started = []
+    event = InputEvent("issue:unknown", "r", "Fix", number=None, metadata={"kind": "issue"})
+    app = PollingApplication(
+        store,
+        FakeSource([event]),
+        lambda *args: started.append(args),
+        lambda *args: None,
+        lambda *args: None,
+    )
+
+    app.poll_once(once=True)
+
+    assert started == []
