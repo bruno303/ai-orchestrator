@@ -20,7 +20,7 @@ uv sync
 ## Configuration
 
 Edit `config/repositories.yaml` — only repositories listed here can trigger the
-orchestrator (enforced by the CLI, the poller, and the graph itself):
+orchestrator (enforced by the CLI, the executor, and the graph itself):
 
 ```yaml
 repositories:
@@ -83,8 +83,8 @@ Paths, limits, model and loop detection (env overrides):
 # Run one issue through the full pipeline
 orchestrator run company/backend#123
 
-# Poll allowed repos for new open issues (loop, or --once)
-orchestrator poll --once
+# Execute issue and review workflows for allowed repos (loop, or --once)
+orchestrator execute --once
 
 # Poll open pull requests for provider-neutral AI reviews (loop, or --once)
 orchestrator review --once
@@ -104,7 +104,7 @@ orchestrator watch                                    # live table of all tasks
 
 ## Comment triggers (`/ai-agent`)
 
-While polling, the orchestrator also scans comments on open issues **and** open
+While executing, the orchestrator also scans comments on open issues **and** open
 PRs. A comment starting with the repo's `command` prefix (default `/ai-agent`)
 triggers a full re-run of the task with the comment body added as extra context:
 
@@ -123,7 +123,7 @@ pipeline: an input source selects pull requests, an executor inspects the
 checkout, and a destination publishes the result. Configure it under the
 `pipeline.review` section when it should differ from the main pipeline; it
 otherwise inherits the configured providers. Run it continuously with
-`make review` or once with `orchestrator review --once`. `orchestrator poll`
+`make review` or once with `orchestrator review --once`. `orchestrator execute`
 also runs one review pass on every poll iteration.
 
 The GitHub input source skips pull requests carrying the processed label
@@ -143,7 +143,7 @@ The runtime is provider-neutral at its four integration boundaries:
 InputSource -> Workflow -> Executor / WorkspaceManager -> Destination
 ```
 
-The default pipeline is GitHub polling, OpenCode, Git workspaces, and the GitHub
+The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the GitHub
 destination. New seeds and graph updates write only the `input`, `processing`,
 `workspace`, and `output` state namespaces. This keeps LangGraph checkpoints
 serializable and lets a provider retain its own metadata without adding

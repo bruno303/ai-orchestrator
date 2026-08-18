@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator import github
-from orchestrator.main import _parse_ref, cmd_poll
+from orchestrator.main import _parse_ref, cmd_execute as cmd_poll
 
 
 class FakeGraph:
@@ -261,7 +261,7 @@ def test_reset_deletes_task(allowlist, tmp_path, monkeypatch, capsys):
     row = store.conn.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id = 'company/backend#7'").fetchone()[0]
     assert row == 0
     assert started == []
-    assert "deleted; will re-run on next poll" in capsys.readouterr().out
+    assert "deleted; will re-run on next execute" in capsys.readouterr().out
 
 
 def test_poll_reruns_deleted_task(allowlist, tmp_path, monkeypatch, capsys):
@@ -744,7 +744,7 @@ def test_poll_second_instance_exits(allowlist, tmp_path, monkeypatch, capsys):
     lock = main._acquire_poll_lock()  # hold the lock as the "first" poll
     monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
     with pytest.raises(SystemExit) as exc:
-        main.cmd_poll(type("A", (), {"once": True})())
+        main.cmd_execute(type("A", (), {"once": True})())
     assert "already running" in str(exc.value)
     lock.close()
 
@@ -823,9 +823,9 @@ def test_main_handles_keyboard_interrupt(monkeypatch, capsys):
     def boom(args):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(main_mod, "cmd_poll", boom)
+    monkeypatch.setattr(main_mod, "cmd_execute", boom)
     with pytest.raises(SystemExit) as exc:
-        main_mod.main(["poll"])
+        main_mod.main(["execute"])
     assert exc.value.code == 130
     out = capsys.readouterr().out
     assert "interrupted" in out
