@@ -185,6 +185,10 @@ class PullRequestDetail:
     base_ref: str
     head_ref: str
     files: list[tuple[str, str]]  # (path, status)
+    labels: list[str] = field(default_factory=list)
+    head_sha: str = ""
+    head_clone_url: str = ""
+    changed_lines: dict[str, dict[str, list[int]]] = field(default_factory=dict)
 
 
 def list_open_pull_requests(repository: str) -> list[PullRequest]:
@@ -217,7 +221,7 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
             "--repo",
             repository,
             "--json",
-            "number,title,body,url,baseRefName,headRefName,files",
+            "number,title,body,url,baseRefName,headRefName,headRefOid,headRepository,files,labels",
         ]
     )
     data = json.loads(out)
@@ -233,7 +237,98 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
             for f in data.get("files") or []
             if isinstance(f, dict)
         ],
+        labels=[label.get("name", "") for label in data.get("labels") or [] if isinstance(label, dict)],
+        head_sha=data.get("headRefOid") or "",
+        head_clone_url=((data.get("headRepository") or {}).get("sshUrl") or ""),
+        changed_lines=_changed_lines(data.get("files") or []),
     )
+
+
+def _changed_lines(files: list[dict]) -> dict[str, dict[str, list[int]]]:
+    """Extract line ranges GitHub accepts for inline review comments."""
+    result: dict[str, dict[str, list[int]]] = {}
+    for file in files:
+        path = file.get("path") or ""
+        right: list[int] = []
+        left: list[int] = []
+        old = new = 0
+        for line in (file.get("patch") or "").splitlines():
+            if line.startswith("@@"):
+                import re
+                match = re.search(r"-(\d+)(?:,\d+)? \+(\d+)(?:,\d+)?", line)
+                if match:
+                    old, new = int(match.group(1)), int(match.group(2))
+                continue
+            if line.startswith("+") and not line.startswith("+++"):
+                right.append(new); new += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                left.append(old); old += 1
+            elif line.startswith(" "):
+                old += 1; new += 1
+        if path:
+            result[path] = {"LEFT": left, "RIGHT": right}
+    return result
+
+
+def add_pull_request_label(repository: str, number: int, label: str) -> None:
+    """Add a label to a pull request."""
+    _run_gh(["api", f"repos/{repository}/issues/{number}/labels", "-f", f"labels[]={label}"])
+
+
+def remove_pull_request_label(repository: str, number: int, label: str) -> None:
+    """Remove a label from a pull request when it exists."""
+    try:
+        _run_gh(["api", "--method", "DELETE", f"repos/{repository}/issues/{number}/labels/{label}"])
+    except GitHubError as exc:
+        # GitHub returns 404 when the label is already absent; removal is
+        # intentionally idempotent for polling/retry workflows.
+        message = str(exc).lower()
+        if "404" not in message and "not found" not in message:
+            raise
+
+
+@dataclass
+class ReviewComment:
+    id: int
+    body: str
+    user_login: str
+    path: str = ""
+    line: int | None = None
+
+
+def list_pull_request_review_comments(repository: str, number: int) -> list[ReviewComment]:
+    """List inline review comments on a pull request."""
+    out = _api(f"repos/{repository}/pulls/{number}/comments?per_page=100", paginate=True)
+    return [
+        ReviewComment(
+            id=item["id"], body=item.get("body") or "",
+            user_login=(item.get("user") or {}).get("login") or "",
+            path=item.get("path") or "", line=item.get("line"),
+        )
+        for item in json.loads(out or "[]")
+    ]
+
+
+def publish_pull_request_review(
+    repository: str,
+    number: int,
+    body: str,
+    comments: list[dict] | None = None,
+    event: str = "COMMENT",
+) -> None:
+    """Publish a review summary and optional inline comments in one API call."""
+    payload = {"body": body, "event": event, "comments": comments or []}
+    _run_gh(
+        ["api", "--method", "POST", f"repos/{repository}/pulls/{number}/reviews", "--input", "-"],
+        input_text=json.dumps(payload),
+    )
+
+
+# Short aliases keep the adapter vocabulary convenient for callers.
+add_label = add_pull_request_label
+remove_label = remove_pull_request_label
+list_review_comments = list_pull_request_review_comments
+create_pull_request_review = publish_pull_request_review
 
 
 REACTION_CONTENTS = ("+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes")

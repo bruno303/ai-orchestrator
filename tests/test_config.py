@@ -7,6 +7,7 @@ from orchestrator import config
 
 def _clear_pipeline_cache():
     config.load_pipeline_config.cache_clear()
+    config.load_review_pipeline_config.cache_clear()
 
 
 def test_model_config_parses(model_config):
@@ -50,6 +51,8 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.executor.type == "opencode"
     assert pipeline.workspace_manager.type == "git"
     assert pipeline.destination.type == "github"
+    assert pipeline.review.workspace_manager.type == "git"
+    assert pipeline.review.workspace_manager.options == {}
 
 
 def test_pipeline_config_parses_provider_options(allowlist):
@@ -68,6 +71,33 @@ def test_pipeline_config_parses_provider_options(allowlist):
     pipeline = config.load_pipeline_config()
     assert pipeline.input_source.options == {"interval": 30}
     assert pipeline.executor.options == {}
+    assert pipeline.review.workspace_manager.options == {}
+
+
+def test_review_pipeline_config_preserves_and_overrides_workspace_options(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  workspace:\n"
+        "    type: git\n"
+        "    root: /tmp/shared\n"
+        "  review:\n"
+        "    workspace_manager:\n"
+        "      type: git\n"
+        "      root: /tmp/reviews\n"
+    )
+    _clear_pipeline_cache()
+    review = config.load_review_pipeline_config()
+    assert review.workspace_manager.type == "git"
+    assert review.workspace_manager.options == {"root": "/tmp/reviews"}
+
+
+def test_clearing_pipeline_cache_refreshes_review_config(allowlist):
+    config.CONFIG_FILE.write_text("pipeline:\n  workspace:\n    type: git\n    root: /tmp/old\n")
+    _clear_pipeline_cache()
+    assert config.load_review_pipeline_config().workspace_manager.options == {"root": "/tmp/old"}
+    config.CONFIG_FILE.write_text("pipeline:\n  workspace:\n    type: git\n    root: /tmp/new\n")
+    config.load_pipeline_config.cache_clear()
+    assert config.load_review_pipeline_config().workspace_manager.options == {"root": "/tmp/new"}
 
 
 def test_pipeline_config_rejects_unknown_provider(allowlist):

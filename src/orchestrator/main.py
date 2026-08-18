@@ -1,4 +1,4 @@
-"""CLI: run / poll / list / status / resume."""
+"""CLI: run / poll / review / list / status / resume."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from orchestrator import config, git, github, state as state_mod, workspace
 from orchestrator.application import PollingApplication, compose_runtime
 from orchestrator.graph import build_graph
 from orchestrator.persistence import PersistenceError, TaskStore
+from orchestrator.review import compose_review_runtime
 
 ISSUE_REF_RE = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
 
@@ -421,11 +422,36 @@ def _detect_stale_tasks(store: TaskStore) -> None:
         store.update_task(task_id, status=state_mod.FAILED, error="process died (stale task)")
 
 
+def _poll_reviews(review_application) -> None:
+    try:
+        review_application.poll_once()
+    except Exception as exc:
+        # Review input providers are independent from issue polling.
+        print(f"[{_now()}] review poll error (continuing): {exc}", flush=True)
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    """Poll configured pull-request reviews without polling issues."""
+    lock_fd = _acquire_poll_lock()
+    try:
+        store = TaskStore()
+        review_application = compose_review_runtime(store)
+        while True:
+            _poll_reviews(review_application)
+            if args.once:
+                break
+            print(f"[{_now()}] review: next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
+            time.sleep(config.POLL_INTERVAL_SECONDS)
+    finally:
+        lock_fd.close()
+
+
 def cmd_poll(args: argparse.Namespace) -> None:
     lock_fd = _acquire_poll_lock()
     try:
         store = TaskStore()
         runtime = compose_runtime(store)
+        review_application = compose_review_runtime(store)
         application = PollingApplication(
             store,
             runtime.input_source,
@@ -448,6 +474,7 @@ def cmd_poll(args: argparse.Namespace) -> None:
                 application.poll_once(args.once)
             except PersistenceError as exc:
                 print(f"[{_now()}] poll: persistence error (continuing): {exc}", flush=True)
+            _poll_reviews(review_application)
             if args.once:
                 break
             print(f"[{_now()}] poll: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
@@ -478,6 +505,10 @@ def main(argv: list[str] | None = None) -> None:
     p_poll = sub.add_parser("poll", help="poll allowed repos for new issues")
     p_poll.add_argument("--once", action="store_true", help="single pass, then exit")
     p_poll.set_defaults(func=cmd_poll)
+
+    p_review = sub.add_parser("review", help="poll configured pull requests for reviews")
+    p_review.add_argument("--once", action="store_true", help="single pass, then exit")
+    p_review.set_defaults(func=cmd_review)
 
     p_list = sub.add_parser("list", help="list tasks")
     p_list.set_defaults(func=cmd_list)

@@ -16,6 +16,10 @@ from orchestrator.providers import (
     EXECUTOR_PROVIDERS,
     INPUT_PROVIDERS,
     WORKSPACE_PROVIDERS,
+    REVIEW_DESTINATION_PROVIDERS,
+    REVIEW_EXECUTOR_PROVIDERS,
+    REVIEW_INPUT_PROVIDERS,
+    REVIEW_WORKSPACE_PROVIDERS,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -83,6 +87,15 @@ class PipelineConfig:
     executor: ProviderConfig
     workspace_manager: ProviderConfig
     destination: ProviderConfig
+    review: "ReviewPipelineConfig"
+
+
+@dataclass(frozen=True)
+class ReviewPipelineConfig:
+    input_source: ProviderConfig
+    executor: ProviderConfig
+    workspace_manager: ProviderConfig
+    destination: ProviderConfig
 
 
 _PIPELINE_DEFAULTS = {
@@ -90,6 +103,10 @@ _PIPELINE_DEFAULTS = {
     "executor": ("executor", "opencode"),
     "workspace_manager": ("workspace", "git"),
     "destination": ("destination", "github"),
+    "review_input_source": ("input_source", "github_polling"),
+    "review_executor": ("executor", "opencode"),
+    "review_workspace_manager": ("workspace_manager", "git"),
+    "review_destination": ("destination", "github"),
 }
 
 
@@ -106,9 +123,21 @@ def _provider_config(key: str, pipeline: dict[str, Any]) -> ProviderConfig:
         "executor": EXECUTOR_PROVIDERS,
         "workspace_manager": WORKSPACE_PROVIDERS,
         "destination": DESTINATION_PROVIDERS,
+        "review_input_source": REVIEW_INPUT_PROVIDERS,
+        "review_executor": REVIEW_EXECUTOR_PROVIDERS,
+        "review_workspace_manager": REVIEW_WORKSPACE_PROVIDERS,
+        "review_destination": REVIEW_DESTINATION_PROVIDERS,
     }
     registries[key].get(provider_type)
     return ProviderConfig(type=provider_type, options=options)
+
+
+_REVIEW_DEFAULTS = {
+    "review_input_source": ("input_source", "github_polling"),
+    "review_executor": ("executor", "opencode"),
+    "review_workspace_manager": ("workspace_manager", "git"),
+    "review_destination": ("destination", "github"),
+}
 
 
 @lru_cache(maxsize=1)
@@ -120,12 +149,40 @@ def load_pipeline_config() -> PipelineConfig:
         with CONFIG_FILE.open() as fh:
             data = yaml.safe_load(fh) or {}
     pipeline = data.get("pipeline") or {}
+    review = pipeline.get("review") or {}
+    review_pipeline = {
+        "review_input_source": review.get("input_source", pipeline.get("input_source")),
+        "review_executor": review.get("executor", pipeline.get("executor")),
+        "review_workspace_manager": review.get(
+            "workspace_manager", pipeline.get("workspace_manager", pipeline.get("workspace"))
+        ),
+        "review_destination": review.get("destination", pipeline.get("destination")),
+    }
+    for key, (section, default) in _REVIEW_DEFAULTS.items():
+        if review_pipeline[key] is None:
+            review_pipeline[key] = pipeline.get(section) or default
     return PipelineConfig(
         input_source=_provider_config("input_source", pipeline),
         executor=_provider_config("executor", pipeline),
         workspace_manager=_provider_config("workspace_manager", pipeline),
         destination=_provider_config("destination", pipeline),
+        review=ReviewPipelineConfig(
+            input_source=_provider_config("review_input_source", review_pipeline),
+            executor=_provider_config("review_executor", review_pipeline),
+            workspace_manager=_provider_config("review_workspace_manager", review_pipeline),
+            destination=_provider_config("review_destination", review_pipeline),
+        ),
     )
+
+
+def load_review_pipeline_config() -> ReviewPipelineConfig:
+    """Return the review provider configuration from the main pipeline config."""
+    return load_pipeline_config().review
+
+
+# Keep the historical cache-clear hook while deriving review config from the
+# single pipeline cache, so clearing it cannot leave a stale review snapshot.
+load_review_pipeline_config.cache_clear = load_pipeline_config.cache_clear  # type: ignore[attr-defined]
 
 
 def _parse_bool(value: str | bool | None, default: bool = False) -> bool:

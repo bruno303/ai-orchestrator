@@ -111,6 +111,56 @@ def test_poll_once_uses_configured_input_source_with_options(allowlist, tmp_path
     assert store.get_task("company/backend#1") is not None
 
 
+def test_poll_once_runs_issue_and_review_polling(allowlist, tmp_path, monkeypatch):
+    """A single poll pass executes both configured workflows."""
+    from orchestrator import config
+    from orchestrator.application import Runtime
+    from orchestrator.persistence import TaskStore
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "pipeline:\n  input_source: github_polling\n"
+    )
+    config.load_pipeline_config.cache_clear()
+    store = TaskStore(tmp_path / "db.sqlite")
+    calls: list[str] = []
+
+    class IssueInput:
+        def poll(self):
+            calls.append("issues")
+            return []
+
+    runtime = Runtime(IssueInput(), object(), object(), object())
+
+    class Reviews:
+        def poll_once(self):
+            calls.append("reviews")
+
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+    monkeypatch.setattr("orchestrator.main.compose_runtime", lambda current_store: runtime)
+    monkeypatch.setattr("orchestrator.main.compose_review_runtime", lambda current_store: Reviews())
+
+    cmd_poll(type("A", (), {"once": True})())
+
+    assert calls == ["issues", "reviews"]
+
+
+def test_review_once_cli_runs_review_only(allowlist, tmp_path, monkeypatch):
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    calls = []
+
+    class Reviews:
+        def poll_once(self):
+            calls.append("reviews")
+
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+    monkeypatch.setattr("orchestrator.main.compose_review_runtime", lambda current_store: Reviews())
+    main.main(["review", "--once"])
+    assert calls == ["reviews"]
+
+
 def test_run_force_resets_state(allowlist, tmp_path, monkeypatch):
     from orchestrator import main
     from orchestrator.persistence import TaskStore

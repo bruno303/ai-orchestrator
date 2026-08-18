@@ -86,6 +86,9 @@ orchestrator run company/backend#123
 # Poll allowed repos for new open issues (loop, or --once)
 orchestrator poll --once
 
+# Poll open pull requests for provider-neutral AI reviews (loop, or --once)
+orchestrator review --once
+
 # Inspect tasks
 orchestrator list
 orchestrator status company/backend#123
@@ -112,6 +115,25 @@ triggers a full re-run of the task with the comment body added as extra context:
   table); a failed run is not retried automatically — post a new comment to
   retry
 - PR comments only trigger for orchestrator branches (`ai/issue-*`)
+
+## Pull-request reviews
+
+The review pipeline is provider-neutral at the same boundaries as the issue
+pipeline: an input source selects pull requests, an executor inspects the
+checkout, and a destination publishes the result. Configure it under the
+`pipeline.review` section when it should differ from the main pipeline; it
+otherwise inherits the configured providers. Run it continuously with
+`make review` or once with `orchestrator review --once`. `orchestrator poll`
+also runs one review pass on every poll iteration.
+
+The GitHub input source skips pull requests carrying the processed label
+(`ai-reviewed` by default). The label is added only after the review comment
+has been published, so a failed review or publication is retried on the next
+poll. Remove that label to request a fresh review. Reviews publish one
+standard comment containing the verdict, summary, findings, and checks; valid
+findings on changed diff lines may also be published as inline comments.
+Inline comments are limited to lines GitHub reports as changed and do not
+support arbitrary unchanged-file locations.
 
 ## How it works
 

@@ -57,6 +57,11 @@ def fetch(repo_dir: Path) -> None:
     _run(["git", "fetch", "origin", "--prune"], cwd=repo_dir)
 
 
+def fetch_commit(repo_dir: Path, commit: str, remote: str = "origin") -> None:
+    """Fetch an immutable commit, including one advertised by a fork remote."""
+    _run(["git", "fetch", remote, commit], cwd=repo_dir)
+
+
 def detect_default_branch(repo_dir: Path) -> str:
     """Best-effort default branch detection (used for local repos without gh)."""
     proc = _run(
@@ -102,6 +107,14 @@ def create_worktree(repo_dir: Path, workspace: Path, branch: str, base_branch: s
         )
     if proc.returncode != 0:
         raise GitError(f"worktree add failed: {proc.stderr.strip()}")
+
+
+def create_detached_worktree(repo_dir: Path, workspace: Path, commit: str) -> None:
+    """Create an isolated, detached worktree at an immutable commit."""
+    if workspace.exists():
+        raise GitError(f"workspace already exists: {workspace}")
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    _run(["git", "worktree", "add", "--detach", str(workspace), commit], cwd=repo_dir)
 
 
 def commits_ahead(workspace: Path, base_branch: str) -> int:

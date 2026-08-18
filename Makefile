@@ -1,4 +1,4 @@
-.PHONY: help test run poll list status resume reset logs watch smoke
+.PHONY: help test run poll review list status resume reset logs watch smoke
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | sort
@@ -11,6 +11,9 @@ run:
 
 poll:
 	uv run orchestrator poll
+
+review:
+	uv run orchestrator review
 
 list:
 	uv run orchestrator list
