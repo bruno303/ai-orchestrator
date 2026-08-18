@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator import config, state as state_mod, workspace
-from orchestrator.graph import _run_opencode, build_graph, cleanup, create_pr, parse_verdict, prepare_workspace
+from orchestrator.graph import _run_opencode, build_graph, cleanup, create_pr, prepare_workspace
 from orchestrator.persistence import TaskStore
 from orchestrator.providers import ExecutionResult, PublicationResult, WorkspaceResult
 
@@ -41,15 +41,17 @@ def store(tmp_path):
 def test_full_flow(remote_repo, allowlist, store, monkeypatch):
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 42)
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
-    graph = build_graph(store.checkpointer())
+    nodes: list[str] = []
+    graph = build_graph(store.checkpointer(), on_node_start=lambda node, state: nodes.append(node))
     result = graph.invoke(_seed(remote_repo), config={"configurable": {"thread_id": "company/backend#1"}})
 
     assert result["status"] == state_mod.COMPLETED
     assert result["output"]["provider_state"]["pr_number"] == 42
     assert result["workspace"]["path"] == str(workspace.task_workspace("company/backend", 1))
     assert result["input"]["data"]["number"] == 1
-    assert result["processing"]["review_verdict"] == "APPROVED"
-    assert result["output"]["provider_state"]["pr_number"] == 42
+    assert "review_verdict" not in result["processing"]
+    assert "review_result" not in result["processing"]
+    assert nodes == ["prepare_workspace", "plan", "implement", "test", "create_pr", "cleanup"]
 
     # Cleanup ran: worktree and local branch are gone.
     ws = workspace.task_workspace("company/backend", 1)
@@ -76,7 +78,20 @@ def test_full_flow(remote_repo, allowlist, store, monkeypatch):
     assert "origin/ai/issue-1" in proc.stdout
 
     assert (config.LOGS_DIR / "company-backend-1" / "plan.log").exists()
-    assert (config.LOGS_DIR / "company-backend-1" / "review.log").exists()
+    assert not (config.LOGS_DIR / "company-backend-1" / "review.log").exists()
+
+
+def test_successful_test_is_followed_immediately_by_create_pr(remote_repo, allowlist, store, monkeypatch):
+    nodes: list[str] = []
+    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 46)
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
+
+    result = build_graph(
+        store.checkpointer(), on_node_start=lambda node, state: nodes.append(node)
+    ).invoke(_seed(remote_repo, 17), config={"configurable": {"thread_id": "company/backend#17"}})
+
+    assert result["status"] == state_mod.COMPLETED
+    assert nodes[nodes.index("test") + 1] == "create_pr"
 
 
 def test_disallowed_repository(remote_repo, store):
@@ -152,13 +167,14 @@ def test_graph_uses_injected_executor(remote_repo, allowlist, store, monkeypatch
     class FakeExecutor:
         def execute(self, request):
             calls.append((request.agent, request.prompt))
-            if request.agent == "plan" and "Review the implementation" not in request.prompt:
+            if request.agent == "plan":
                 return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.", provider_state={"executor_run": "plan"})
             if request.agent == "build":
                 if "You are implementing" in request.prompt:
                     Path(request.workspace, "work.txt").write_text("implemented\n")
-                return ExecutionResult(True, 0, stdout="implemented", provider_state={"executor_run": "implement"})
-            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED", provider_state={"executor_run": "review"})
+                    return ExecutionResult(True, 0, stdout="implemented", provider_state={"executor_run": "implement"})
+                return ExecutionResult(True, 0, stdout="tested", provider_state={"executor_run": "test"})
+            raise AssertionError(f"unexpected executor request: {request.agent}")
 
     monkeypatch.setattr("orchestrator.opencode.run_opencode", lambda **kwargs: pytest.fail("direct OpenCode call"))
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 45)
@@ -167,8 +183,8 @@ def test_graph_uses_injected_executor(remote_repo, allowlist, store, monkeypatch
     result = graph.invoke(_seed(remote_repo, 15), config={"configurable": {"thread_id": "company/backend#15"}})
 
     assert result["status"] == state_mod.COMPLETED
-    assert [agent for agent, _ in calls] == ["plan", "build", "build", "plan"]
-    assert result["processing"]["provider_state"] == {"executor_run": "review"}
+    assert [agent for agent, _ in calls] == ["plan", "build", "build"]
+    assert result["processing"]["provider_state"] == {"executor_run": "test"}
 
 
 def test_executor_provider_state_survives_failure(remote_repo, allowlist, store, monkeypatch):
@@ -208,9 +224,9 @@ def test_graph_uses_injected_workspace_and_destination(tmp_path, allowlist, stor
 
     class FakeExecutor:
         def execute(self, request):
-            if request.agent == "plan" and "Review the implementation" not in request.prompt:
+            if request.agent == "plan":
                 return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.")
-            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED")
+            return ExecutionResult(True, 0, stdout="phase complete")
 
     result = build_graph(
         store.checkpointer(), executor=FakeExecutor(), workspace_manager=FakeWorkspaceManager(),
@@ -274,7 +290,7 @@ def test_prepare_workspace_forwards_provider_state(allowlist, tmp_path):
     prepare_workspace(seed, StatefulWorkspaceManager())
 
 
-def test_namespace_only_state_preserves_review_metadata():
+def test_legacy_review_metadata_does_not_change_pr_body():
     from orchestrator.graph import _pr_body
 
     state = {
@@ -284,7 +300,7 @@ def test_namespace_only_state_preserves_review_metadata():
             "review_result": "FINDINGS:\n- keep the metadata",
         },
     }
-    assert "keep the metadata" in _pr_body(state)
+    assert _pr_body(state) == "Closes #8"
 
 
 def test_new_graph_updates_are_namespace_only(allowlist, tmp_path):
@@ -313,6 +329,8 @@ def test_new_graph_updates_are_namespace_only(allowlist, tmp_path):
 
 
 def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_path):
+    calls: list[str] = []
+
     class FakeWorkspaceManager:
         provider_type = "custom_workspace"
 
@@ -326,9 +344,10 @@ def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_p
 
     class FakeExecutor:
         def execute(self, request):
-            if request.agent == "plan" and "Review the implementation" not in request.prompt:
+            calls.append(request.agent)
+            if request.agent == "plan":
                 return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.")
-            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED")
+            return ExecutionResult(True, 0, stdout="phase complete")
 
     class FakeDestination:
         provider_type = "custom_destination"
@@ -340,7 +359,10 @@ def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_p
         "task_id": "company/backend#31",
         "input": {"provider": "custom_input", "data": {"repository": "company/backend", "number": 31,
             "title": "Title", "body": "Body"}, "provider_state": {}},
-        "processing": {},
+        "processing": {
+            "review_verdict": "APPROVED",
+            "review_result": "legacy metadata",
+        },
         "workspace": {"branch": "ai/issue-31", "base_branch": "main"},
         "output": {}, "status": state_mod.RECEIVED,
     }
@@ -350,9 +372,10 @@ def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_p
     )
     result = graph.invoke(seed, config={"configurable": {"thread_id": seed["task_id"]}})
 
+    assert calls == ["plan", "build", "build"]
     assert result["processing"]["review_verdict"] == "APPROVED"
     assert result["output"]["provider_state"]["remote_id"] == "123"
-    assert not {"repository", "issue_number", "review_verdict", "pr_number"} & set(result)
+    assert not {"repository", "issue_number", "pr_number"} & set(result)
 
 
 def test_injected_provider_identity_is_written_to_namespaces(allowlist, tmp_path):
@@ -467,7 +490,7 @@ def test_injected_workspace_cleanup_failure_does_not_fail_task(tmp_path, allowli
         def execute(self, request):
             if request.agent == "plan":
                 return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.")
-            return ExecutionResult(True, 0, stdout="REVIEW_STATUS: APPROVED")
+            return ExecutionResult(True, 0, stdout="phase complete")
 
     class FakeDestination:
         def publish(self, request):
@@ -532,28 +555,6 @@ def test_plan_fails_when_planner_output_is_empty(tmp_path, monkeypatch):
     assert result["error"] == "planning completed without creating .agents/plans/plan.md"
 
 
-def test_changes_required_still_creates_pr(remote_repo, allowlist, store, monkeypatch):
-    monkeypatch.setenv("FAKE_OPCODE_VERDICT", "CHANGES_REQUIRED")
-    captured: dict = {}
-    monkeypatch.setattr(
-        "orchestrator.github.create_pull_request",
-        lambda *a, **k: captured.update(body=a[2]) or 43,
-    )
-    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
-    graph = build_graph(store.checkpointer())
-    result = graph.invoke(_seed(remote_repo, 3), config={"configurable": {"thread_id": "company/backend#3"}})
-    assert result["status"] == state_mod.COMPLETED
-    assert result["processing"]["review_verdict"] == "CHANGES_REQUIRED"
-    assert result["output"]["provider_state"]["pr_number"] == 43
-    body = captured["body"]
-    assert body.startswith("Closes #3")
-    assert "## Last Review report" in body
-    assert "- status: CHANGES_REQUIRED" in body
-    assert "- findings:" in body
-    assert "Missing structured findings in the review output." in body
-    assert "VERDICT: CHANGES_REQUIRED" not in body
-
-
 def test_create_pr_with_existing_commit(remote_repo, allowlist, store, monkeypatch):
     """Implement agent already committed: create_pr must push + open PR without a new commit."""
     from orchestrator import git as git_mod
@@ -565,7 +566,7 @@ def test_create_pr_with_existing_commit(remote_repo, allowlist, store, monkeypat
     git_mod.create_worktree(repo_dir, ws, seed["branch"], "main")
     (ws / "work.txt").write_text("hello\ncommitted\n")
     git_mod.commit_all(ws, "feat: agent committed\n\nCloses #4")
-    seed.update({"workspace": str(ws), "status": state_mod.REVIEWING})
+    seed.update({"workspace": str(ws), "status": state_mod.CREATING_PR})
 
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 44)
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
@@ -585,7 +586,7 @@ def test_create_pr_reuses_existing_pr(remote_repo, allowlist, store, monkeypatch
     git_mod.create_worktree(repo_dir, ws, seed["branch"], "main")
     (ws / "work.txt").write_text("hello\ncommitted\n")
     git_mod.commit_all(ws, "feat: agent committed\n\nCloses #5")
-    seed.update({"workspace": str(ws), "status": state_mod.REVIEWING})
+    seed.update({"workspace": str(ws), "status": state_mod.CREATING_PR})
 
     created: list = []
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: 77)
@@ -601,55 +602,8 @@ def test_create_pr_reuses_existing_pr(remote_repo, allowlist, store, monkeypatch
     assert created == []  # no new PR created
 
 
-def test_parse_verdict():
-    assert parse_verdict("all good\nVERDICT: APPROVED\n") == "APPROVED"
-    assert parse_verdict("VERDICT: CHANGES_REQUIRED") == "CHANGES_REQUIRED"
-    assert parse_verdict("no verdict here") == "NEEDS_CLARIFICATION"
-
-
-def test_create_pr_reuse_prepends_review_section(remote_repo, allowlist, store, monkeypatch):
-    """On reuse, non-approved review text is prepended after `Closes #n`, keeping history."""
-    from orchestrator import git as git_mod
-    from orchestrator.graph import create_pr
-
-    seed = _seed(remote_repo, 6)
-    ws = workspace.task_workspace("company/backend", 6)
-    repo_dir = git_mod.ensure_base_clone("company/backend", f"file://{remote_repo}")
-    git_mod.create_worktree(repo_dir, ws, seed["branch"], "main")
-    (ws / "work.txt").write_text("hello\ncommitted\n")
-    git_mod.commit_all(ws, "feat: agent committed\n\nCloses #6")
-    seed.update(
-        {
-            "workspace": str(ws),
-            "status": state_mod.REVIEWING,
-            "review_verdict": "CHANGES_REQUIRED",
-            "review_result": "REVIEW_STATUS: CHANGES_REQUIRED\nFINDINGS:\n- New issues found.",
-        }
-    )
-
-    old_body = "Closes #6\n\n## Last Review report\n- status: CHANGES_REQUIRED\n- findings:\n  - Old issues."
-    edited: list = []
-    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: 77)
-    monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 0)
-    monkeypatch.setattr("orchestrator.github.get_pull_request", lambda *a, **k: _FakePR(old_body))
-    monkeypatch.setattr(
-        "orchestrator.github.update_pull_request_body",
-        lambda *a, **k: edited.append((a[1], a[2])),
-    )
-
-    updates = create_pr(seed)
-    assert updates["status"] == state_mod.COMPLETED
-    pr_number, new_body = edited[0]
-    assert pr_number == 77
-    assert new_body.startswith("Closes #6")
-    assert new_body.count("Closes #6") == 1
-    assert "## Last Review report" in new_body
-    assert "- findings:" in new_body
-    assert new_body.index("New issues found.") < new_body.index("Old issues.")
-
-
-def test_create_pr_reuse_approved_does_not_edit(remote_repo, allowlist, store, monkeypatch):
-    """On reuse with an approved (or absent) review, the PR body is left untouched."""
+def test_create_pr_reuse_normalized_does_not_edit(remote_repo, allowlist, store, monkeypatch):
+    """On reuse without review metadata, the existing PR body is left untouched."""
     from orchestrator import git as git_mod
     from orchestrator.graph import create_pr
 
@@ -659,12 +613,13 @@ def test_create_pr_reuse_approved_does_not_edit(remote_repo, allowlist, store, m
     git_mod.create_worktree(repo_dir, ws, seed["branch"], "main")
     (ws / "work.txt").write_text("hello\ncommitted\n")
     git_mod.commit_all(ws, "feat: agent committed\n\nCloses #7")
-    seed.update({"workspace": str(ws), "status": state_mod.REVIEWING})
+    seed.update({"workspace": str(ws), "status": state_mod.CREATING_PR})
 
     edited: list = []
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: 77)
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 0)
-    monkeypatch.setattr("orchestrator.github.get_pull_request", lambda *a, **k: _FakePR("Closes #7"))
+    existing_body = "Closes #7\n\nExisting PR description"
+    monkeypatch.setattr("orchestrator.github.get_pull_request", lambda *a, **k: _FakePR(existing_body))
     monkeypatch.setattr(
         "orchestrator.github.update_pull_request_body",
         lambda *a, **k: edited.append(1),
@@ -672,14 +627,14 @@ def test_create_pr_reuse_approved_does_not_edit(remote_repo, allowlist, store, m
 
     updates = create_pr(seed)
     assert updates["status"] == state_mod.COMPLETED
-    assert edited == []  # approved -> no PR body edit
+    assert edited == []
 
 
 def test_implement_retries_once_then_succeeds(remote_repo, allowlist, store, monkeypatch, tmp_path):
     """The implement phase loops on the primary model; the fallback succeeds. Both must be attempted.
 
     FAKE_OPCODE_LOOP_PROMPT scopes the loop to the implement phase only, so the
-    plan/test/review phases run normally and the retry is genuinely exercised by
+    plan/test phases run normally and the retry is genuinely exercised by
     implement (not consumed by an earlier phase).
     """
     # MODEL_PRIMARY/MODEL_FALLBACK are bound at import time, so the cache clear in
@@ -697,7 +652,7 @@ def test_implement_retries_once_then_succeeds(remote_repo, allowlist, store, mon
     graph = build_graph(store.checkpointer())
     result = graph.invoke(_seed(remote_repo, 10), config={"configurable": {"thread_id": "company/backend#10"}})
     assert result["status"] == state_mod.COMPLETED
-    # The fake writes a line for every opencode invocation (plan, implement x2, test, review),
+    # The fake writes a line for every opencode invocation (plan, implement x2, test),
     # so both the primary and the fallback model must appear in the file.
     lines = model_file.read_text().splitlines()
     assert any("model=verboo/deepseek-v4-flash" in line for line in lines)
@@ -709,7 +664,7 @@ def test_implement_retries_once_then_succeeds(remote_repo, allowlist, store, mon
 def test_implement_fails_after_max_attempts(remote_repo, allowlist, store, monkeypatch):
     """Degenerate output in implement on every attempt must fail the task after PHASE_MAX_ATTEMPTS.
 
-    FAKE_OPCODE_LOOP_PROMPT scopes the loop to implement, so plan/test/review run
+    FAKE_OPCODE_LOOP_PROMPT scopes the loop to implement, so plan/test run
     normally and the failure comes from the implement phase itself.
     """
     # See test_implement_retries_once_then_succeeds: import-time binding of the

@@ -6,29 +6,27 @@ from typing import Any
 
 from orchestrator import git, github
 from orchestrator.providers import PublicationRequest, PublicationResult
-from orchestrator.review import findings
-
-
-def _review_section(provider_state: dict) -> str | None:
-    verdict = provider_state.get("review_verdict")
-    result = provider_state.get("review_result")
-    if not verdict or verdict == "APPROVED" or not result:
-        return None
-    review_findings = findings(result)
-    if not review_findings:
-        return None
-    return "\n".join(["## Last Review report", f"- status: {verdict}", "- findings:", *[f"  - {item}" for item in review_findings]])
 
 
 def _body(issue_number: int, provider_state: dict, current_body: str | None = None) -> str:
+    """Keep one exact issue-closing reference while preserving the body."""
     closes = f"Closes #{issue_number}"
-    section = _review_section(provider_state)
-    if section is None:
-        return current_body if current_body else closes
-    remainder = (current_body or "").lstrip("\n")
-    if remainder.startswith(closes):
-        remainder = remainder[len(closes):].lstrip("\n")
-    return f"{closes}\n\n{section}" + (f"\n\n{remainder}" if remainder else "")
+    if not current_body:
+        return closes
+    lines = current_body.splitlines()
+    remainder_lines: list[str] = []
+    skip_blank = False
+    for line in lines:
+        if line.strip() == closes:
+            skip_blank = True
+            continue
+        if skip_blank and line == "":
+            skip_blank = False
+            continue
+        skip_blank = False
+        remainder_lines.append(line)
+    remainder = "\n".join(remainder_lines).strip("\n")
+    return f"{closes}\n\n{remainder}" if remainder else closes
 
 
 class GitHubDestination:

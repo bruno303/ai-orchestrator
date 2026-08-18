@@ -16,7 +16,6 @@ ACTIVE_STATUSES = {
     state_mod.PLANNING,
     state_mod.IMPLEMENTING,
     state_mod.TESTING,
-    state_mod.REVIEWING,
     state_mod.CREATING_PR,
 }
 

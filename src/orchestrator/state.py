@@ -9,6 +9,8 @@ PREPARING = "PREPARING"
 PLANNING = "PLANNING"
 IMPLEMENTING = "IMPLEMENTING"
 TESTING = "TESTING"
+# Deprecated: retained so checkpoints created by older workflow versions can
+# still be deserialized. New runs do not enter this status.
 REVIEWING = "REVIEWING"
 CREATING_PR = "CREATING_PR"
 COMPLETED = "COMPLETED"
@@ -20,12 +22,13 @@ ALL_STATUSES = (
     PLANNING,
     IMPLEMENTING,
     TESTING,
-    REVIEWING,
+    REVIEWING,  # Deprecated legacy status; not produced by new runs.
     CREATING_PR,
     COMPLETED,
     FAILED,
 )
 
+# Deprecated legacy verdict constants retained for checkpoint compatibility.
 VERDICT_APPROVED = "APPROVED"
 VERDICT_CHANGES_REQUIRED = "CHANGES_REQUIRED"
 VERDICT_NEEDS_CLARIFICATION = "NEEDS_CLARIFICATION"
@@ -46,6 +49,7 @@ class ProcessingState(TypedDict, total=False):
     plan_summary: str | None
     implementation_result: str | None
     test_result: str | None
+    # Deprecated legacy fields retained for checkpoint deserialization.
     review_result: str | None
     review_verdict: str | None
     provider_state: dict[str, Any]
@@ -97,6 +101,7 @@ class TaskState(TypedDict, total=False):
     plan_summary: str | None
     implementation_result: str | None
     test_result: str | None
+    # Deprecated legacy aliases retained for old checkpoints only.
     review_result: str | None
     review_verdict: str | None
     extra_context: list[str]
