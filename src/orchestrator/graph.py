@@ -1,4 +1,4 @@
-"""LangGraph workflow: Issue -> workspace -> plan -> implement -> test -> review -> PR."""
+"""LangGraph workflow: Issue -> workspace -> plan -> implement -> test -> PR."""
 
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from orchestrator.providers import (
     Destination, ExecutionRequest, ExecutionResult, Executor, PublicationRequest,
     WorkspaceManager, WorkspaceRequest, WorkspaceResult, validate_provider_state,
 )
-from orchestrator.review import findings
 from orchestrator.state import TaskState
 
 PLAN_FILE = ".agents/plans/plan.md"
@@ -54,7 +53,7 @@ def _processing(state: TaskState, updates: dict[str, Any] | None = None) -> dict
     result = dict(state.get("processing") or {})
     if updates:
         result.update(updates)
-    for key in ("plan_path", "plan_summary", "implementation_result", "test_result", "review_result", "review_verdict"):
+    for key in ("plan_path", "plan_summary", "implementation_result", "test_result"):
         if key not in result and state.get(key) is not None:
             result[key] = state[key]
     return result
@@ -307,24 +306,10 @@ def test(state: TaskState, executor: Executor | None = None) -> dict[str, Any]:
     }
 
 
-def review(state: TaskState, executor: Executor | None = None) -> dict[str, Any]:
-    updates, result = _run_opencode(state, "review", "plan", review_prompt(state), executor)
-    if updates.get("status") == state_mod.FAILED:
-        return updates
-    verdict = parse_verdict(result.stdout) if result else state_mod.VERDICT_NEEDS_CLARIFICATION
-    processing = {**_processing(state, updates.get("processing")), "review_result": result.stdout[:4000] if result else None, "review_verdict": verdict}
-    return {
-        **updates,
-        "status": state_mod.REVIEWING,
-        "processing": processing,
-    }
-
-
 def create_pr(state: TaskState, destination: Destination | None = None) -> dict[str, Any]:
     print(f"[{_now()}] create_pr: starting", flush=True)
     try:
         source = _input(state)
-        processing = _processing(state)
         workspace_state = _workspace(state)
         title = f"feat: {source['issue_title']}"[:72]
         result = (destination or GitHubDestination()).publish(
@@ -333,7 +318,6 @@ def create_pr(state: TaskState, destination: Destination | None = None) -> dict[
                 head=workspace_state["branch"], base=workspace_state["base_branch"],
                 provider_state={
                     "workspace": workspace_state["path"], "issue_number": source["issue_number"],
-                    "review_verdict": processing.get("review_verdict"), "review_result": processing.get("review_result"),
                 },
             )
         )
@@ -426,8 +410,12 @@ A plan has been written to {PLAN_FILE}.
 
 Execute the plan using the subagent-plan-execution skill. Invoke it explicitly: load the skill "subagent-plan-execution" (base directory: {config.SKILL_SUBAGENT_PLAN_EXECUTION}) and follow its steps exactly:
 - Step 0: read {PLAN_FILE}
-- Step 1: for each task, write the brief file, dispatch a fresh implementer subagent, then dispatch a fresh reviewer subagent
+    - Step 1: for each task, write the brief file, dispatch a fresh implementer subagent, then dispatch a fresh reviewer subagent
 - Step 2: run the quality gate (build, tests, lint) and fix any failures
+
+The skill may perform implementation and reviewer subagent passes internally.
+The orchestrator has no separate top-level review phase; after implementation,
+the workflow runs the standalone test phase and then publishes the PR.
 
 Context:
 - Work only inside this workspace (the task worktree).
@@ -446,76 +434,33 @@ Report the results, including any failures.
 """
 
 
-def review_prompt(state: TaskState) -> str:
-    source = _input(state)
-    workspace_state = _workspace(state)
-    return f"""Review the implementation for GitHub issue #{source['issue_number']} in repository {source['repository']}.
-
-Issue title: {source['issue_title']}
-
-Issue body:
-{source['issue_body']}
-{_extra_context(state)}
-Plan: {PLAN_FILE}
-Implementation: git diff of the current branch ({workspace_state['branch']}) against origin/{workspace_state['base_branch']}.
-
-Use the review-changes skill.
-
-Analyze: adherence to the issue requirements, adherence to the plan, code quality, test coverage, and possible regressions.
-
-End your response with exactly this machine-readable block and nothing else:
-REVIEW_STATUS: APPROVED|CHANGES_REQUIRED|NEEDS_CLARIFICATION
-FINDINGS:
-- only the unapproved findings, one per bullet
-
-If the review is APPROVED, omit the FINDINGS block entirely.
-
-Do NOT modify any files.
-"""
-
-
 # ---------------------------------------------------------------- helpers
 
 
-def parse_verdict(output: str) -> str:
-    match = re.search(r"(?:REVIEW_STATUS|VERDICT):\s*(APPROVED|CHANGES_REQUIRED|NEEDS_CLARIFICATION)", output)
-    return match.group(1) if match else state_mod.VERDICT_NEEDS_CLARIFICATION
-
-
-def _review_section(state: TaskState) -> str | None:
-    """Markdown section for a non-approved review, or None if there is nothing to flag."""
-    processing = _processing(state)
-    verdict = processing.get("review_verdict")
-    result = processing.get("review_result")
-    if not verdict or verdict == state_mod.VERDICT_APPROVED or not result:
-        return None
-    review_findings = findings(result)
-    if not review_findings:
-        return None
-    lines = ["## Last Review report", f"- status: {verdict}", "- findings:"]
-    lines.extend(f"  - {finding}" for finding in review_findings)
-    return "\n".join(lines)
-
-
 def _pr_body(state: TaskState, current_body: str | None = None) -> str:
-    """PR body: `Closes #n` first, then review sections (most recent to oldest).
+    """Build the PR body with the issue-closing reference first.
 
-    The `Closes #n` line is always the first line; a leading `Closes #n` line
-    in `current_body` is stripped so it is never duplicated. All other text in
-    `current_body` is kept below the new section (history preserved).
+    The `Closes #n` line is always the first line; matching lines in
+    `current_body` are removed so it is never duplicated. Existing text is
+    preserved below the closing reference.
     """
     closes = f"Closes #{_input(state)['issue_number']}"
-    section = _review_section(state)
-    if section is None:
-        return current_body if current_body else closes
-    remainder = ""
-    if current_body:
-        remainder = current_body.lstrip("\n")
-        if remainder.startswith(closes):
-            remainder = remainder[len(closes):].lstrip("\n")
-    if remainder:
-        return f"{closes}\n\n{section}\n\n{remainder}"
-    return f"{closes}\n\n{section}"
+    if not current_body:
+        return closes
+    lines = current_body.splitlines()
+    remainder_lines: list[str] = []
+    skip_blank = False
+    for line in lines:
+        if line.strip() == closes:
+            skip_blank = True
+            continue
+        if skip_blank and line == "":
+            skip_blank = False
+            continue
+        skip_blank = False
+        remainder_lines.append(line)
+    remainder = "\n".join(remainder_lines).strip("\n")
+    return f"{closes}\n\n{remainder}" if remainder else closes
 
 
 # ---------------------------------------------------------------- graph
@@ -567,7 +512,6 @@ def build_graph(
         "plan": lambda state: plan(state, phase_executor),
         "implement": lambda state: implement(state, phase_executor),
         "test": lambda state: test(state, phase_executor),
-        "review": lambda state: review(state, phase_executor),
         "create_pr": lambda state: create_pr(state, destination),
         "cleanup": lambda state: cleanup(state, workspace_manager),
     }
@@ -578,8 +522,7 @@ def build_graph(
     builder.add_conditional_edges("prepare_workspace", _route("plan"), {"plan": "plan", "end": END})
     builder.add_conditional_edges("plan", _route("implement"), {"implement": "implement", "end": END})
     builder.add_conditional_edges("implement", _route("test"), {"test": "test", "end": END})
-    builder.add_conditional_edges("test", _route("review"), {"review": "review", "end": END})
-    builder.add_conditional_edges("review", _route("create_pr"), {"create_pr": "create_pr", "end": END})
+    builder.add_conditional_edges("test", _route("create_pr"), {"create_pr": "create_pr", "end": END})
     builder.add_conditional_edges("create_pr", _route("cleanup"), {"cleanup": "cleanup", "end": END})
     builder.add_edge("cleanup", END)
 

@@ -21,11 +21,9 @@ OpenCode (build)
     ↓
 Tests
     ↓
-OpenCode (review)
-    ↓
-Fix loop, if necessary
-    ↓
 Create GitHub PR
+    ↓
+Cleanup workspace
 ```
 
 O LangGraph será responsável pelo workflow, estado, decisões e retomadas. O OpenCode continuará sendo o executor dos trabalhos de desenvolvimento, usando os agentes `plan`/`build` e as skills já existentes.
@@ -44,8 +42,6 @@ Ele deverá apenas orquestrar etapas como:
 - `plan`
 - `implement`
 - `test`
-- `review`
-- `fix`
 - `create_pr`
 - `ask_human`
 - `cleanup`
@@ -63,10 +59,7 @@ LangGraph
     ├── implement_node
     │      └── opencode run --agent build
     │
-    ├── review_node
-    │      └── opencode run --agent plan
-    │
-    └── fix_node
+    └── test_node
            └── opencode run --agent build
 ```
 
@@ -168,8 +161,6 @@ class TaskState(TypedDict):
     plan: str | None
     implementation_result: str | None
     test_result: str | None
-    review_result: str | None
-
     status: str
     question: str | None
 
@@ -194,8 +185,6 @@ PLANNING
 WAITING_FOR_HUMAN
 IMPLEMENTING
 TESTING
-REVIEWING
-FIXING
 CREATING_PR
 COMPLETED
 FAILED
@@ -214,12 +203,9 @@ IMPLEMENTING
    ↓
 TESTING
    ↓
-REVIEWING
-   ├── needs clarification → WAITING_FOR_HUMAN
-   ├── changes needed      → FIXING → TESTING
-   └── approved             → CREATING_PR
-                                  ↓
-                              COMPLETED
+CREATING_PR
+   ↓
+COMPLETED
 ```
 
 ---
@@ -413,7 +399,7 @@ O novo comentário deve ser incorporado ao contexto antes de continuar.
 
 # 12. Implementação
 
-Depois de um plano aprovado:
+Depois que o planejamento for concluído:
 
 ```text
 IMPLEMENTING
@@ -430,9 +416,9 @@ O prompt deve incluir:
 - Issue original;
 - plano;
 - respostas dadas pelo usuário;
-- instrução para usar `subagent-plan-execution`;
 - instrução para implementar;
-- instrução para executar testes;
+- instrução para usar `subagent-plan-execution`, que pode executar passes
+  internos de implementação e revisão por subagentes, além do quality gate;
 - instrução para não criar PR.
 
 O agente trabalha somente dentro do worktree daquela task.
@@ -446,7 +432,7 @@ Após implementação, o orchestrator deve executar os testes apropriados.
 Na primeira versão, permitir que o próprio OpenCode determine e execute os testes:
 
 ```text
-opencode --agent build
+opencode run --agent build
 ```
 
 Depois pode ser adicionada configuração por repositório:
@@ -469,84 +455,21 @@ O resultado deve ser salvo no estado.
 
 ---
 
-# 14. Review
+# 14. Validação da implementação
 
-Executar novamente o OpenCode, preferencialmente com `plan`, para revisar a implementação.
-
-O reviewer deverá analisar:
-
-- issue original;
-- plano;
-- diff;
-- testes;
-- aderência aos requisitos;
-- possíveis regressões.
-
-Resultado estruturado:
-
-```text
-APPROVED
-```
-
-ou:
-
-```text
-CHANGES_REQUIRED
-```
-
-ou:
-
-```text
-NEEDS_CLARIFICATION
-```
+Durante a implementação, `subagent-plan-execution` pode fazer passes internos
+com subagentes implementadores e revisores por tarefa e depois executar o
+quality gate. Isso faz parte da implementação, não de um node `review` separado
+do LangGraph. Em seguida, o orchestrator executa o node de testes standalone.
 
 ---
 
-# 15. Fix loop
-
-Se a revisão solicitar alterações:
-
-```text
-REVIEWING
-    ↓
-CHANGES_REQUIRED
-    ↓
-FIXING
-    ↓
-TESTING
-    ↓
-REVIEWING
-```
-
-Definir um limite inicial:
-
-```text
-MAX_ITERATIONS = 3
-```
-
-Se atingir o limite:
-
-```text
-FAILED
-```
-
-ou:
-
-```text
-WAITING_FOR_HUMAN
-```
-
-A decisão pode ser configurável posteriormente.
-
----
-
-# 16. Criação do Pull Request
+# 15. Criação do Pull Request
 
 Somente depois de:
 
 - implementação concluída;
 - testes passando;
-- review aprovado;
 
 executar:
 
@@ -580,7 +503,7 @@ Closes #123
 
 ---
 
-# 17. Webhook do GitHub
+# 16. Webhook do GitHub
 
 Criar um pequeno servidor HTTP para receber:
 
@@ -623,7 +546,7 @@ Ele deve apenas:
 
 ---
 
-# 18. Múltiplos repositórios
+# 17. Múltiplos repositórios
 
 O orchestrator deve tratar o nome completo do repositório como identificador:
 
@@ -652,7 +575,7 @@ Assim o LangGraph nunca precisa assumir que está trabalhando em um único proje
 
 ---
 
-# 19. Concorrência
+# 18. Concorrência
 
 Não implementar concorrência complexa na primeira versão.
 
@@ -681,7 +604,7 @@ Isso também permite controlar consumo de API.
 
 ---
 
-# 20. Persistência
+# 19. Persistência
 
 O LangGraph deve ter checkpoint/persistência para que uma execução não desapareça quando o processo for reiniciado.
 
@@ -706,7 +629,7 @@ agent_runs
 
 ---
 
-# 21. Configuração por repositório
+# 20. Configuração por repositório
 
 Somente depois do MVP, adicionar configuração:
 
@@ -737,7 +660,7 @@ Não colocar conhecimento específico dos repositórios no código do orchestrat
 
 ---
 
-# 22. Segurança
+# 21. Segurança
 
 O OpenCode terá capacidade de:
 
@@ -758,7 +681,7 @@ Por isso:
 
 ---
 
-# 23. Observabilidade
+# 22. Observabilidade
 
 Cada execução deverá gerar logs:
 
@@ -781,14 +704,13 @@ logs/
     ├── plan.log
     ├── implementation.log
     ├── test.log
-    └── review.log
 ```
 
 No futuro, migrar para logs estruturados.
 
 ---
 
-# 24. MVP
+# 23. MVP
 
 O primeiro MVP deve fazer somente:
 
@@ -800,12 +722,12 @@ Prepare workspace
 OpenCode plan
     ↓
 OpenCode build
-    ↓
+     ↓
 Run tests
-    ↓
-OpenCode review
-    ↓
-Create PR
+     ↓
+Push / create PR
+     ↓
+Cleanup
 ```
 
 Com:
@@ -831,7 +753,7 @@ Não implementar inicialmente:
 
 ---
 
-# 25. Evolução após o MVP
+# 24. Evolução após o MVP
 
 ## V2
 
@@ -839,7 +761,6 @@ Adicionar:
 
 - human-in-the-loop;
 - clarification via GitHub comments;
-- review/fix loop;
 - múltiplas tasks concorrentes;
 - limite de concorrência;
 - configuração por repository.
@@ -897,12 +818,12 @@ Arquitetura futura:
 
 ---
 
-# 26. Ordem concreta de implementação
+# 25. Ordem concreta de implementação
 
 1. Criar projeto Python com `uv`.
 2. Instalar LangGraph.
 3. Criar `TaskState`.
-4. Criar grafo `START → PLAN → BUILD → TEST → REVIEW → END`.
+4. Criar grafo `START → PLAN → BUILD → TEST → CREATE_PR → CLEANUP → END`.
 5. Implementar wrapper `opencode.py`.
 6. Testar com um repositório local.
 7. Implementar gerenciamento de worktree.
@@ -915,14 +836,15 @@ Arquitetura futura:
 14. Implementar criação automática do PR.
 15. Adicionar persistência/checkpoints.
 16. Adicionar `WAITING_FOR_HUMAN`.
-17. Adicionar review/fix loop.
+17. Adicionar passes internos de implementação/revisão via
+    `subagent-plan-execution`, se necessário.
 18. Adicionar concorrência limitada.
 19. Adicionar configuração por repositório.
 20. Só então considerar deployment no k3s.
 
 ---
 
-# 27. Resultado esperado
+# 26. Resultado esperado
 
 Ao final, o uso deverá ser essencialmente:
 
@@ -939,11 +861,10 @@ GitHub Issue
     ├── cria workspace
     ├── cria branch
     ├── planeja
-    ├── implementa
-    ├── testa
-    ├── revisa
-    ├── pede esclarecimento se necessário
-    └── cria PR
+    ├── implementa (inclui passes internos do subagent-plan-execution
+    │   e seu quality gate)
+    ├── testa (fase standalone do orchestrator)
+    └── publica PR e limpa o workspace
 ```
 
 O developer não precisa iniciar manualmente o OpenCode.

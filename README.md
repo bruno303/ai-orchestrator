@@ -4,7 +4,7 @@ Local orchestrator (LangGraph + OpenCode) that turns input events into published
 
 ```
 GitHub Issue → workspace (git worktree) → OpenCode plan → OpenCode build (subagent-plan-execution)
-             → tests → OpenCode review → PR
+             → tests → push / PR publication → cleanup
 ```
 
 ## Requirements
@@ -156,8 +156,9 @@ fully supported.
 - **Plan**: `opencode run --agent plan` analyzes the issue and writes the plan
   to `.agents/plans/plan.md` (skill `plan-implementation`).
 - **Implement**: `opencode run --agent build` explicitly invokes the
-  `subagent-plan-execution` skill, which executes the plan by dispatching
-  fresh implementer/reviewer subagents per task, then runs the quality gate.
+  `subagent-plan-execution` skill. That skill may dispatch fresh implementer and
+  reviewer subagents per task, then runs the quality gate. These are internal
+  implementation passes, not a separate orchestrator phase.
 - **Model**: each phase runs opencode with the configured model — `primary`
   for the first attempt, and if the phase degenerates into a loop (repetitive
   output: identical-line flood or low distinct-line ratio), it is aborted and
@@ -166,11 +167,9 @@ fully supported.
   phase (visible via `orchestrator logs <task> --node <node>`).
 - **Test**: a standalone opencode run executes the project's test suite; a
   non-zero exit fails the task.
-- **Review**: `opencode run --agent plan` reviews issue + plan + diff and must
-  emit `VERDICT: APPROVED|CHANGES_REQUIRED|NEEDS_CLARIFICATION`. Non-APPROVED
-  verdicts are logged and the task still proceeds to the PR (fix loop is V2).
-- **PR**: changes are committed (`Closes #n`), pushed, and a PR is created via
-  `gh`. `.agents/` artifacts never enter the commit.
+- **PR**: after the standalone test phase succeeds, changes are committed
+  (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
+  never enter the commit.
 - **Cleanup**: after a successful PR, the task worktree and local branch are
   removed (logs and the remote branch are kept). Failed tasks keep their
   worktree for debugging.

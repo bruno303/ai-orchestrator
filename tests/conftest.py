@@ -88,14 +88,6 @@ EOF
   *"test suite"*)
     echo "Tests pass."
     ;;
-  *"Review the implementation"*)
-    verdict="${FAKE_OPCODE_VERDICT:-APPROVED}"
-    echo "REVIEW_STATUS: $verdict"
-    if [[ "$verdict" != "APPROVED" ]]; then
-      echo "FINDINGS:"
-      echo "- Missing structured findings in the review output."
-    fi
-    ;;
   *)
     echo "unknown prompt: $PROMPT"
     exit 1
