@@ -1,6 +1,6 @@
 # AI Orchestrator
 
-Local orchestrator (LangGraph + OpenCode) that turns GitHub Issues into pull requests:
+Local orchestrator (LangGraph + OpenCode) that turns input events into published changes:
 
 ```
 GitHub Issue → workspace (git worktree) → OpenCode plan → OpenCode build (subagent-plan-execution)
@@ -114,6 +114,41 @@ triggers a full re-run of the task with the comment body added as extra context:
 - PR comments only trigger for orchestrator branches (`ai/issue-*`)
 
 ## How it works
+
+The runtime is provider-neutral at its four integration boundaries:
+
+```
+InputSource -> Workflow -> Executor / WorkspaceManager -> Destination
+```
+
+The default pipeline is GitHub polling, OpenCode, Git workspaces, and the GitHub
+destination. New seeds and graph updates write only the `input`, `processing`,
+`workspace`, and `output` state namespaces. This keeps LangGraph checkpoints
+serializable and lets a provider retain its own metadata without adding
+provider-specific fields to workflow logic. Legacy flat fields are read only
+when resuming old checkpoints or compatibility callers; they are never added to
+new state. Existing GitHub task IDs (`owner/repo#issue`) and SQLite task
+metadata remain supported.
+
+Pipeline providers can be selected in `config/repositories.yaml`:
+
+```yaml
+pipeline:
+  input_source: {type: github_polling}
+  executor: {type: opencode}
+  workspace_manager: {type: git}
+  destination: {type: github}
+```
+
+To add a provider, implement the relevant protocol in `providers.py`, register
+its factory in the matching registry, and configure its type. Input events carry
+the configured input provider identity, and provider metadata belongs in the
+boundary request/result `provider_state` or the owning namespace. Do not put
+service-specific values in the workflow's generic fields. The current application
+workflow still assumes GitHub issue numbering, Git branches, and pull requests,
+so other providers require corresponding workflow/adaptor work; the boundary is
+extensible, not a claim that arbitrary sources and destinations are already
+fully supported.
 
 - **Isolation**: each task gets its own `git worktree` under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,

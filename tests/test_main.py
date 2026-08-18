@@ -76,6 +76,41 @@ def test_poll_once_new_issue(allowlist, tmp_path, monkeypatch, capsys):
     assert task["pr_number"] == 42
 
 
+def test_poll_once_uses_configured_input_source_with_options(allowlist, tmp_path, monkeypatch):
+    from orchestrator import config
+    from orchestrator.application import Runtime
+    from orchestrator.persistence import TaskStore
+    from orchestrator.providers import InputEvent
+
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "pipeline:\n  input_source:\n    type: github_polling\n    interval: 30\n"
+    )
+    config.load_pipeline_config.cache_clear()
+    store = TaskStore(tmp_path / "db.sqlite")
+    seen: list[dict] = []
+
+    class ConfiguredInputSource:
+        options = {"interval": 30}
+
+        def poll(self):
+            seen.append(self.options)
+            return [InputEvent("issue:1", "company/backend", "title", number=1)]
+
+    runtime = Runtime(ConfiguredInputSource(), object(), object(), object())
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+    monkeypatch.setattr("orchestrator.main.compose_runtime", lambda current_store: runtime)
+    monkeypatch.setattr(
+        "orchestrator.main._run_graph",
+        lambda *args, **kwargs: {"task_id": "company/backend#1", "status": "COMPLETED", "pr_number": None},
+    )
+
+    cmd_poll(type("A", (), {"once": True})())
+
+    assert seen == [{"interval": 30}]
+    assert store.get_task("company/backend#1") is not None
+
+
 def test_run_force_resets_state(allowlist, tmp_path, monkeypatch):
     from orchestrator import main
     from orchestrator.persistence import TaskStore
@@ -394,8 +429,9 @@ def test_pr_comment_trigger_includes_pr_context(allowlist, tmp_path, monkeypatch
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["pr_number"] == 14
-    context = "\n".join(seed["extra_context"])
+    assert not {"repository", "issue_number", "issue_title", "issue_body", "pr_number", "extra_context"} & set(seed)
+    assert seed["input"]["data"]["pr_number"] == 14
+    context = "\n".join(seed["input"]["data"]["extra_context"])
     assert "<pr>" in context
     assert "number: 14" in context
     assert "changed files: src/app/page.tsx (modified), src/new.ts (added)" in context
@@ -434,8 +470,8 @@ def test_issue_comment_trigger_with_open_pr(allowlist, tmp_path, monkeypatch, ca
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["pr_number"] == 14
-    assert "<pr>" in "\n".join(seed["extra_context"])
+    assert seed["input"]["data"]["pr_number"] == 14
+    assert "<pr>" in "\n".join(seed["input"]["data"]["extra_context"])
 
 
 def test_issue_comment_trigger_without_pr(allowlist, tmp_path, monkeypatch, capsys):
@@ -462,8 +498,8 @@ def test_issue_comment_trigger_without_pr(allowlist, tmp_path, monkeypatch, caps
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed.get("pr_number") is None
-    assert "<pr>" not in "\n".join(seed["extra_context"])
+    assert seed["input"]["data"]["pr_number"] is None
+    assert "<pr>" not in "\n".join(seed["input"]["data"]["extra_context"])
 
 
 def test_pr_fetch_failure_tolerated(allowlist, tmp_path, monkeypatch, capsys):
@@ -494,8 +530,8 @@ def test_pr_fetch_failure_tolerated(allowlist, tmp_path, monkeypatch, capsys):
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["pr_number"] == 14
-    assert "<pr>" not in "\n".join(seed["extra_context"])
+    assert seed["input"]["data"]["pr_number"] == 14
+    assert "<pr>" not in "\n".join(seed["input"]["data"]["extra_context"])
 
 
 def test_cmd_logs_list_and_tail(allowlist, tmp_path, monkeypatch, capsys):
@@ -548,6 +584,41 @@ def test_task_end_event_written(allowlist, tmp_path, monkeypatch):
     assert events[-1]["event"] == "task_end"
     assert events[-1]["status"] == "COMPLETED"
     assert events[-1]["pr_number"] == 42
+
+
+def test_persist_namespace_only_completed_result(allowlist, tmp_path, monkeypatch, capsys):
+    from orchestrator import main, workspace
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("company/backend#2", "company/backend", 2)
+    result = {
+        "task_id": "company/backend#2",
+        "status": "COMPLETED",
+        "output": {"provider_state": {"pr_number": 43}},
+    }
+
+    main._persist_result(store, result)
+
+    assert store.get_task("company/backend#2")["pr_number"] == 43
+    assert workspace.read_events("company/backend#2")[-1]["pr_number"] == 43
+    assert "COMPLETED: PR #43 for company/backend#2" in capsys.readouterr().out
+
+
+def test_persist_url_only_completed_result(allowlist, tmp_path, capsys):
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("company/backend#3", "company/backend", 3)
+    main._persist_result(store, {
+        "task_id": "company/backend#3",
+        "status": "COMPLETED",
+        "output": {"url": "https://example.test/run/3", "provider": "artifact_store"},
+    })
+
+    assert store.get_task("company/backend#3")["publication_url"] == "https://example.test/run/3"
+    assert "COMPLETED: https://example.test/run/3 for company/backend#3" in capsys.readouterr().out
 
 
 def test_migration_and_touch(tmp_path):

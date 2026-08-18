@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import inspect
 import re
 import sys
 import time
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orchestrator import config, git, github, state as state_mod, workspace
+from orchestrator.application import PollingApplication, compose_runtime
 from orchestrator.graph import build_graph
 from orchestrator.persistence import PersistenceError, TaskStore
 
@@ -30,11 +32,9 @@ def _seed_state(store: TaskStore, repository: str, issue_number: int) -> dict:
     store.create_task(task_id, repository, issue_number)
     return {
         "task_id": task_id,
-        "repository": repository,
-        "issue_number": issue_number,
-        "issue_title": issue.title,
-        "issue_body": issue.body,
-        "branch": f"ai/issue-{issue_number}",
+        "input": {"provider": "github", "data": {"repository": repository, "number": issue_number,
+            "title": issue.title, "body": issue.body}, "provider_state": {}},
+        "processing": {}, "workspace": {"branch": f"ai/issue-{issue_number}"}, "output": {},
         "status": state_mod.RECEIVED,
         "iteration": 1,
         "phase_attempts": 1,
@@ -45,13 +45,27 @@ def _now() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _run_graph(store: TaskStore, seed: dict | None, task_id: str) -> dict:
+def _run_graph(
+    store: TaskStore,
+    seed: dict | None,
+    task_id: str,
+    *,
+    executor=None,
+    workspace_manager=None,
+    destination=None,
+) -> dict:
     """Run (or resume) the graph, streaming per-node progress to stdout and DB.
 
     The graph is built per run so the heartbeat callback knows the task_id.
     Status persistence is best-effort: a PersistenceError never crashes the run
     (the LangGraph checkpoint remains the source of truth).
     """
+    if executor is None and workspace_manager is None and destination is None:
+        runtime = compose_runtime(store)
+        executor = runtime.executor
+        workspace_manager = runtime.workspace_manager
+        destination = runtime.destination
+
     node_starts: dict[str, float] = {}
 
     def on_node_start(node: str, state: dict) -> None:
@@ -62,7 +76,16 @@ def _run_graph(store: TaskStore, seed: dict | None, task_id: str) -> dict:
         except PersistenceError as exc:
             print(f"[{_now()}] [{node}] warning: heartbeat failed: {exc}", flush=True)
 
-    graph = build_graph(store.checkpointer(), on_node_start=on_node_start)
+    graph_kwargs = {"on_node_start": on_node_start}
+    supported = inspect.signature(build_graph).parameters
+    for name, value in (
+        ("executor", executor),
+        ("workspace_manager", workspace_manager),
+        ("destination", destination),
+    ):
+        if value is not None and (name in supported or any(p.kind == p.VAR_KEYWORD for p in supported.values())):
+            graph_kwargs[name] = value
+    graph = build_graph(store.checkpointer(), **graph_kwargs)
     config_dict = {"configurable": {"thread_id": task_id}}
     for chunk in graph.stream(seed, config=config_dict, stream_mode="updates"):
         for node, update in chunk.items():
@@ -75,10 +98,12 @@ def _run_graph(store: TaskStore, seed: dict | None, task_id: str) -> dict:
                     store.update_task(
                         task_id,
                         status=status,
-                        workspace=update.get("workspace"),
-                        branch=update.get("branch"),
-                        pr_number=update.get("pr_number"),
+                        workspace=(update.get("workspace") or {}).get("path") if isinstance(update.get("workspace"), dict) else update.get("workspace"),
+                        branch=(update.get("workspace") or {}).get("branch") if isinstance(update.get("workspace"), dict) else update.get("branch"),
+                        pr_number=(update.get("output") or {}).get("provider_state", {}).get("pr_number") if isinstance(update.get("output"), dict) else update.get("pr_number"),
                         error=update.get("error"),
+                        input_provider=(update.get("input") or {}).get("provider"),
+                        output_provider=(update.get("output") or {}).get("provider"),
                     )
                     workspace.append_event(
                         task_id,
@@ -206,15 +231,41 @@ def cmd_reset(args: argparse.Namespace) -> None:
     print(f"[{_now()}] reset {task_id}: deleted; will re-run on next poll", flush=True)
 
 
+def _result_pr_number(result: dict) -> int | None:
+    """Read the canonical PR number, with a fallback for pre-Task 5 results."""
+    output = result.get("output")
+    if isinstance(output, dict):
+        provider_state = output.get("provider_state")
+        if isinstance(provider_state, dict):
+            return provider_state.get("pr_number")
+        return None
+    if "output" not in result:
+        return result.get("pr_number")
+    return None
+
+
+def _result_url(result: dict) -> str | None:
+    output = result.get("output")
+    if isinstance(output, dict):
+        url = output.get("url")
+        return str(url) if url is not None else None
+    return None
+
+
 def _persist_result(store: TaskStore, result: dict) -> None:
     status = result.get("status", state_mod.FAILED)
+    pr_number = _result_pr_number(result)
+    publication_url = _result_url(result)
     store.update_task(
         result["task_id"],
         status=status,
-        workspace=result.get("workspace"),
-        branch=result.get("branch"),
-        pr_number=result.get("pr_number"),
+        workspace=(result.get("workspace") or {}).get("path") if isinstance(result.get("workspace"), dict) else result.get("workspace"),
+        branch=(result.get("workspace") or {}).get("branch") if isinstance(result.get("workspace"), dict) else result.get("branch"),
+        pr_number=pr_number,
+        publication_url=publication_url,
         error=result.get("error") if status != state_mod.COMPLETED else None,
+        input_provider=(result.get("input") or {}).get("provider"),
+        output_provider=(result.get("output") or {}).get("provider"),
     )
     if status == state_mod.COMPLETED:
         store.clear_error(result["task_id"])
@@ -223,11 +274,13 @@ def _persist_result(store: TaskStore, result: dict) -> None:
         result["task_id"],
         event="task_end",
         status=status,
-        pr_number=result.get("pr_number"),
+        pr_number=pr_number,
+        publication_url=publication_url,
         error=(result.get("error") or "")[:200] if status != state_mod.COMPLETED else None,
     )
     if status == state_mod.COMPLETED:
-        print(f"[{_now()}] COMPLETED: PR #{result['pr_number']} for {result['task_id']}")
+        reference = f"PR #{pr_number}" if pr_number is not None else publication_url or "published result"
+        print(f"[{_now()}] COMPLETED: {reference} for {result['task_id']}")
     else:
         print(f"[{_now()}] {status}: {result.get('error', 'no error')}")
 
@@ -240,7 +293,7 @@ def cmd_list(args: argparse.Namespace) -> None:
         return
     print(f"{'id (owner/repo#issue)':<28} {'status':<12} {'created_at'}{'pr':>8} error")
     for t in tasks:
-        pr = f" #{t['pr_number']}" if t["pr_number"] else ""
+        pr = f" #{t['pr_number']}" if t["pr_number"] else f" {t['publication_url']}" if t.get("publication_url") else ""
         err = f" ({t['error']})" if t["error"] else ""
         print(f"{t['task_id']:<28} {t['status']:<12} {t['created_at']}{pr}{err}")
 
@@ -372,10 +425,27 @@ def cmd_poll(args: argparse.Namespace) -> None:
     lock_fd = _acquire_poll_lock()
     try:
         store = TaskStore()
+        runtime = compose_runtime(store)
+        application = PollingApplication(
+            store,
+            runtime.input_source,
+            lambda current_store, seed, task_id: _run_graph(
+                current_store,
+                seed,
+                task_id,
+                executor=runtime.executor,
+                workspace_manager=runtime.workspace_manager,
+                destination=runtime.destination,
+            ),
+            _persist_result,
+            _reset_task,
+            now=_now,
+            input_provider=runtime.input_provider,
+        )
         while True:
             _detect_stale_tasks(store)
             try:
-                _poll_once(store, args.once)
+                application.poll_once(args.once)
             except PersistenceError as exc:
                 print(f"[{_now()}] poll: persistence error (continuing): {exc}", flush=True)
             if args.once:
@@ -395,201 +465,6 @@ ACTIVE_STATUSES = {
     state_mod.REVIEWING,
     state_mod.CREATING_PR,
 }
-
-
-def _poll_once(store: TaskStore, once: bool) -> None:
-    for repository in config.allowed_repositories():
-        label = config.repository_label(repository)
-        try:
-            issues = github.list_open_issues(repository)
-        except github.GitHubError as exc:
-            print(f"[{_now()}] poll {repository}: {exc}", flush=True)
-            continue
-
-        # 1. /ai-agent comments on open issues (all of them, regardless of label).
-        for issue in issues:
-            if _check_comments(store, repository, issue.number, f"{repository}#{issue.number}"):
-                if once:
-                    return
-
-        # 2. PR conversation comments (PRs are issues in the API).
-        try:
-            prs = github.list_open_pull_requests(repository)
-        except github.GitHubError as exc:
-            print(f"[{_now()}] poll {repository}: prs: {exc}", flush=True)
-            prs = []
-        for pr in prs:
-            match = re.match(r"^ai/issue-(\d+)$", pr.head_ref)
-            if not match:
-                continue  # not an orchestrator branch
-            issue_number = int(match.group(1))
-            if _check_comments(store, repository, pr.number, f"{repository}#{issue_number}", pr_number=pr.number):
-                if once:
-                    return
-
-        # 3. Label-based new-issue flow (unchanged).
-        if label:
-            issues = [i for i in issues if label in i.labels]
-            print(f"[{_now()}] poll {repository}: {len(issues)} labeled issue(s) (label={label})", flush=True)
-        for issue in issues:
-            if store.exists(repository, issue.number):
-                continue
-            print(f"[{_now()}] new issue: {repository}#{issue.number} - {issue.title}")
-            seed = {
-                "task_id": f"{repository}#{issue.number}",
-                "repository": repository,
-                "issue_number": issue.number,
-                "issue_title": issue.title,
-                "issue_body": issue.body,
-                "branch": f"ai/issue-{issue.number}",
-                "status": state_mod.RECEIVED,
-                "iteration": 1,
-                "phase_attempts": 1,
-            }
-            store.create_task(seed["task_id"], repository, issue.number)
-            result = _run_graph(store, seed, seed["task_id"])
-            _persist_result(store, result)
-            if once:
-                return
-
-
-def _pr_context_block(pr: github.PullRequestDetail) -> str:
-    files = ", ".join(f"{path} ({status})" for path, status in pr.files[:20]) or "n/a"
-    return (
-        f"<pr>\n"
-        f"number: {pr.number}\n"
-        f"title: {pr.title}\n"
-        f"url: {pr.url}\n"
-        f"base: {pr.base_ref} -> head: {pr.head_ref}\n"
-        f"description: {pr.body}\n"
-        f"changed files: {files}\n"
-        f"</pr>"
-    )
-
-
-def _fetch_pr_context(repository: str, pr_number: int) -> tuple[github.PullRequestDetail | None, str | None]:
-    """Fetch PR metadata for the context block; failures are tolerated."""
-    try:
-        pr = github.get_pull_request(repository, pr_number)
-        return pr, _pr_context_block(pr)
-    except github.GitHubError as exc:
-        print(f"[{_now()}] command comment: could not fetch PR #{pr_number}: {exc}", flush=True)
-        return None, None
-
-
-def _check_comments(
-    store: TaskStore, repository: str, number: int, task_id: str, pr_number: int | None = None
-) -> bool:
-    """Scan comments on an issue or PR conversation for the command prefix.
-
-    Returns True if a comment-triggered run was started.
-    """
-    command = config.repository_command(repository)
-    try:
-        comments = github.list_issue_comments(repository, number)
-    except github.GitHubError as exc:
-        print(f"[{_now()}] poll {repository}#{number}: comments: {exc}", flush=True)
-        return False
-    triggered = False
-    for comment in comments:
-        if not comment.body.strip().startswith(command):
-            continue
-        if store.is_comment_handled(comment.id, stale_after_seconds=config.STALE_SECONDS):
-            continue
-        task = store.get_task(task_id)
-        if task and task["status"] in ACTIVE_STATUSES:
-            print(
-                f"[{_now()}] poll {repository}#{number}: comment {comment.id} ignored (task {task['status']})",
-                flush=True,
-            )
-            continue
-        _trigger_comment_run(store, repository, task_id, comment, pr_number=pr_number)
-        triggered = True
-    return triggered
-
-
-def _trigger_comment_run(
-    store: TaskStore,
-    repository: str,
-    task_id: str,
-    comment: github.IssueComment,
-    pr_number: int | None = None,
-) -> None:
-    """Full re-run triggered by a /ai-agent comment, with reaction feedback."""
-    command = config.repository_command(repository)
-    print(
-        f"[{_now()}] command comment {comment.id} on {repository} ({task_id}): "
-        f"{comment.body.strip().splitlines()[0][:80]}",
-        flush=True,
-    )
-
-    # Re-check right before resetting: the task may have started since the scan.
-    task = store.get_task(task_id)
-    if task and task["status"] in ACTIVE_STATUSES:
-        print(
-            f"[{_now()}] command comment {comment.id}: skipped (task {task_id} is {task['status']})",
-            flush=True,
-        )
-        return
-
-    store.mark_comment_handled(comment.id, task_id, repository, int(task_id.rsplit("#", 1)[1]), "STARTED")
-    try:
-        github.add_reaction(repository, comment.id, "eyes")
-    except github.GitHubError as exc:
-        print(f"[{_now()}] reaction 'eyes' failed: {exc}", flush=True)
-
-    issue_number = int(task_id.rsplit("#", 1)[1])
-    _reset_task(store, repository, issue_number, f"ai/issue-{issue_number}")
-
-    # Full context: the issue + (when known or when a PR exists) the PR.
-    context: list[str] = []
-    found_pr: int | None = pr_number
-    try:
-        issue = github.get_issue(repository, issue_number)
-    except github.GitHubError as exc:
-        store.update_comment_status(comment.id, state_mod.FAILED)
-        try:
-            github.add_reaction(repository, comment.id, "-1")
-        except github.GitHubError:
-            pass
-        print(f"[{_now()}] command comment {comment.id}: could not load issue: {exc}", flush=True)
-        return
-
-    if found_pr is None:
-        try:
-            found_pr = github.find_open_pr(repository, f"ai/issue-{issue_number}")
-        except github.GitHubError:
-            found_pr = None
-    if found_pr is not None:
-        _, pr_block = _fetch_pr_context(repository, found_pr)
-        if pr_block:
-            context.append(pr_block)
-
-    context.append(comment.body)
-    seed = {
-        "task_id": task_id,
-        "repository": repository,
-        "issue_number": issue_number,
-        "issue_title": issue.title,
-        "issue_body": issue.body,
-        "branch": f"ai/issue-{issue_number}",
-        "status": state_mod.RECEIVED,
-        "iteration": 1,
-        "phase_attempts": 1,
-        "pr_number": found_pr,
-        "extra_context": context,
-    }
-
-    store.create_task(task_id, repository, issue_number)
-    result = _run_graph(store, seed, task_id)
-    _persist_result(store, result)
-    final_status = result.get("status", state_mod.FAILED)
-    reaction = "rocket" if final_status == state_mod.COMPLETED else "-1"
-    try:
-        github.add_reaction(repository, comment.id, reaction)
-    except github.GitHubError as exc:
-        print(f"[{_now()}] reaction '{reaction}' failed: {exc}", flush=True)
-    store.update_comment_status(comment.id, final_status)
 
 
 def main(argv: list[str] | None = None) -> None:
