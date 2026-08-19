@@ -25,12 +25,18 @@ class GitWorkspaceManager:
         if not base_branch:
             base_branch = git.detect_default_branch(repo_dir)
 
-        issue_number = request.task_id.rsplit("#", 1)[-1]
-        review = request.task_id.startswith("review:")
-        branch = request.branch or f"ai/issue-{issue_number}"
+        if request.purpose not in {"execution", "review"}:
+            raise git.GitError(f"unknown workspace purpose: {request.purpose}")
+        review = request.purpose == "review"
+        issue_number = provider_state.get("issue_number")
+        if not review and issue_number is None:
+            issue_number = request.task_id.rsplit("#", 1)[-1]
+        branch = "" if review else request.branch or (f"ai/issue-{issue_number}" if issue_number is not None else "")
+        if not review and not issue_number and not provider_state.get("workspace"):
+            raise git.GitError("execution workspace requires an issue number or path")
         workspace_path = Path(
             provider_state.get("workspace")
-            or (workspace.review_workspace(request.repository, int(issue_number)) if review
+            or (workspace.review_workspace(request.repository, int(provider_state["number"])) if review
                 else workspace.task_workspace(request.repository, int(issue_number)))
         )
         if review:

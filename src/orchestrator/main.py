@@ -54,6 +54,7 @@ def _run_graph(
     executor=None,
     workspace_manager=None,
     destination=None,
+    runtime=None,
 ) -> dict:
     """Run (or resume) the graph, streaming per-node progress to stdout and DB.
 
@@ -61,11 +62,12 @@ def _run_graph(
     Status persistence is best-effort: a PersistenceError never crashes the run
     (the LangGraph checkpoint remains the source of truth).
     """
-    if executor is None and workspace_manager is None and destination is None:
-        runtime = compose_runtime(store)
-        executor = runtime.executor
-        workspace_manager = runtime.workspace_manager
-        destination = runtime.destination
+    if runtime is None and executor is None and workspace_manager is None and destination is None:
+        configured_runtime = compose_runtime(store)
+        executor = configured_runtime.executor
+        workspace_manager = configured_runtime.workspace_manager
+        destination = configured_runtime.destination
+        runtime = configured_runtime.execution_runtime
 
     node_starts: dict[str, float] = {}
 
@@ -83,6 +85,7 @@ def _run_graph(
         ("executor", executor),
         ("workspace_manager", workspace_manager),
         ("destination", destination),
+        ("runtime", runtime),
     ):
         if value is not None and (name in supported or any(p.kind == p.VAR_KEYWORD for p in supported.values())):
             graph_kwargs[name] = value
@@ -462,6 +465,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
                 executor=runtime.executor,
                 workspace_manager=runtime.workspace_manager,
                 destination=runtime.destination,
+                runtime=runtime.execution_runtime,
             ),
             _persist_result,
             _reset_task,

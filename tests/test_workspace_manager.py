@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator import git
+from orchestrator import git, workspace
 from orchestrator.git_workspace import GitWorkspaceManager
 from orchestrator.providers import WorkspaceRequest
 
@@ -37,6 +37,19 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     assert not workspace_path.exists()
 
 
+def test_prepare_derives_issue_number_from_task_id(remote_repo):
+    manager = GitWorkspaceManager()
+    result = manager.prepare(WorkspaceRequest(
+        "company/backend#7", "company/backend", "", "main",
+        {"repository_url": f"file://{remote_repo}"},
+    ))
+
+    assert result.branch == "ai/issue-7"
+    assert Path(result.workspace) == workspace.task_workspace("company/backend", 7)
+    assert Path(result.workspace).exists()
+    manager.cleanup(result)
+
+
 def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch, tmp_path):
     fetched = []
     monkeypatch.setattr(git, "ensure_base_clone", lambda repository, url: tmp_path / "repo")
@@ -45,11 +58,13 @@ def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch
     monkeypatch.setattr("orchestrator.github.get_clone_url", lambda repository: "origin-url")
     monkeypatch.setattr("orchestrator.github.get_default_branch", lambda repository: "main")
     manager = GitWorkspaceManager()
-    manager.prepare(WorkspaceRequest(
+    result = manager.prepare(WorkspaceRequest(
         "review:company/backend#4", "company/backend", "", "main",
         {"head_sha": "fork-sha", "head_clone_url": "", "workspace": str(tmp_path / "ws")},
+        purpose="review",
     ))
     assert fetched == [("fork-sha", "origin")]
+    assert result.branch == ""
 
 
 def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
@@ -61,4 +76,5 @@ def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
         GitWorkspaceManager().prepare(WorkspaceRequest(
             "review:company/backend#4", "company/backend", "", "main",
             {"head_sha": "missing", "workspace": str(tmp_path / "ws")},
+            purpose="review",
         ))

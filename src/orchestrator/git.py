@@ -82,9 +82,10 @@ def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
     """Remove a task worktree and its branch (used for clean re-runs)."""
     if workspace.exists():
         _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
-    proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
-    if branch in proc.stdout.split():
-        _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+    if branch:
+        proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
+        if branch in proc.stdout.split():
+            _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
 
 
 def create_worktree(repo_dir: Path, workspace: Path, branch: str, base_branch: str) -> None:

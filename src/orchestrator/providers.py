@@ -77,6 +77,7 @@ class WorkspaceRequest:
     branch: str
     base_branch: str
     provider_state: dict[str, Any] = field(default_factory=dict)
+    purpose: str = "execution"
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)

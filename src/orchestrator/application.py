@@ -10,6 +10,8 @@ from orchestrator.github_input import GitHubPollingInputSource, _pr_context_bloc
 from orchestrator.providers import (
     Destination, Executor, InputEvent, InputSource, WorkspaceManager, validate_provider_state,
 )
+from orchestrator.runtime import compose_execution_runtime
+from orchestrator.runtime.execution import ExecutionRuntime
 
 
 @dataclass(frozen=True)
@@ -19,25 +21,33 @@ class Runtime:
     workspace_manager: WorkspaceManager
     destination: Destination
     input_provider: str | None = None
+    execution_runtime: ExecutionRuntime | None = None
 
 
 def compose_runtime(store: Any) -> Runtime:
     """Construct the configured provider pipeline with explicit dependencies."""
     pipeline = config.load_pipeline_config()
+    input_source = config.INPUT_PROVIDERS.create(
+        pipeline.input_source.type, {**pipeline.input_source.options, "store": store, "_runtime": True}
+    )
+    executor = config.EXECUTOR_PROVIDERS.create(
+        pipeline.executor.type, {**pipeline.executor.options, "_runtime": True}
+    )
+    workspace_manager = config.WORKSPACE_PROVIDERS.create(
+        pipeline.workspace_manager.type, {**pipeline.workspace_manager.options, "_runtime": True}
+    )
+    destination = config.DESTINATION_PROVIDERS.create(
+        pipeline.destination.type, {**pipeline.destination.options, "_runtime": True}
+    )
     return Runtime(
-        input_source=config.INPUT_PROVIDERS.create(
-            pipeline.input_source.type, {**pipeline.input_source.options, "store": store, "_runtime": True}
-        ),
-        executor=config.EXECUTOR_PROVIDERS.create(
-            pipeline.executor.type, {**pipeline.executor.options, "_runtime": True}
-        ),
-        workspace_manager=config.WORKSPACE_PROVIDERS.create(
-            pipeline.workspace_manager.type, {**pipeline.workspace_manager.options, "_runtime": True}
-        ),
-        destination=config.DESTINATION_PROVIDERS.create(
-            pipeline.destination.type, {**pipeline.destination.options, "_runtime": True}
-        ),
+        input_source=input_source,
+        executor=executor,
+        workspace_manager=workspace_manager,
+        destination=destination,
         input_provider=pipeline.input_source.type,
+        execution_runtime=compose_execution_runtime(
+            executor=executor, workspace_manager=workspace_manager, destination=destination
+        ),
     )
 
 
