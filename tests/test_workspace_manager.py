@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator import git
+from orchestrator import git, workspace
 from orchestrator.git_workspace import GitWorkspaceManager
 from orchestrator.providers import WorkspaceRequest
 
@@ -35,6 +35,19 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     GitWorkspaceManager().cleanup(result)
     assert calls == ["create", "remove"]
     assert not workspace_path.exists()
+
+
+def test_prepare_derives_issue_number_from_task_id(remote_repo):
+    manager = GitWorkspaceManager()
+    result = manager.prepare(WorkspaceRequest(
+        "company/backend#7", "company/backend", "", "main",
+        {"repository_url": f"file://{remote_repo}"},
+    ))
+
+    assert result.branch == "ai/issue-7"
+    assert Path(result.workspace) == workspace.task_workspace("company/backend", 7)
+    assert Path(result.workspace).exists()
+    manager.cleanup(result)
 
 
 def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch, tmp_path):

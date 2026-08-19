@@ -29,6 +29,8 @@ class GitWorkspaceManager:
             raise git.GitError(f"unknown workspace purpose: {request.purpose}")
         review = request.purpose == "review"
         issue_number = provider_state.get("issue_number")
+        if not review and issue_number is None:
+            issue_number = request.task_id.rsplit("#", 1)[-1]
         branch = "" if review else request.branch or (f"ai/issue-{issue_number}" if issue_number is not None else "")
         if not review and not issue_number and not provider_state.get("workspace"):
             raise git.GitError("execution workspace requires an issue number or path")
