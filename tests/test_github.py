@@ -152,6 +152,22 @@ def test_remove_pull_request_label_propagates_other_errors(monkeypatch):
         github.remove_pull_request_label("company/backend", 14, "label")
 
 
+def test_publish_pull_request_review_includes_commit_id(monkeypatch):
+    calls = []
+
+    def run(args, input_text=None):
+        calls.append((args, json.loads(input_text)))
+        return ""
+
+    monkeypatch.setattr(github, "_run_gh", run)
+    github.publish_pull_request_review(
+        "company/backend", 14, "summary", [{"path": "a.py", "line": 2}], "COMMENT", "abc123"
+    )
+
+    assert calls[0][1]["commit_id"] == "abc123"
+    assert calls[0][1]["comments"] == [{"path": "a.py", "line": 2}]
+
+
 def test_list_open_issues_empty(monkeypatch):
     monkeypatch.setattr(github, "_run_gh", lambda args: "[]")
     assert github.list_open_issues("company/backend") == []

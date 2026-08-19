@@ -150,7 +150,7 @@ def test_github_destination_demotes_invalid_locations_and_validates_start_side()
     published = []
 
     class Client:
-        def publish_pull_request_review(self, *args):
+        def publish_pull_request_review(self, *args, **kwargs):
             published.append(args)
 
         def add_pull_request_label(self, *args):
@@ -178,3 +178,21 @@ def test_review_executor_rejects_invalid_structured_result(monkeypatch):
     result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", {"number": 1}))
     assert not result.success
     assert "invalid structured" in result.summary
+
+
+def test_review_executor_uses_configured_primary_model(monkeypatch):
+    captured = {}
+
+    def run(*args, **kwargs):
+        captured.update(kwargs)
+        return OpenCodeResult(0, json.dumps({
+            "verdict": "comment", "summary": "ok", "findings": [], "checks": [],
+        }), "", 0.1)
+
+    monkeypatch.setattr("orchestrator.opencode.run_opencode", run)
+    monkeypatch.setattr(config, "MODEL_PRIMARY", config.ModelConfig("provider/model", "fast"))
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+
+    assert result.success
+    assert captured["model"] == "provider/model"
+    assert captured["variant"] == "fast"

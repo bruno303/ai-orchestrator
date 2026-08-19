@@ -100,5 +100,12 @@ class GitHubReviewDestination:
             comments.append(comment)
         verdict = result.verdict.lower()
         event = "APPROVE" if verdict in {"approve", "approved"} else "REQUEST_CHANGES" if verdict in {"request_changes", "changes_requested"} else "COMMENT"
-        self.github_client.publish_pull_request_review(request.repository, number, _summary(result), comments, event)
+        self.github_client.publish_pull_request_review(
+            request.repository,
+            number,
+            _summary(result),
+            comments,
+            event,
+            commit_id=request.provider_state.get("head_sha"),
+        )
         self.github_client.add_pull_request_label(request.repository, number, self.options.get("processed_label", "ai-reviewed"))

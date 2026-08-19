@@ -66,10 +66,12 @@ class OpenCodeReviewExecutor:
 
     def execute(self, request: ReviewRequest) -> ReviewResult:
         options = {**self.options, **request.provider_state}
+        model_config = config.MODEL_PRIMARY
         result = run_opencode(
             request.workspace, options.get("agent", "review"), request.prompt,
             log_file=Path(options["log_file"]) if options.get("log_file") else None,
-            model=options.get("model"), variant=options.get("variant"),
+            model=options.get("model") or (model_config.name if model_config else None),
+            variant=options.get("variant") or (model_config.variant if model_config else None),
             timeout=options.get("timeout"), detect_degenerate=options.get("detect_degenerate", True),
         )
         if result.exit_code != 0:

@@ -315,9 +315,12 @@ def publish_pull_request_review(
     body: str,
     comments: list[dict] | None = None,
     event: str = "COMMENT",
+    commit_id: str | None = None,
 ) -> None:
     """Publish a review summary and optional inline comments in one API call."""
     payload = {"body": body, "event": event, "comments": comments or []}
+    if commit_id:
+        payload["commit_id"] = commit_id
     _run_gh(
         ["api", "--method", "POST", f"repos/{repository}/pulls/{number}/reviews", "--input", "-"],
         input_text=json.dumps(payload),

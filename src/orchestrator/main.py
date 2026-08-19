@@ -477,7 +477,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
             _poll_reviews(review_application)
             if args.once:
                 break
-                print(f"[{_now()}] execute: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
+            print(f"[{_now()}] execute: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
             time.sleep(config.POLL_INTERVAL_SECONDS)
     finally:
         lock_fd.close()
