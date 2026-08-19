@@ -45,11 +45,13 @@ def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch
     monkeypatch.setattr("orchestrator.github.get_clone_url", lambda repository: "origin-url")
     monkeypatch.setattr("orchestrator.github.get_default_branch", lambda repository: "main")
     manager = GitWorkspaceManager()
-    manager.prepare(WorkspaceRequest(
+    result = manager.prepare(WorkspaceRequest(
         "review:company/backend#4", "company/backend", "", "main",
         {"head_sha": "fork-sha", "head_clone_url": "", "workspace": str(tmp_path / "ws")},
+        purpose="review",
     ))
     assert fetched == [("fork-sha", "origin")]
+    assert result.branch == ""
 
 
 def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
@@ -61,4 +63,5 @@ def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
         GitWorkspaceManager().prepare(WorkspaceRequest(
             "review:company/backend#4", "company/backend", "", "main",
             {"head_sha": "missing", "workspace": str(tmp_path / "ws")},
+            purpose="review",
         ))

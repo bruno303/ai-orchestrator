@@ -137,11 +137,30 @@ support arbitrary unchanged-file locations.
 
 ## How it works
 
-The runtime is provider-neutral at its four integration boundaries:
+Workflow engines decide which step runs next; reusable runtime services perform
+the side effects. The issue and review workflows remain separate and share the
+provider implementations underneath:
 
 ```
-InputSource -> Workflow -> Executor / WorkspaceManager -> Destination
+Issue source
+    -> LangGraph issue workflow
+    -> ExecutionRuntime: prepare / plan / implement / test / publish / cleanup
+    -> Executor / WorkspaceManager / Destination
+
+PR review source
+    -> ReviewApplication
+    -> ReviewRuntime: prepare / execute_review / publish_review / cleanup_review
+    -> ReviewExecutor / WorkspaceManager / ReviewDestination
 ```
+
+Runtime operations accept typed request objects rather than LangGraph state, so
+the same issue and review steps can later be called by an HTTP API, n8n, or
+another workflow engine without duplicating OpenCode, git, or provider logic.
+LangGraph remains responsible for issue checkpoints and routing; the polling
+review workflow remains independently invokable and does not use issue
+checkpoints.
+
+The runtime is provider-neutral at its integration boundaries:
 
 The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the GitHub
 destination. New seeds and graph updates write only the `input`, `processing`,

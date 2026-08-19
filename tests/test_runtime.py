@@ -1,0 +1,168 @@
+"""Unit tests for reusable execution and review runtime facades."""
+
+from __future__ import annotations
+
+import pytest
+
+from orchestrator import config, opencode
+from orchestrator.providers import ExecutionResult, PublicationResult, ReviewEvent, ReviewResult, WorkspaceResult
+from orchestrator.runtime import compose_execution_runtime
+from orchestrator.runtime.errors import ReviewExecutionError
+from orchestrator.runtime.models import (
+    AgentRequest,
+    CleanupRequest,
+    CleanupReviewRequest,
+    ExecuteReviewRequest,
+    ImplementationRequest,
+    IssueContext,
+    PlanRequest,
+    PrepareExecutionRequest,
+    PrepareReviewRequest,
+    PublishRequest,
+    PublishReviewRequest,
+    TestRequest as RuntimeTestRequest,
+)
+from orchestrator.runtime.review import REVIEW_PROMPT, ReviewRuntime
+
+
+class ExecutionWorkspace:
+    def __init__(self, path: str):
+        self.path = path
+        self.requests = []
+        self.cleaned = []
+
+    def prepare(self, request):
+        self.requests.append(request)
+        return WorkspaceResult(self.path, request.branch, {"base_branch": "main", "workspace_id": "w1"})
+
+    def cleanup(self, result):
+        self.cleaned.append(result)
+
+
+class ExecutionAgent:
+    def __init__(self):
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        if request.agent == "plan":
+            return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.", provider_state={"session": "s1"})
+        return ExecutionResult(True, 0, stdout=f"{request.agent} complete", provider_state={"session": "s1"})
+
+
+def _context() -> IssueContext:
+    return IssueContext("repo#7", "company/backend", 7, "Add feature", "Body")
+
+
+def test_execution_runtime_exposes_independent_steps(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "is_repository_allowed", lambda repository: True)
+    workspace_manager = ExecutionWorkspace(str(tmp_path))
+    executor = ExecutionAgent()
+    runtime = compose_execution_runtime(
+        executor=executor,
+        workspace_manager=workspace_manager,
+        destination=type("Destination", (), {"publish": lambda self, request: PublicationResult(number=17)})(),
+    )
+    prepared = runtime.prepare(PrepareExecutionRequest(_context(), workspace=str(tmp_path)))
+    plan = runtime.plan(PlanRequest(_context(), prepared.workspace.workspace))
+    implementation = runtime.implement(
+        ImplementationRequest(_context(), prepared.workspace.workspace, provider_state=plan.phase.provider_state)
+    )
+    tests = runtime.test(RuntimeTestRequest(_context(), prepared.workspace.workspace, implementation.phase.provider_state))
+    published = runtime.publish(
+        PublishRequest(_context(), prepared.workspace.workspace, prepared.workspace.branch, prepared.base_branch)
+    )
+    runtime.cleanup(CleanupRequest("company/backend", prepared.workspace))
+
+    assert plan.plan_path == ".agents/plans/plan.md"
+    assert implementation.summary == "build complete"
+    assert tests.summary == "build complete"
+    assert published.publication.number == 17
+    assert workspace_manager.requests[0].purpose == "execution"
+    assert len(workspace_manager.cleaned) == 1
+    assert executor.requests[1].provider_state["session"] == "s1"
+
+
+def test_execution_runtime_retries_degenerate_phase_with_fallback(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", True)
+    monkeypatch.setattr(config, "PHASE_MAX_ATTEMPTS", 2)
+
+    class FlakyExecutor:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise opencode.DegenerateOutputError("loop")
+            return ExecutionResult(True, 0, stdout="ok")
+
+    runtime = compose_execution_runtime(
+        executor=FlakyExecutor(), workspace_manager=ExecutionWorkspace(str(tmp_path)), destination=object()
+    )
+    result = runtime.execute_phase(AgentRequest(_context(), "implement", "build", "prompt", str(tmp_path)))
+    assert result.attempts == 2
+
+
+def test_execution_runtime_uses_requested_plan_path(tmp_path):
+    executor = ExecutionAgent()
+    runtime = compose_execution_runtime(
+        executor=executor,
+        workspace_manager=ExecutionWorkspace(str(tmp_path)),
+        destination=object(),
+    )
+    requested = ".agents/plans/custom.md"
+    runtime.implement(ImplementationRequest(_context(), str(tmp_path), plan_path=requested))
+    assert requested in executor.requests[0].prompt
+
+
+def test_review_runtime_keeps_review_workspace_mode_explicit(tmp_path):
+    captured = {}
+
+    class ReviewWorkspace:
+        def prepare(self, request):
+            captured["purpose"] = request.purpose
+            return WorkspaceResult(str(tmp_path), "", {"repo_dir": str(tmp_path)})
+
+        def cleanup(self, result):
+            captured["cleaned"] = True
+
+    class ReviewExecutor:
+        def execute(self, request):
+            captured["request"] = request
+            return ReviewResult(True, verdict="approve", summary="ok")
+
+    class ReviewDestination:
+        def publish(self, request, result):
+            captured["published"] = True
+
+    event = ReviewEvent("event-1", "company/backend", provider_state={"number": 3, "head_sha": "sha"})
+    runtime = ReviewRuntime(ReviewExecutor(), ReviewWorkspace(), ReviewDestination())
+    prepared = runtime.prepare(PrepareReviewRequest(event, "review:company/backend#3"))
+    execution = runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
+    runtime.publish_review(PublishReviewRequest(prepared, execution))
+    runtime.cleanup_review(CleanupReviewRequest(prepared))
+
+    assert captured["purpose"] == "review"
+    assert captured["request"].provider_state["log_file"].endswith("review.log")
+    assert captured["published"] and captured["cleaned"]
+
+
+def test_review_runtime_turns_executor_failure_into_typed_error(tmp_path):
+    event = ReviewEvent("event-1", "company/backend", provider_state={"number": 3})
+
+    class Workspace:
+        def prepare(self, request):
+            return WorkspaceResult(str(tmp_path), "", {})
+
+        def cleanup(self, result):
+            pass
+
+    class Executor:
+        def execute(self, request):
+            return ReviewResult(False, summary="invalid structured review output")
+
+    runtime = ReviewRuntime(Executor(), Workspace(), object())
+    prepared = runtime.prepare(PrepareReviewRequest(event, "review:company/backend#3"))
+    with pytest.raises(ReviewExecutionError, match="invalid structured"):
+        runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))

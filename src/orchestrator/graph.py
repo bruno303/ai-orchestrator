@@ -2,32 +2,35 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from orchestrator import config, opencode, state as state_mod, workspace
-from orchestrator.github_destination import GitHubDestination
-from orchestrator.git_workspace import GitWorkspaceManager
+from orchestrator import state as state_mod, workspace
 from orchestrator.providers import (
-    Destination, ExecutionRequest, ExecutionResult, Executor, PublicationRequest,
-    WorkspaceManager, WorkspaceRequest, WorkspaceResult, validate_provider_state,
+    Destination, ExecutionResult, Executor, WorkspaceManager, WorkspaceResult, validate_provider_state,
+)
+from orchestrator.runtime import compose_execution_runtime
+from orchestrator.runtime.errors import RuntimeOperationError
+from orchestrator.runtime.execution import PLAN_FILE, plan_prompt as runtime_plan_prompt
+from orchestrator.runtime.execution import implement_prompt as runtime_implement_prompt
+from orchestrator.runtime.execution import pr_body as runtime_pr_body
+from orchestrator.runtime.execution import test_prompt as runtime_test_prompt
+from orchestrator.runtime.models import (
+    AgentRequest,
+    CleanupRequest,
+    ImplementationRequest,
+    IssueContext,
+    PlanRequest,
+    PrepareExecutionRequest,
+    PublishRequest,
+    TestRequest,
 )
 from orchestrator.state import TaskState
 
-PLAN_FILE = ".agents/plans/plan.md"
-
-
 def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
-
-
-def _clean_terminal_output(text: str) -> str:
-    """Remove terminal control sequences before persisting model output."""
-    return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text).replace("\r", "")
 
 
 def _fail(state: TaskState, error: str) -> dict[str, Any]:
@@ -81,6 +84,33 @@ def _provider_name(component: Any, default: str) -> str:
     return str(getattr(component, "provider_type", getattr(component, "provider_name", default)))
 
 
+def _context(state: TaskState) -> IssueContext:
+    source = _input(state)
+    return IssueContext(
+        task_id=state.get("task_id", f"{source['repository']}#{source['issue_number']}"),
+        repository=source["repository"],
+        issue_number=source["issue_number"],
+        title=source["issue_title"],
+        body=source["issue_body"],
+        extra_context=source["extra_context"],
+        provider_state=source["provider_state"],
+    )
+
+
+def _processing_provider_state(state: TaskState) -> dict[str, Any]:
+    return validate_provider_state(_processing(state).get("provider_state", {}))
+
+
+def _runtime_error(state: TaskState, exc: Exception) -> dict[str, Any]:
+    updates = _fail(state, str(exc))
+    if isinstance(exc, RuntimeOperationError):
+        if exc.attempts is not None:
+            updates["phase_attempts"] = exc.attempts
+        if exc.provider_state:
+            updates["processing"] = _processing(state, {"provider_state": exc.provider_state})
+    return updates
+
+
 def _namespace_updates(state: TaskState, *, input_data: dict[str, Any] | None = None,
                       processing: dict[str, Any] | None = None,
                       workspace_data: dict[str, Any] | None = None,
@@ -100,145 +130,40 @@ def _namespace_updates(state: TaskState, *, input_data: dict[str, Any] | None = 
 def _run_opencode(
     state: TaskState, node: str, agent: str, prompt: str, executor: Executor | None = None
 ) -> tuple[dict[str, Any], ExecutionResult | None]:
-    executor = executor or opencode.OpenCodeExecutor()
-    log_path = workspace.task_log_path(state["task_id"], node)
-    # Per-phase attempt budget: each phase starts at 1 regardless of retries in
-    # earlier phases. phase_attempts is written to state for observability only
-    # and must never feed back into the counter (state is shared across nodes).
-    attempt = 1
-    max_attempts = config.PHASE_MAX_ATTEMPTS if config.MODEL_FALLBACK_ENABLED else 1
-    while attempt <= max_attempts:
-        model_cfg = config.MODEL_PRIMARY if attempt == 1 else config.MODEL_FALLBACK
-        model = model_cfg.name if model_cfg else None
-        variant = model_cfg.variant if model_cfg else None
-        model_label = model or "default"
-        variant_label = variant or "-"
-        print(
-            f"[{_now()}] {node}: starting opencode (agent={agent}, attempt={attempt}, "
-            f"model={model_label}, variant={variant_label}, log={log_path})",
-            flush=True,
+    runtime = compose_execution_runtime(executor=executor)
+    try:
+        result = runtime.execute_phase(
+            AgentRequest(_context(state), node, agent, prompt, _workspace(state)["path"], _processing_provider_state(state))
         )
-        previous_provider_state = validate_provider_state(
-            _processing(state).get("provider_state", {})
-        )
-        try:
-            result = executor.execute(
-                ExecutionRequest(
-                    task_id=state["task_id"],
-                    workspace=_workspace(state)["path"],
-                    prompt=prompt,
-                    agent=agent,
-                    model=model,
-                    variant=variant,
-                    provider_state={
-                        **previous_provider_state,
-                        "log_file": str(log_path),
-                        "detect_degenerate": config.MODEL_FALLBACK_ENABLED,
-                    },
-                )
-            )
-        except opencode.DegenerateOutputError:
-            next_cfg = config.MODEL_FALLBACK
-            next_model = next_cfg.name if next_cfg else None
-            next_variant = next_cfg.variant if next_cfg else None
-            print(
-                f"[{_now()}] {node}: degenerate output (attempt={attempt}, model={model_label}, "
-                f"variant={variant_label}), retrying with model={next_model or 'default'}, "
-                f"variant={next_variant or '-'}",
-                flush=True,
-            )
-            attempt += 1
-            if attempt > max_attempts:
-                return (
-                    {
-                        **_fail(
-                            state,
-                            f"{node} produced degenerate output after {max_attempts} attempts",
-                        ),
-                        "phase_attempts": max_attempts,
-                    },
-                    None,
-                )
-            continue
-        except opencode.OpenCodeError as exc:
-            print(
-                f"[{_now()}] {node}: ERROR {exc} "
-                f"(attempt={attempt}, model={model_label}, variant={variant_label})",
-                flush=True,
-            )
-            return {**_fail(state, str(exc)), "phase_attempts": attempt}, None
-        try:
-            provider_state = validate_provider_state(
-                {**previous_provider_state, **result.provider_state}
-            )
-        except TypeError as exc:
-            return {**_fail(state, str(exc)), "phase_attempts": attempt}, None
-        print(
-            f"[{_now()}] {node}: finished in {result.duration_seconds:.0f}s "
-            f"(exit={result.exit_code}, attempt={attempt}, model={model_label}, variant={variant_label})",
-            flush=True,
-        )
-        if not result.success or result.exit_code != 0:
-            error = (
-                f"{node} executor ({agent}) reported failure"
-                if result.exit_code == 0
-                else f"opencode ({agent}) exited with {result.exit_code}"
-            )
-            return (
-                {
-                    **_fail(state, error),
-                    "phase_attempts": attempt,
-                    "processing": _processing(state, {"provider_state": provider_state}),
-                },
-                result,
-            )
-        return {"phase_attempts": attempt, "processing": _processing(state, {"provider_state": provider_state})}, result
-    return (
-        {
-            **_fail(
-                state,
-                f"{node} produced degenerate output after {max_attempts} attempts",
-            ),
-            "phase_attempts": max_attempts,
-        },
-        None,
-    )
+    except Exception as exc:
+        return _runtime_error(state, exc), None
+    return {"phase_attempts": result.attempts, "processing": _processing(state, {"provider_state": result.provider_state})}, result.execution
 
 
 # ---------------------------------------------------------------- nodes
 
 
-def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None) -> dict[str, Any]:
+def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None, runtime=None) -> dict[str, Any]:
     print(f"[{_now()}] prepare_workspace: starting", flush=True)
     source = _input(state)
     repository = source["repository"]
-    if not config.is_repository_allowed(repository):
-        return _fail(state, f"repository {repository} is not in the allowlist")
     try:
         current_workspace = _workspace(state)
-        workspace_provider_state = validate_provider_state(current_workspace["provider_state"])
         branch = current_workspace["branch"] or f"ai/issue-{source['issue_number']}"
         ws = str(current_workspace["path"] or workspace.task_workspace(repository, source["issue_number"]))
-        result = (manager or GitWorkspaceManager()).prepare(
-            WorkspaceRequest(
-                task_id=state["task_id"], repository=repository, branch=branch,
-                base_branch=current_workspace["base_branch"],
-                provider_state={
-                    **workspace_provider_state,
-                    "repository_url": source["provider_state"].get("repository_url", state.get("repository_url")),
-                    "workspace": ws,
-                },
+        runtime = runtime or compose_execution_runtime(workspace_manager=manager)
+        prepared = runtime.prepare(
+            PrepareExecutionRequest(
+                _context(state), branch, current_workspace["base_branch"], ws,
+                {**current_workspace["provider_state"], "repository_url": source["provider_state"].get("repository_url", state.get("repository_url"))},
             )
-        )
-        provider_state = validate_provider_state(result.provider_state)
-        resolved_base_branch = (
-            provider_state.get("base_branch")
-            or current_workspace["base_branch"]
-            or state.get("base_branch", "")
         )
     except Exception as exc:
         print(f"[{_now()}] prepare_workspace: ERROR {exc}", flush=True)
-        return _fail(state, str(exc))
+        return _runtime_error(state, exc)
+    result = prepared.workspace
+    provider_state = result.provider_state
+    resolved_base_branch = prepared.base_branch
     print(
         f"[{_now()}] prepare_workspace: workspace={result.workspace} branch={result.branch} base={resolved_base_branch}",
         flush=True,
@@ -253,7 +178,7 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None)
             state,
             input_data={"provider": source["provider"], "provider_state": source["provider_state"],
                         "data": input_data},
-            workspace_data={"provider": _provider_name(manager, "git"), "path": result.workspace, "branch": result.branch,
+            workspace_data={"provider": _provider_name(manager or getattr(runtime, "workspace_manager", None), "git"), "path": result.workspace, "branch": result.branch,
                             "base_branch": resolved_base_branch,
                             "provider_state": provider_state},
         ),
@@ -261,81 +186,74 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None)
     }
 
 
-def plan(state: TaskState, executor: Executor | None = None) -> dict[str, Any]:
-    prompt = plan_prompt(state)
-    updates, result = _run_opencode(state, "plan", "plan", prompt, executor)
-    if updates.get("status") == state_mod.FAILED:
-        return updates
-    plan_path = Path(_workspace(state)["path"]) / PLAN_FILE
-    if not plan_path.is_file() and result and result.stdout.strip():
-        plan_path.parent.mkdir(parents=True, exist_ok=True)
-        plan_path.write_text(_clean_terminal_output(result.stdout).strip() + "\n")
-    if not plan_path.is_file():
-        return _fail(state, f"planning completed without creating {PLAN_FILE}")
-    if not plan_path.read_text().strip():
-        return _fail(state, f"planning completed with an empty {PLAN_FILE}")
-    processing = {**_processing(state, updates.get("processing")), "plan_path": PLAN_FILE, "plan_summary": result.stdout[:4000] if result else None}
+def plan(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
+    try:
+        runtime = runtime or compose_execution_runtime(executor=executor)
+        result = runtime.plan(PlanRequest(_context(state), _workspace(state)["path"], _processing_provider_state(state)))
+    except Exception as exc:
+        return _runtime_error(state, exc)
+    processing = {**_processing(state, {"provider_state": result.phase.provider_state}), "plan_path": result.plan_path, "plan_summary": result.summary}
     return {
-        **updates,
         "status": state_mod.PLANNING,
         "processing": processing,
+        "phase_attempts": result.phase.attempts,
     }
 
 
-def implement(state: TaskState, executor: Executor | None = None) -> dict[str, Any]:
-    updates, result = _run_opencode(state, "implement", "build", implement_prompt(state), executor)
-    if updates.get("status") == state_mod.FAILED:
-        return updates
-    processing = {**_processing(state, updates.get("processing")), "implementation_result": result.stdout[:4000] if result else None}
+def implement(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
+    try:
+        runtime = runtime or compose_execution_runtime(executor=executor)
+        result = runtime.implement(ImplementationRequest(_context(state), _workspace(state)["path"], PLAN_FILE, _processing_provider_state(state)))
+    except Exception as exc:
+        return _runtime_error(state, exc)
+    processing = {**_processing(state, {"provider_state": result.phase.provider_state}), "implementation_result": result.summary}
     return {
-        **updates,
         "status": state_mod.IMPLEMENTING,
         "processing": processing,
+        "phase_attempts": result.phase.attempts,
     }
 
 
-def test(state: TaskState, executor: Executor | None = None) -> dict[str, Any]:
-    updates, result = _run_opencode(state, "test", "build", test_prompt(state), executor)
-    if updates.get("status") == state_mod.FAILED:
-        return updates
-    processing = {**_processing(state, updates.get("processing")), "test_result": result.stdout[:4000] if result else None}
+def test(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
+    try:
+        runtime = runtime or compose_execution_runtime(executor=executor)
+        result = runtime.test(TestRequest(_context(state), _workspace(state)["path"], _processing_provider_state(state)))
+    except Exception as exc:
+        return _runtime_error(state, exc)
+    processing = {**_processing(state, {"provider_state": result.phase.provider_state}), "test_result": result.summary}
     return {
-        **updates,
         "status": state_mod.TESTING,
         "processing": processing,
+        "phase_attempts": result.phase.attempts,
     }
 
 
-def create_pr(state: TaskState, destination: Destination | None = None) -> dict[str, Any]:
+def create_pr(state: TaskState, destination: Destination | None = None, runtime=None) -> dict[str, Any]:
     print(f"[{_now()}] create_pr: starting", flush=True)
     try:
         source = _input(state)
         workspace_state = _workspace(state)
         title = f"feat: {source['issue_title']}"[:72]
-        result = (destination or GitHubDestination()).publish(
-            PublicationRequest(
-                repository=source["repository"], title=title, body=_pr_body(state),
-                head=workspace_state["branch"], base=workspace_state["base_branch"],
-                provider_state={
-                    "workspace": workspace_state["path"], "issue_number": source["issue_number"],
-                },
-            )
+        runtime = runtime or compose_execution_runtime(destination=destination)
+        published = runtime.publish(
+            PublishRequest(_context(state), workspace_state["path"], workspace_state["branch"], workspace_state["base_branch"])
         )
+        result = published.publication
         pr_number = result.number
     except Exception as exc:
         print(f"[{_now()}] create_pr: ERROR {exc}", flush=True)
-        return _fail(state, str(exc))
+        return _runtime_error(state, exc)
     print(f"[{_now()}] create_pr: PR #{pr_number} created", flush=True)
     publication_state = validate_provider_state(result.provider_state)
     output = dict(state.get("output") or {})
-    output.update({"provider": _provider_name(destination, "github"),
+    output.update({"provider": _provider_name(destination or getattr(runtime, "destination", None), "github"),
                    "provider_state": {**publication_state, "pr_number": pr_number}})
     if result.url is not None:
         output["url"] = result.url
     return {"status": state_mod.COMPLETED, "output": output}
 
 
-def cleanup(state: TaskState, manager: WorkspaceManager | None = None) -> dict[str, Any]:
+def cleanup(state: TaskState, manager: WorkspaceManager | None = None, runtime=None) -> dict[str, Any]:
     """Remove the task worktree and branch after the PR was created.
 
     Runs only on success; failed tasks keep their worktree for debugging.
@@ -343,14 +261,15 @@ def cleanup(state: TaskState, manager: WorkspaceManager | None = None) -> dict[s
     """
     print(f"[{_now()}] cleanup: starting", flush=True)
     try:
-        cleanup_manager = manager or GitWorkspaceManager()
         workspace_state = _workspace(state)
-        provider_state = dict(workspace_state.get("provider_state") or {})
-        if isinstance(cleanup_manager, GitWorkspaceManager) and "repository" not in provider_state:
-            provider_state["repository"] = _input(state)["repository"]
-        cleanup_manager.cleanup(
-            WorkspaceResult(
-                workspace=workspace_state["path"], branch=workspace_state["branch"], provider_state=provider_state,
+        runtime = runtime or compose_execution_runtime(workspace_manager=manager)
+        runtime.cleanup(
+            CleanupRequest(
+                _input(state)["repository"],
+                WorkspaceResult(
+                    workspace_state["path"], workspace_state["branch"],
+                    workspace_state.get("provider_state") or {},
+                ),
             )
         )
     except Exception as exc:
@@ -372,66 +291,15 @@ def _extra_context(state: TaskState) -> str:
 
 
 def plan_prompt(state: TaskState) -> str:
-    source = _input(state)
-    return f"""You are planning the implementation of GitHub issue #{source['issue_number']} in repository {source['repository']}.
-
-Issue title: {source['issue_title']}
-
-Issue body:
-{source['issue_body']}
-{_extra_context(state)}
-Use the plan-implementation skill.
-
-Requirements:
-1. Analyze the issue and the repository.
-2. Produce the implementation plan in your final response. The orchestrator
-   will save your response to {PLAN_FILE} in this workspace. The plan must use
-   the format required by the subagent-plan-execution skill:
-   clearly separated tasks, each with **Files:** and **Dependencies:**, detailed enough for an implementer unfamiliar with the project.
-3. The plan must cover: requirements, implementation steps, files likely to change, tests required, potential risks, and open questions if the requirements are ambiguous.
-
-Restrictions:
-- Do NOT modify or create repository files. Planning only.
-- Do NOT create a pull request.
-- Do NOT run tests or builds.
-"""
+    return runtime_plan_prompt(_context(state))
 
 
 def implement_prompt(state: TaskState) -> str:
-    source = _input(state)
-    return f"""You are implementing GitHub issue #{source['issue_number']} in repository {source['repository']}.
-
-Issue title: {source['issue_title']}
-
-Issue body:
-{source['issue_body']}
-{_extra_context(state)}
-A plan has been written to {PLAN_FILE}.
-
-Execute the plan using the subagent-plan-execution skill. Invoke it explicitly: load the skill "subagent-plan-execution" (base directory: {config.SKILL_SUBAGENT_PLAN_EXECUTION}) and follow its steps exactly:
-- Step 0: read {PLAN_FILE}
-    - Step 1: for each task, write the brief file, dispatch a fresh implementer subagent, then dispatch a fresh reviewer subagent
-- Step 2: run the quality gate (build, tests, lint) and fix any failures
-
-The skill may perform implementation and reviewer subagent passes internally.
-The orchestrator has no separate top-level review phase; after implementation,
-the workflow runs the standalone test phase and then publishes the PR.
-
-Context:
-- Work only inside this workspace (the task worktree).
-- Do NOT create a pull request or push anything.
-- Report the final result when done.
-"""
+    return runtime_implement_prompt(_context(state))
 
 
 def test_prompt(state: TaskState) -> str:
-    source = _input(state)
-    return f"""Run the test suite of the project in this workspace (repository {source['repository']}, issue #{source['issue_number']}).
-
-Determine the appropriate test command (e.g. pytest, npm test, ./gradlew test) and run it.
-Do NOT modify any code.
-Report the results, including any failures.
-"""
+    return runtime_test_prompt(_context(state))
 
 
 # ---------------------------------------------------------------- helpers
@@ -444,23 +312,7 @@ def _pr_body(state: TaskState, current_body: str | None = None) -> str:
     `current_body` are removed so it is never duplicated. Existing text is
     preserved below the closing reference.
     """
-    closes = f"Closes #{_input(state)['issue_number']}"
-    if not current_body:
-        return closes
-    lines = current_body.splitlines()
-    remainder_lines: list[str] = []
-    skip_blank = False
-    for line in lines:
-        if line.strip() == closes:
-            skip_blank = True
-            continue
-        if skip_blank and line == "":
-            skip_blank = False
-            continue
-        skip_blank = False
-        remainder_lines.append(line)
-    remainder = "\n".join(remainder_lines).strip("\n")
-    return f"{closes}\n\n{remainder}" if remainder else closes
+    return runtime_pr_body(_context(state), current_body)
 
 
 # ---------------------------------------------------------------- graph
@@ -479,6 +331,7 @@ def build_graph(
     executor: Executor | None = None,
     workspace_manager: WorkspaceManager | None = None,
     destination: Destination | None = None,
+    runtime=None,
 ):
     """Build the workflow graph.
 
@@ -506,14 +359,16 @@ def build_graph(
         return wrapped
 
     builder = StateGraph(TaskState)
-    phase_executor = executor or opencode.OpenCodeExecutor()
+    workflow_runtime = runtime or compose_execution_runtime(
+        executor=executor, workspace_manager=workspace_manager, destination=destination
+    )
     nodes = {
-        "prepare_workspace": lambda state: prepare_workspace(state, workspace_manager),
-        "plan": lambda state: plan(state, phase_executor),
-        "implement": lambda state: implement(state, phase_executor),
-        "test": lambda state: test(state, phase_executor),
-        "create_pr": lambda state: create_pr(state, destination),
-        "cleanup": lambda state: cleanup(state, workspace_manager),
+        "prepare_workspace": lambda state: prepare_workspace(state, runtime=workflow_runtime),
+        "plan": lambda state: plan(state, runtime=workflow_runtime),
+        "implement": lambda state: implement(state, runtime=workflow_runtime),
+        "test": lambda state: test(state, runtime=workflow_runtime),
+        "create_pr": lambda state: create_pr(state, runtime=workflow_runtime),
+        "cleanup": lambda state: cleanup(state, runtime=workflow_runtime),
     }
     for name, fn in nodes.items():
         builder.add_node(name, _guard(name, fn))
