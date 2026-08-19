@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator import github
-from orchestrator.main import _parse_ref, cmd_poll
+from orchestrator.main import _parse_ref, cmd_execute as cmd_poll
 
 
 class FakeGraph:
@@ -111,6 +111,56 @@ def test_poll_once_uses_configured_input_source_with_options(allowlist, tmp_path
     assert store.get_task("company/backend#1") is not None
 
 
+def test_poll_once_runs_issue_and_review_polling(allowlist, tmp_path, monkeypatch):
+    """A single poll pass executes both configured workflows."""
+    from orchestrator import config
+    from orchestrator.application import Runtime
+    from orchestrator.persistence import TaskStore
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "pipeline:\n  input_source: github_polling\n"
+    )
+    config.load_pipeline_config.cache_clear()
+    store = TaskStore(tmp_path / "db.sqlite")
+    calls: list[str] = []
+
+    class IssueInput:
+        def poll(self):
+            calls.append("issues")
+            return []
+
+    runtime = Runtime(IssueInput(), object(), object(), object())
+
+    class Reviews:
+        def poll_once(self):
+            calls.append("reviews")
+
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+    monkeypatch.setattr("orchestrator.main.compose_runtime", lambda current_store: runtime)
+    monkeypatch.setattr("orchestrator.main.compose_review_runtime", lambda current_store: Reviews())
+
+    cmd_poll(type("A", (), {"once": True})())
+
+    assert calls == ["issues", "reviews"]
+
+
+def test_review_once_cli_runs_review_only(allowlist, tmp_path, monkeypatch):
+    from orchestrator import main
+    from orchestrator.persistence import TaskStore
+
+    store = TaskStore(tmp_path / "db.sqlite")
+    calls = []
+
+    class Reviews:
+        def poll_once(self):
+            calls.append("reviews")
+
+    monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
+    monkeypatch.setattr("orchestrator.main.compose_review_runtime", lambda current_store: Reviews())
+    main.main(["review", "--once"])
+    assert calls == ["reviews"]
+
+
 def test_run_force_resets_state(allowlist, tmp_path, monkeypatch):
     from orchestrator import main
     from orchestrator.persistence import TaskStore
@@ -211,7 +261,7 @@ def test_reset_deletes_task(allowlist, tmp_path, monkeypatch, capsys):
     row = store.conn.execute("SELECT COUNT(*) FROM checkpoints WHERE thread_id = 'company/backend#7'").fetchone()[0]
     assert row == 0
     assert started == []
-    assert "deleted; will re-run on next poll" in capsys.readouterr().out
+    assert "deleted; will re-run on next execute" in capsys.readouterr().out
 
 
 def test_poll_reruns_deleted_task(allowlist, tmp_path, monkeypatch, capsys):
@@ -694,7 +744,7 @@ def test_poll_second_instance_exits(allowlist, tmp_path, monkeypatch, capsys):
     lock = main._acquire_poll_lock()  # hold the lock as the "first" poll
     monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
     with pytest.raises(SystemExit) as exc:
-        main.cmd_poll(type("A", (), {"once": True})())
+        main.cmd_execute(type("A", (), {"once": True})())
     assert "already running" in str(exc.value)
     lock.close()
 
@@ -773,9 +823,9 @@ def test_main_handles_keyboard_interrupt(monkeypatch, capsys):
     def boom(args):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(main_mod, "cmd_poll", boom)
+    monkeypatch.setattr(main_mod, "cmd_execute", boom)
     with pytest.raises(SystemExit) as exc:
-        main_mod.main(["poll"])
+        main_mod.main(["execute"])
     assert exc.value.code == 130
     out = capsys.readouterr().out
     assert "interrupted" in out

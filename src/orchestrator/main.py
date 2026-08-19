@@ -1,4 +1,4 @@
-"""CLI: run / poll / list / status / resume."""
+"""CLI: run / execute / review / list / status / resume."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from orchestrator import config, git, github, state as state_mod, workspace
 from orchestrator.application import PollingApplication, compose_runtime
 from orchestrator.graph import build_graph
 from orchestrator.persistence import PersistenceError, TaskStore
+from orchestrator.review import compose_review_runtime
 
 ISSUE_REF_RE = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
 
@@ -203,11 +204,11 @@ def cmd_resume(args: argparse.Namespace) -> None:
 
 
 def cmd_reset(args: argparse.Namespace) -> None:
-    """Delete a task entirely so the next poll re-runs it from scratch.
+    """Delete a task entirely so the next execute re-runs it from scratch.
 
     Standalone and non-running: it only clears DB state (tasks/checkpoints/writes)
     and the worktree/branch. It does not invoke the graph. Because the tasks row is
-    removed, the already-running poll picks the issue up again on its next iteration
+    removed, the already-running execute picks the issue up again on its next iteration
     via the existing new-issue flow.
     """
     repository, issue_number = _parse_ref(args.issue_ref)
@@ -228,7 +229,7 @@ def cmd_reset(args: argparse.Namespace) -> None:
             store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
     store.conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
     store.conn.commit()
-    print(f"[{_now()}] reset {task_id}: deleted; will re-run on next poll", flush=True)
+    print(f"[{_now()}] reset {task_id}: deleted; will re-run on next execute", flush=True)
 
 
 def _result_pr_number(result: dict) -> int | None:
@@ -421,11 +422,36 @@ def _detect_stale_tasks(store: TaskStore) -> None:
         store.update_task(task_id, status=state_mod.FAILED, error="process died (stale task)")
 
 
-def cmd_poll(args: argparse.Namespace) -> None:
+def _poll_reviews(review_application) -> None:
+    try:
+        review_application.poll_once()
+    except Exception as exc:
+        # Review input providers are independent from issue polling.
+        print(f"[{_now()}] review poll error (continuing): {exc}", flush=True)
+
+
+def cmd_review(args: argparse.Namespace) -> None:
+    """Poll configured pull-request reviews without polling issues."""
+    lock_fd = _acquire_poll_lock()
+    try:
+        store = TaskStore()
+        review_application = compose_review_runtime(store)
+        while True:
+            _poll_reviews(review_application)
+            if args.once:
+                break
+            print(f"[{_now()}] review: next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
+            time.sleep(config.POLL_INTERVAL_SECONDS)
+    finally:
+        lock_fd.close()
+
+
+def cmd_execute(args: argparse.Namespace) -> None:
     lock_fd = _acquire_poll_lock()
     try:
         store = TaskStore()
         runtime = compose_runtime(store)
+        review_application = compose_review_runtime(store)
         application = PollingApplication(
             store,
             runtime.input_source,
@@ -447,10 +473,11 @@ def cmd_poll(args: argparse.Namespace) -> None:
             try:
                 application.poll_once(args.once)
             except PersistenceError as exc:
-                print(f"[{_now()}] poll: persistence error (continuing): {exc}", flush=True)
+                print(f"[{_now()}] execute: persistence error (continuing): {exc}", flush=True)
+            _poll_reviews(review_application)
             if args.once:
                 break
-            print(f"[{_now()}] poll: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
+            print(f"[{_now()}] execute: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
             time.sleep(config.POLL_INTERVAL_SECONDS)
     finally:
         lock_fd.close()
@@ -475,9 +502,13 @@ def main(argv: list[str] | None = None) -> None:
     p_run.add_argument("--force", action="store_true", help="re-run even if the task exists")
     p_run.set_defaults(func=cmd_run)
 
-    p_poll = sub.add_parser("poll", help="poll allowed repos for new issues")
-    p_poll.add_argument("--once", action="store_true", help="single pass, then exit")
-    p_poll.set_defaults(func=cmd_poll)
+    p_execute = sub.add_parser("execute", help="execute issue and review workflows")
+    p_execute.add_argument("--once", action="store_true", help="single pass, then exit")
+    p_execute.set_defaults(func=cmd_execute)
+
+    p_review = sub.add_parser("review", help="poll configured pull requests for reviews")
+    p_review.add_argument("--once", action="store_true", help="single pass, then exit")
+    p_review.set_defaults(func=cmd_review)
 
     p_list = sub.add_parser("list", help="list tasks")
     p_list.set_defaults(func=cmd_list)
@@ -490,7 +521,7 @@ def main(argv: list[str] | None = None) -> None:
     p_resume.add_argument("task_id")
     p_resume.set_defaults(func=cmd_resume)
 
-    p_reset = sub.add_parser("reset", help="delete a task so the next poll re-runs it from scratch")
+    p_reset = sub.add_parser("reset", help="delete a task so the next execute re-runs it from scratch")
     p_reset.add_argument("issue_ref", help="owner/repo#issue")
     p_reset.set_defaults(func=cmd_reset)
 

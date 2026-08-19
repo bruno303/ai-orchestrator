@@ -5,12 +5,13 @@ from __future__ import annotations
 import select
 import subprocess
 import time
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from orchestrator import config
-from orchestrator.providers import ExecutionRequest, ExecutionResult
+from orchestrator.providers import ExecutionRequest, ExecutionResult, ReviewRequest, ReviewResult
 
 
 class OpenCodeError(Exception):
@@ -54,6 +55,61 @@ class OpenCodeExecutor:
             stderr=result.stderr,
             duration_seconds=result.duration_seconds,
         )
+
+
+class OpenCodeReviewExecutor:
+    """Run the review agent and admit only the documented JSON result."""
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = dict(options or {})
+        self.provider_type = "opencode"
+
+    def execute(self, request: ReviewRequest) -> ReviewResult:
+        options = {**self.options, **request.provider_state}
+        model_config = config.MODEL_PRIMARY
+        result = run_opencode(
+            request.workspace, options.get("agent", "review"), request.prompt,
+            log_file=Path(options["log_file"]) if options.get("log_file") else None,
+            model=options.get("model") or (model_config.name if model_config else None),
+            variant=options.get("variant") or (model_config.variant if model_config else None),
+            timeout=options.get("timeout"), detect_degenerate=options.get("detect_degenerate", True),
+        )
+        if result.exit_code != 0:
+            return ReviewResult(False, summary=result.stdout or result.stderr,
+                                provider_state={"exit_code": result.exit_code})
+        try:
+            value = json.loads(result.stdout.strip())
+            if not isinstance(value, dict):
+                raise ValueError("review output is not an object")
+            verdict = str(value.get("verdict", "")).lower()
+            if verdict not in {"approve", "request_changes", "comment"}:
+                raise ValueError("review verdict is invalid")
+            findings = value.get("findings", [])
+            checks = value.get("checks", [])
+            if not isinstance(findings, list) or not isinstance(checks, list):
+                raise ValueError("findings and checks must be arrays")
+            if not isinstance(value.get("summary", ""), str):
+                raise ValueError("summary must be a string")
+            for finding in findings:
+                if not isinstance(finding, dict) or not isinstance(finding.get("message"), str):
+                    raise ValueError("each finding must have a message")
+                if "path" in finding and not isinstance(finding["path"], str):
+                    raise ValueError("finding path must be a string")
+                if "line" in finding and (not isinstance(finding["line"], int) or isinstance(finding["line"], bool)):
+                    raise ValueError("finding line must be an integer")
+                if "start_line" in finding and (not isinstance(finding["start_line"], int) or isinstance(finding["start_line"], bool)):
+                    raise ValueError("finding start_line must be an integer")
+                if finding.get("side", "RIGHT") not in {"LEFT", "RIGHT"}:
+                    raise ValueError("finding side is invalid")
+                if finding.get("start_side", finding.get("side", "RIGHT")) not in {"LEFT", "RIGHT"}:
+                    raise ValueError("finding start_side is invalid")
+            for check in checks:
+                if not isinstance(check, dict) or not isinstance(check.get("name"), str) or check.get("status") not in {"pass", "fail", "skip"}:
+                    raise ValueError("each check must have a name and valid status")
+            return ReviewResult(True, verdict=verdict, summary=str(value.get("summary", "")),
+                                comments=findings, checks=checks)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            return ReviewResult(False, summary=f"invalid structured review output: {exc}")
 
 
 def detect_loop(

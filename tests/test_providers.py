@@ -8,6 +8,9 @@ from orchestrator.providers import (
     DESTINATION_PROVIDERS,
     EXECUTOR_PROVIDERS,
     INPUT_PROVIDERS,
+    REVIEW_DESTINATION_PROVIDERS,
+    REVIEW_EXECUTOR_PROVIDERS,
+    REVIEW_INPUT_PROVIDERS,
     WORKSPACE_PROVIDERS,
     Artifact,
     Destination,
@@ -22,6 +25,12 @@ from orchestrator.providers import (
     WorkspaceManager,
     WorkspaceRequest,
     WorkspaceResult,
+    ReviewEvent,
+    ReviewRequest,
+    ReviewResult,
+    ReviewInputSource,
+    ReviewExecutor,
+    ReviewDestination,
 )
 from orchestrator.application import PollingApplication, compose_runtime
 from orchestrator import config
@@ -45,6 +54,15 @@ def test_provider_models_are_json_serializable():
 
     encoded = json.dumps({"event": event.to_dict(), "request": request.to_dict(), "publication": publication.to_dict()})
     assert json.loads(encoded)["publication"]["artifacts"][0]["path"] == "work.txt"
+
+
+def test_review_models_are_json_serializable():
+    models = [
+        ReviewEvent("review-1", "company/backend", metadata={"label": "ready", "number": 14}),
+        ReviewRequest("task-1", "company/backend", "/tmp/review", "review it", {"number": 14}),
+        ReviewResult(True, verdict="approve", comments=[{"path": "src/app.py", "line": 3}]),
+    ]
+    assert all(json.loads(json.dumps(model.to_dict())) for model in models)
 
 
 def test_all_boundary_models_serialize_provider_state():
@@ -72,6 +90,15 @@ def test_provider_registries_reserve_current_provider_names():
     assert EXECUTOR_PROVIDERS.names() == ("opencode",)
     assert WORKSPACE_PROVIDERS.names() == ("git",)
     assert DESTINATION_PROVIDERS.names() == ("github",)
+    assert REVIEW_INPUT_PROVIDERS.names() == ("github_polling",)
+    assert REVIEW_EXECUTOR_PROVIDERS.names() == ("opencode",)
+    assert REVIEW_DESTINATION_PROVIDERS.names() == ("github",)
+
+
+def test_review_registries_return_protocol_implementations():
+    assert isinstance(REVIEW_INPUT_PROVIDERS.create("github_polling"), ReviewInputSource)
+    assert isinstance(REVIEW_EXECUTOR_PROVIDERS.create("opencode"), ReviewExecutor)
+    assert isinstance(REVIEW_DESTINATION_PROVIDERS.create("github"), ReviewDestination)
 
 
 def test_unknown_provider_fails_clearly():

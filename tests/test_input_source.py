@@ -113,3 +113,24 @@ def test_issue_without_number_is_skipped_polling(tmp_path):
     app.poll_once(once=True)
 
     assert started == []
+
+
+def test_review_input_filters_processed_label():
+    from types import SimpleNamespace
+
+    from orchestrator.github_review import GitHubReviewInputSource
+
+    class Client:
+        def list_open_pull_requests(self, repository):
+            return [SimpleNamespace(number=1), SimpleNamespace(number=2)]
+
+        def get_pull_request(self, repository, number):
+            return SimpleNamespace(
+                number=number, title="Review", body="", url="url",
+                labels=["ai-reviewed"] if number == 1 else [],
+                head_ref="head", base_ref="main", head_sha="sha",
+                head_clone_url="clone", files=[], changed_lines={},
+            )
+
+    source = GitHubReviewInputSource(Client(), SimpleNamespace(allowed_repositories=lambda: ["r"]))
+    assert [event.provider_state["number"] for event in source.poll()] == [2]

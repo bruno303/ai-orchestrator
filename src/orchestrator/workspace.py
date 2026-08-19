@@ -18,6 +18,10 @@ def task_workspace(repository: str, issue_number: int) -> Path:
     return config.WORKSPACES_DIR / task_name(repository, issue_number)
 
 
+def review_workspace(repository: str, number: int) -> Path:
+    return config.WORKSPACES_DIR / f"{repository.replace('/', '-')}-review-{number}"
+
+
 def task_logs_dir(task_id: str) -> Path:
     return config.LOGS_DIR / task_id.replace("/", "-").replace("#", "-")
 

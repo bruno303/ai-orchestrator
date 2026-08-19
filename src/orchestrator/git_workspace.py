@@ -26,12 +26,21 @@ class GitWorkspaceManager:
             base_branch = git.detect_default_branch(repo_dir)
 
         issue_number = request.task_id.rsplit("#", 1)[-1]
+        review = request.task_id.startswith("review:")
         branch = request.branch or f"ai/issue-{issue_number}"
         workspace_path = Path(
             provider_state.get("workspace")
-            or workspace.task_workspace(request.repository, int(issue_number))
+            or (workspace.review_workspace(request.repository, int(issue_number)) if review
+                else workspace.task_workspace(request.repository, int(issue_number)))
         )
-        git.create_worktree(repo_dir, workspace_path, branch, base_branch)
+        if review:
+            commit = provider_state.get("commit_sha") or provider_state.get("head_sha")
+            if not commit:
+                raise git.GitError("review workspace requires a PR commit SHA")
+            git.fetch_commit(repo_dir, commit, provider_state.get("head_clone_url") or "origin")
+            git.create_detached_worktree(repo_dir, workspace_path, commit)
+        else:
+            git.create_worktree(repo_dir, workspace_path, branch, base_branch)
         return WorkspaceResult(
             workspace=str(workspace_path),
             branch=branch,
@@ -40,6 +49,7 @@ class GitWorkspaceManager:
                 "repository_url": repository_url,
                 "base_branch": base_branch,
                 "repo_dir": str(repo_dir),
+                "review": review,
             },
         )
 

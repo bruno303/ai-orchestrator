@@ -126,6 +126,46 @@ class PublicationResult:
         return _json_dict(self)
 
 
+@dataclass
+class ReviewEvent:
+    """Provider-neutral notification that a pull request should be reviewed."""
+
+    event_id: str
+    repository: str
+    title: str = ""
+    body: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    provider_state: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _json_dict(self)
+
+
+@dataclass
+class ReviewRequest:
+    task_id: str
+    repository: str
+    workspace: str
+    prompt: str
+    provider_state: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _json_dict(self)
+
+
+@dataclass
+class ReviewResult:
+    success: bool
+    verdict: str = ""
+    summary: str = ""
+    comments: list[dict[str, Any]] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    provider_state: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return _json_dict(self)
+
+
 @runtime_checkable
 class InputSource(Protocol):
     def poll(self) -> list[InputEvent]: ...
@@ -146,6 +186,21 @@ class WorkspaceManager(Protocol):
 @runtime_checkable
 class Destination(Protocol):
     def publish(self, request: PublicationRequest) -> PublicationResult: ...
+
+
+@runtime_checkable
+class ReviewInputSource(Protocol):
+    def poll(self) -> list[ReviewEvent]: ...
+
+
+@runtime_checkable
+class ReviewExecutor(Protocol):
+    def execute(self, request: ReviewRequest) -> ReviewResult: ...
+
+
+@runtime_checkable
+class ReviewDestination(Protocol):
+    def publish(self, request: ReviewRequest, result: ReviewResult) -> None: ...
 
 
 class UnknownProviderError(ValueError):
@@ -259,3 +314,55 @@ INPUT_PROVIDERS = ProviderRegistry({"github_polling": _input_factory}, InputSour
 EXECUTOR_PROVIDERS = ProviderRegistry({"opencode": _executor_factory}, Executor)
 WORKSPACE_PROVIDERS = ProviderRegistry({"git": _workspace_factory}, WorkspaceManager)
 DESTINATION_PROVIDERS = ProviderRegistry({"github": _destination_factory}, Destination)
+
+
+@dataclass
+class _PlaceholderReviewInputSource:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def poll(self) -> list[ReviewEvent]:
+        return []
+
+
+@dataclass
+class _PlaceholderReviewExecutor:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def execute(self, request: ReviewRequest) -> ReviewResult:
+        return ReviewResult(False, summary="review executor provider is not wired", provider_state={"options": self.options})
+
+
+@dataclass
+class _PlaceholderReviewDestination:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def publish(self, request: ReviewRequest, result: ReviewResult) -> None:
+        return None
+
+
+def _review_input_factory(options: dict[str, Any]) -> object:
+    if not options.pop("_runtime", False):
+        return _PlaceholderReviewInputSource(options)
+    from orchestrator.github_review import GitHubReviewInputSource
+    options.pop("store", None)
+    return GitHubReviewInputSource(options=options)
+
+
+def _review_executor_factory(options: dict[str, Any]) -> object:
+    if not options.pop("_runtime", False):
+        return _PlaceholderReviewExecutor(options)
+    from orchestrator.opencode import OpenCodeReviewExecutor
+    return OpenCodeReviewExecutor(options=options)
+
+
+def _review_destination_factory(options: dict[str, Any]) -> object:
+    if not options.pop("_runtime", False):
+        return _PlaceholderReviewDestination(options)
+    from orchestrator.github_review import GitHubReviewDestination
+    return GitHubReviewDestination(options=options)
+
+
+REVIEW_INPUT_PROVIDERS = ProviderRegistry({"github_polling": _review_input_factory}, ReviewInputSource)
+REVIEW_EXECUTOR_PROVIDERS = ProviderRegistry({"opencode": _review_executor_factory}, ReviewExecutor)
+REVIEW_WORKSPACE_PROVIDERS = ProviderRegistry({"git": _workspace_factory}, WorkspaceManager)
+REVIEW_DESTINATION_PROVIDERS = ProviderRegistry({"github": _review_destination_factory}, ReviewDestination)
