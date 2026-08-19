@@ -116,6 +116,30 @@ def test_execution_runtime_uses_requested_plan_path(tmp_path):
     assert requested in executor.requests[0].prompt
 
 
+def test_cleanup_preserves_custom_workspace_provider_state(tmp_path):
+    original_state = {"workspace_id": "w1"}
+    captured = {}
+
+    class CustomWorkspace:
+        provider_type = "custom_workspace"
+
+        def cleanup(self, result):
+            captured["provider_state"] = result.provider_state
+
+    runtime = compose_execution_runtime(
+        executor=ExecutionAgent(), workspace_manager=CustomWorkspace(), destination=object()
+    )
+    runtime.cleanup(
+        CleanupRequest(
+            "company/backend",
+            WorkspaceResult(str(tmp_path), "branch", original_state),
+        )
+    )
+
+    assert captured["provider_state"] is original_state
+    assert captured["provider_state"] == {"workspace_id": "w1"}
+
+
 def test_review_runtime_keeps_review_workspace_mode_explicit(tmp_path):
     captured = {}
 

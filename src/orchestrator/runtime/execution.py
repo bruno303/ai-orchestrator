@@ -249,8 +249,9 @@ class ExecutionRuntime:
         return PublishResult(result)
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
-        provider_state = dict(request.workspace.provider_state)
-        provider_state.setdefault("repository", request.repository)
+        provider_state = request.workspace.provider_state
+        if getattr(self.workspace_manager, "provider_type", "") == "git" and "repository" not in provider_state:
+            provider_state = {**provider_state, "repository": request.repository}
         try:
             self.workspace_manager.cleanup(
                 WorkspaceResult(request.workspace.workspace, request.workspace.branch, provider_state)
