@@ -122,7 +122,7 @@ def _extract_review_json(output: str) -> dict[str, Any]:
             candidate, _ = decoder.raw_decode(output[index:])
         except json.JSONDecodeError:
             continue
-        if isinstance(candidate, dict):
+        if isinstance(candidate, dict) and "verdict" in candidate:
             value = candidate
     if value is None:
         raise ValueError("review output does not contain a JSON object")

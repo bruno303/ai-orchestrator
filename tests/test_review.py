@@ -202,7 +202,9 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
 
 def test_review_executor_accepts_transcript_before_json(monkeypatch):
     transcript = "agent output\n\x1b[0m\n" + json.dumps({
-        "verdict": "approve", "summary": "ok", "findings": [], "checks": [],
+        "verdict": "approve", "summary": "ok",
+        "findings": [{"message": "nested finding"}],
+        "checks": [{"name": "tests", "status": "pass"}],
     })
     monkeypatch.setattr(
         "orchestrator.opencode.run_opencode",
