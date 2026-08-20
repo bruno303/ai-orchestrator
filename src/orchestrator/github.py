@@ -189,6 +189,7 @@ class PullRequestDetail:
     head_sha: str = ""
     head_clone_url: str = ""
     changed_lines: dict[str, dict[str, list[int]]] = field(default_factory=dict)
+    author_login: str = ""
 
 
 def list_open_pull_requests(repository: str) -> list[PullRequest]:
@@ -201,6 +202,8 @@ def list_open_pull_requests(repository: str) -> list[PullRequest]:
             repository,
             "--state",
             "open",
+            "--limit",
+            "1000",
             "--json",
             "number,headRefName",
         ]
@@ -221,7 +224,7 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
             "--repo",
             repository,
             "--json",
-            "number,title,body,url,baseRefName,headRefName,headRefOid,headRepository,files,labels",
+            "number,title,body,url,baseRefName,headRefName,headRefOid,headRepository,author,files,labels",
         ]
     )
     data = json.loads(out)
@@ -241,7 +244,13 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
         head_sha=data.get("headRefOid") or "",
         head_clone_url=((data.get("headRepository") or {}).get("sshUrl") or ""),
         changed_lines=_changed_lines(data.get("files") or []),
+        author_login=(data.get("author") or {}).get("login") or "",
     )
+
+
+def get_authenticated_user_login() -> str:
+    """Return the login for the GitHub account used by the gh CLI."""
+    return _api("user", ".login").strip()
 
 
 def _changed_lines(files: list[dict]) -> dict[str, dict[str, list[int]]]:

@@ -31,6 +31,13 @@ def test_run_opencode_passes_flags(tmp_path, clean_env, monkeypatch):
     assert f"dir={tmp_path}" in line
 
 
+def test_run_opencode_uses_default_agent_when_not_provided(tmp_path, clean_env, monkeypatch):
+    args_file = tmp_path / "args.txt"
+    monkeypatch.setenv("FAKE_OPCODE_ARGS_FILE", str(args_file))
+    opencode.run_opencode(tmp_path, None, "planning the implementation of issue")
+    assert "agent= dir=" in args_file.read_text()
+
+
 def test_run_opencode_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_OPCODE_FAIL", "1")
     result = opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")

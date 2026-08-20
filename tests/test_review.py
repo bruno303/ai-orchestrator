@@ -67,6 +67,30 @@ def test_github_destination_labels_only_after_publication(monkeypatch):
     assert calls == ["review", "label"]
 
 
+def test_github_destination_comments_on_self_authored_pr():
+    published = []
+
+    class GitHub:
+        def get_authenticated_user_login(self):
+            return "bruno303"
+
+        def publish_pull_request_review(self, *args, **kwargs):
+            published.append((args, kwargs))
+
+        def add_pull_request_label(self, *args, **kwargs):
+            pass
+
+    request = ReviewRequest(
+        "review:r#1", "r", "/tmp", "p",
+        {"number": 1, "author_login": "bruno303", "head_sha": "sha"},
+    )
+    GitHubReviewDestination(github_client=GitHub()).publish(
+        request, ReviewResult(True, verdict="request_changes", summary="needs work")
+    )
+
+    assert published[0][0][4] == "COMMENT"
+
+
 def test_github_destination_does_not_label_on_publication_failure():
     class GitHub:
         def publish_pull_request_review(self, *args, **kwargs):
@@ -184,6 +208,7 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
     captured = {}
 
     def run(*args, **kwargs):
+        captured["args"] = args
         captured.update(kwargs)
         return OpenCodeResult(0, json.dumps({
             "verdict": "comment", "summary": "ok", "findings": [], "checks": [],
@@ -194,5 +219,41 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
     result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
 
     assert result.success
+    assert captured["args"][1] is None
     assert captured["model"] == "provider/model"
     assert captured["variant"] == "fast"
+
+
+def test_review_executor_accepts_transcript_before_json(monkeypatch):
+    transcript = "agent output\n\x1b[0m\n" + json.dumps({
+        "verdict": "approve", "summary": "ok",
+        "findings": [{"message": "nested finding"}],
+        "checks": [{"name": "tests", "status": "pass"}],
+    })
+    monkeypatch.setattr(
+        "orchestrator.opencode.run_opencode",
+        lambda *args, **kwargs: OpenCodeResult(0, transcript, "", 0.1),
+    )
+
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+
+    assert result.success
+    assert result.verdict == "approve"
+
+
+def test_review_executor_disables_degenerate_detection_without_fallback(monkeypatch):
+    captured = {}
+
+    def run(*args, **kwargs):
+        captured.update(kwargs)
+        return OpenCodeResult(0, json.dumps({
+            "verdict": "comment", "summary": "ok", "findings": [], "checks": [],
+        }), "", 0.1)
+
+    monkeypatch.setattr("orchestrator.opencode.run_opencode", run)
+    monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", False)
+
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+
+    assert result.success
+    assert captured["detect_degenerate"] is False

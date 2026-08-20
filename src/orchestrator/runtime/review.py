@@ -17,9 +17,9 @@ from orchestrator.runtime.models import (
 )
 
 
-REVIEW_PROMPT = """Review this pull request. Inspect the complete diff and repository context. Return ONLY valid JSON with this schema:
+REVIEW_PROMPT = """Use only the `/code-review` skill to review this pull request. Follow its instructions, then return ONLY valid JSON with this schema:
 {"verdict":"approve|request_changes|comment","summary":"...","findings":[{"message":"...","path":"optional","line":0,"side":"RIGHT|LEFT","severity":"info|warning|error"}],"checks":[{"name":"...","status":"pass|fail|skip"}]}
-Use inline locations only when they are on changed files. Do not invent findings."""
+"""
 
 
 class ReviewRuntime:
