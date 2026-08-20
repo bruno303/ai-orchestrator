@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from orchestrator import config, opencode, workspace
-from orchestrator.providers import ExecutionRequest, validate_provider_state
+from orchestrator import config, workspace
+from orchestrator.providers import ExecutorError, ExecutionRequest, validate_provider_state
 from orchestrator.runtime.errors import AgentExecutionError
 from orchestrator.runtime.models import AgentRequest, PhaseResult
 
@@ -53,7 +53,9 @@ class IssueAgentRunner:
             )
             try:
                 result = self.executor.execute(execution_request)
-            except opencode.DegenerateOutputError as exc:
+            except ExecutorError as exc:
+                if not exc.retryable:
+                    raise AgentExecutionError(str(exc), provider_state=previous_state, attempts=attempt) from exc
                 attempt += 1
                 if attempt > max_attempts:
                     raise AgentExecutionError(
@@ -67,8 +69,6 @@ class IssueAgentRunner:
                     flush=True,
                 )
                 continue
-            except opencode.OpenCodeError as exc:
-                raise AgentExecutionError(str(exc), provider_state=previous_state, attempts=attempt) from exc
             except Exception as exc:
                 raise AgentExecutionError(str(exc), provider_state=previous_state, attempts=attempt) from exc
             try:

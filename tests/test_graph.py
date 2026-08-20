@@ -46,7 +46,7 @@ def test_full_flow(remote_repo, allowlist, store, monkeypatch):
     result = graph.invoke(_seed(remote_repo), config={"configurable": {"thread_id": "company/backend#1"}})
 
     assert result["status"] == state_mod.COMPLETED
-    assert result["output"]["provider_state"]["pr_number"] == 42
+    assert result["output"]["external_id"] == "42"
     assert result["workspace"]["path"] == str(workspace.task_workspace("company/backend", 1))
     assert result["input"]["data"]["number"] == 1
     assert "review_verdict" not in result["processing"]
@@ -233,7 +233,7 @@ def test_graph_uses_injected_workspace_and_destination(tmp_path, allowlist, stor
         destination=FakeDestination(),
     ).invoke(_seed("unused", 20), config={"configurable": {"thread_id": "company/backend#20"}})
     assert result["status"] == state_mod.COMPLETED
-    assert result["output"]["provider_state"]["pr_number"] == 99
+    assert result["output"]["external_id"] == "99"
     assert calls == ["prepare", "publish", "cleanup"]
 
 
@@ -317,7 +317,7 @@ def test_new_graph_updates_are_namespace_only(allowlist, tmp_path):
         "task_id": "company/backend#30",
         "input": {"provider": "custom_input", "data": {"repository": "company/backend", "number": 30}},
         "processing": {},
-        "workspace": {"branch": "ai/issue-30", "base_branch": "main"},
+        "workspace": {"path": str(tmp_path / "workspace"), "branch": "task-30", "base_branch": "main"},
         "output": {},
         "status": state_mod.RECEIVED,
     }
@@ -363,7 +363,7 @@ def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_p
             "review_verdict": "APPROVED",
             "review_result": "legacy metadata",
         },
-        "workspace": {"branch": "ai/issue-31", "base_branch": "main"},
+        "workspace": {"path": str(tmp_path / "workspace"), "branch": "task-31", "base_branch": "main"},
         "output": {}, "status": state_mod.RECEIVED,
     }
     graph = build_graph(
@@ -572,7 +572,7 @@ def test_create_pr_with_existing_commit(remote_repo, allowlist, store, monkeypat
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
     updates = create_pr(seed)
     assert updates["status"] == state_mod.COMPLETED
-    assert updates["output"]["provider_state"]["pr_number"] == 44
+    assert updates["output"]["external_id"] == "44"
 
 
 def test_create_pr_reuses_existing_pr(remote_repo, allowlist, store, monkeypatch):
@@ -598,7 +598,7 @@ def test_create_pr_reuses_existing_pr(remote_repo, allowlist, store, monkeypatch
 
     updates = create_pr(seed)
     assert updates["status"] == state_mod.COMPLETED
-    assert updates["output"]["provider_state"]["pr_number"] == 77
+    assert updates["output"]["external_id"] == "77"
     assert created == []  # no new PR created
 
 

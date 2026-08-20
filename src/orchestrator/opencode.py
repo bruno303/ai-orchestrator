@@ -11,15 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator import config
-from orchestrator.providers import ExecutionRequest, ExecutionResult, ReviewRequest, ReviewResult
+from orchestrator.providers import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, ReviewResult
 
 
-class OpenCodeError(Exception):
+class OpenCodeError(ExecutorError):
     pass
 
 
 class DegenerateOutputError(OpenCodeError):
-    pass
+    def __init__(self, message: str) -> None:
+        super().__init__(message, retryable=True)
 
 
 @dataclass
@@ -38,16 +39,21 @@ class OpenCodeExecutor:
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         options = {**self.options, **request.provider_state}
-        result = run_opencode(
-            workspace=request.workspace,
-            agent=request.agent,
-            prompt=request.prompt,
-            log_file=Path(options["log_file"]) if options.get("log_file") else None,
-            model=request.model,
-            variant=request.variant,
-            timeout=options.get("timeout"),
-            detect_degenerate=options.get("detect_degenerate", True),
-        )
+        try:
+            result = run_opencode(
+                workspace=request.workspace,
+                agent=request.agent,
+                prompt=request.prompt,
+                log_file=Path(options["log_file"]) if options.get("log_file") else None,
+                model=request.model,
+                variant=request.variant,
+                timeout=options.get("timeout"),
+                detect_degenerate=options.get("detect_degenerate", True),
+            )
+        except DegenerateOutputError as exc:
+            raise ExecutorError(str(exc), retryable=True) from exc
+        except OpenCodeError as exc:
+            raise ExecutorError(str(exc)) from exc
         return ExecutionResult(
             success=result.exit_code == 0,
             exit_code=result.exit_code,

@@ -21,6 +21,7 @@ from orchestrator.providers import (
     InputSource,
     PublicationRequest,
     PublicationResult,
+    ProviderContext,
     UnknownProviderError,
     WorkspaceManager,
     WorkspaceRequest,
@@ -83,6 +84,14 @@ def test_model_rejects_non_json_provider_state():
         assert "not JSON-serializable" in str(exc)
     else:
         raise AssertionError("expected serialization error")
+
+
+def test_provider_context_is_a_json_serializable_mapping():
+    context = ProviderContext({"git": {"checkout": "main"}})
+    assert context["git"]["checkout"] == "main"
+    assert context.merged({"github": {"issue": 4}}) == {
+        "git": {"checkout": "main"}, "github": {"issue": 4},
+    }
 
 
 def test_provider_registries_reserve_current_provider_names():

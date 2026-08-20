@@ -271,7 +271,12 @@ def _result_pr_number(result: dict) -> int | None:
     if isinstance(output, dict):
         provider_state = output.get("provider_state")
         if isinstance(provider_state, dict):
-            return provider_state.get("pr_number")
+            legacy_pr_number = provider_state.get("pr_number")
+            if legacy_pr_number is not None:
+                return legacy_pr_number
+        external_id = output.get("external_id")
+        if isinstance(external_id, str) and external_id.isdigit():
+            return int(external_id)
         return None
     if "output" not in result:
         return result.get("pr_number")
@@ -286,16 +291,25 @@ def _result_url(result: dict) -> str | None:
     return None
 
 
+def _result_external_id(result: dict) -> str | None:
+    output = result.get("output")
+    if isinstance(output, dict) and output.get("external_id") is not None:
+        return str(output["external_id"])
+    return None
+
+
 def _persist_result(store: TaskStore, result: dict) -> None:
     status = result.get("status", state_mod.FAILED)
     pr_number = _result_pr_number(result)
     publication_url = _result_url(result)
+    external_id = _result_external_id(result)
     store.update_task(
         result["task_id"],
         status=status,
         workspace=(result.get("workspace") or {}).get("path") if isinstance(result.get("workspace"), dict) else result.get("workspace"),
         branch=(result.get("workspace") or {}).get("branch") if isinstance(result.get("workspace"), dict) else result.get("branch"),
         pr_number=pr_number,
+        external_id=external_id,
         publication_url=publication_url,
         error=result.get("error") if status != state_mod.COMPLETED else None,
         input_provider=(result.get("input") or {}).get("provider"),

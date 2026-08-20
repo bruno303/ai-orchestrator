@@ -25,6 +25,7 @@ def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
     assert row["task_id"] == "r#1"
     assert row["input_provider"] == "legacy"
     assert row["output_provider"] == "github"
+    assert "external_id" in row
 
 
 def test_publication_url_is_persisted(tmp_path):
@@ -33,6 +34,14 @@ def test_publication_url_is_persisted(tmp_path):
     store.update_task("r#2", publication_url="https://example.test/run/2")
 
     assert store.get_task("r#2")["publication_url"] == "https://example.test/run/2"
+
+
+def test_generic_publication_reference_is_persisted(tmp_path):
+    store = TaskStore(tmp_path / "db.sqlite")
+    store.create_task("external-work-2", "project")
+    store.update_task("external-work-2", external_id="change-42")
+
+    assert store.get_task("external-work-2")["external_id"] == "change-42"
 
 
 def test_checkpoint_store_uses_same_database(tmp_path):

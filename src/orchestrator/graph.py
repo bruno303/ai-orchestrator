@@ -44,11 +44,12 @@ def _input(state: TaskState) -> dict[str, Any]:
     if not provider_state and state.get("provider_state"):
         provider_state = validate_provider_state(state["provider_state"])
     issue_number = data.get("number", data.get("issue_number", state.get("issue_number")))
-    if issue_number is not None and "source_number" not in provider_state:
-        # Compatibility for checkpoints created before provider-owned state.
+    # Old checkpoints stored GitHub issue fields flat. Preserve their ability to
+    # resume without teaching new provider-neutral state about those conventions.
+    if "input" not in state and issue_number is not None and "source_number" not in provider_state:
         provider_state = {**provider_state, "source_number": issue_number}
     return {
-        "provider": value.get("provider", "github"),
+        "provider": value.get("provider", ""),
         "provider_state": provider_state,
         "repository": data.get("repository", state.get("repository", "")),
         "work_item_id": data.get("work_item_id", state.get("task_id", "")),
@@ -160,8 +161,10 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None,
         branch = current_workspace["branch"] or source["provider_state"].get("branch", "")
         ws = str(current_workspace["path"] or source["provider_state"].get("workspace", ""))
         if not branch or not ws:
-            if source["issue_number"] is None:
-                raise ValueError("work item is missing explicit workspace checkout instructions")
+            if "input" in state or source["issue_number"] is None:
+                raise ValueError("work item is missing explicit workspace instructions")
+            # Legacy checkpoint compatibility only. New input sources must
+            # supply workspace instructions through their provider context.
             branch = branch or f"ai/issue-{source['issue_number']}"
             ws = ws or str(workspace.task_workspace(repository, source["issue_number"]))
         runtime = runtime or compose_execution_runtime(workspace_manager=manager)
@@ -247,21 +250,21 @@ def create_pr(state: TaskState, destination: Destination | None = None, runtime=
     try:
         source = _input(state)
         workspace_state = _workspace(state)
-        title = f"feat: {source['issue_title']}"[:72]
         runtime = runtime or compose_execution_runtime(destination=destination)
         published = runtime.publish(
             PublishRequest(_context(state), workspace_state["path"], workspace_state["branch"], workspace_state["base_branch"])
         )
         result = published.publication
-        pr_number = result.number
     except Exception as exc:
         print(f"[{_now()}] create_pr: ERROR {exc}", flush=True)
         return _runtime_error(state, exc)
-    print(f"[{_now()}] create_pr: PR #{pr_number} created", flush=True)
+    print(f"[{_now()}] create_pr: publication created", flush=True)
     publication_state = validate_provider_state(result.provider_state)
     output = dict(state.get("output") or {})
-    output.update({"provider": _provider_name(destination or getattr(runtime, "destination", None), "github"),
-                   "provider_state": {**publication_state, "pr_number": pr_number}})
+    output.update({"provider": _provider_name(destination or getattr(runtime, "destination", None), ""),
+                    "provider_state": publication_state})
+    if result.external_id is not None:
+        output["external_id"] = result.external_id
     if result.url is not None:
         output["url"] = result.url
     return {"status": state_mod.COMPLETED, "output": output}

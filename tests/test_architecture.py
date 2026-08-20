@@ -14,7 +14,7 @@ def test_generic_layers_do_not_reference_github_reactions_or_client():
     ]
     forbidden = (
         "from orchestrator import github", "github.", '"eyes"', '"rocket"',
-        "ai-reviewed", "comment_id",
+        "ai-reviewed", "comment_id", "from orchestrator import opencode",
     )
     for path in paths:
         files = [path] if path.is_file() else sorted(path.glob("*.py"))

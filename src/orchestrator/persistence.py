@@ -35,6 +35,7 @@ class TaskStore:
                 workspace TEXT,
                 branch TEXT,
                 pr_number INTEGER,
+                external_id TEXT,
                 error TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -65,6 +66,7 @@ class TaskStore:
             ("input_provider", "TEXT"),
             ("output_provider", "TEXT"),
             ("publication_url", "TEXT"),
+            ("external_id", "TEXT"),
         ):
             if column not in existing:
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {ddl}")
@@ -105,6 +107,7 @@ class TaskStore:
         workspace: str | None = None,
         branch: str | None = None,
         pr_number: int | None = None,
+        external_id: str | None = None,
         error: str | None = None,
         input_provider: str | None = None,
         output_provider: str | None = None,
@@ -124,6 +127,9 @@ class TaskStore:
         if pr_number is not None:
             fields.append("pr_number = ?")
             values.append(pr_number)
+        if external_id is not None:
+            fields.append("external_id = ?")
+            values.append(external_id)
         if error is not None:
             fields.append("error = ?")
             values.append(error)

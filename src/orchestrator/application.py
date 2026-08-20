@@ -116,7 +116,7 @@ class PollingApplication:
 
     def poll_once(self, once: bool = False) -> None:
         for event in self.input_source.poll():
-            if event.metadata.get("kind") == "comment":
+            if event.trigger == "rerun" or event.metadata.get("kind") == "comment":
                 self._run_comment(event)
             else:
                 self._run_issue(event)
