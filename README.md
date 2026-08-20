@@ -9,7 +9,7 @@ GitHub Issue → workspace (git worktree) → OpenCode plan → OpenCode build (
 
 ## Requirements
 
-- `uv`, `git`, `opencode` (>= 1.18), `gh` (authenticated with `repo` scope)
+- `uv`, `git`, `opencode` (>= 1.18), `gh`
 
 ## Setup
 
@@ -18,6 +18,20 @@ uv sync
 ```
 
 ## Configuration
+
+GitHub operations authenticate with the configured GitHub App installation. The
+defaults match the `bruno303-ai-agent-bot` installation used by this project;
+override them for another deployment with environment variables:
+
+| Variable | Default |
+|---|---|
+| `ORCHESTRATOR_GITHUB_APP_ID` | `4666139` |
+| `ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID` | `155320111` |
+| `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE` | `config/key.pem` |
+
+The private key is used only in memory to create short-lived installation tokens.
+HTTPS Git operations use the same token, and commits use the App bot identity.
+Keep the private key outside version control.
 
 Edit `config/repositories.yaml` — only repositories listed here can trigger the
 orchestrator (enforced by the CLI, the executor, and the graph itself):

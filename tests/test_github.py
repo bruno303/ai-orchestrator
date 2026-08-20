@@ -189,7 +189,7 @@ def test_list_open_issues_empty(monkeypatch):
 
 def test_get_repository(fake_gh):
     assert github.get_default_branch("company/backend") == "main"
-    assert github.get_clone_url("company/backend") == "git@github.com:company/backend.git"
+    assert github.get_clone_url("company/backend") == "https://github.com/company/backend.git"
 
 
 def test_create_pull_request(fake_gh):
