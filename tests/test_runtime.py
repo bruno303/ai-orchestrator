@@ -172,6 +172,11 @@ def test_review_runtime_keeps_review_workspace_mode_explicit(tmp_path):
     assert captured["published"] and captured["cleaned"]
 
 
+def test_review_prompt_requires_code_review_skill():
+    assert "/code-review" in REVIEW_PROMPT
+    assert "ONLY valid JSON" in REVIEW_PROMPT
+
+
 def test_review_runtime_turns_executor_failure_into_typed_error(tmp_path):
     event = ReviewEvent("event-1", "company/backend", provider_state={"number": 3})
 
