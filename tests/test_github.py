@@ -130,6 +130,7 @@ def test_add_reaction_invalid_content():
 def test_list_open_pull_requests(fake_gh):
     prs = github.list_open_pull_requests("company/backend")
     assert [(p.number, p.head_ref) for p in prs] == [(11, "ai/issue-3"), (12, "feature/x")]
+    assert "--limit 1000" in " ".join(fake_gh[-1])
 
 
 def test_find_open_pr(fake_gh):

@@ -202,6 +202,8 @@ def list_open_pull_requests(repository: str) -> list[PullRequest]:
             repository,
             "--state",
             "open",
+            "--limit",
+            "1000",
             "--json",
             "number,headRefName",
         ]
