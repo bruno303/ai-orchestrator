@@ -39,6 +39,7 @@ class GitHubReviewInputSource:
                             "head_ref": detail.head_ref, "base_ref": detail.base_ref,
                         "head_sha": detail.head_sha,
                             "head_clone_url": detail.head_clone_url,
+                            "author_login": getattr(detail, "author_login", ""),
                             "changed_files": [path for path, _ in detail.files],
                             "changed_lines": detail.changed_lines,
                         },
@@ -100,6 +101,9 @@ class GitHubReviewDestination:
             comments.append(comment)
         verdict = result.verdict.lower()
         event = "APPROVE" if verdict in {"approve", "approved"} else "REQUEST_CHANGES" if verdict in {"request_changes", "changes_requested"} else "COMMENT"
+        if event != "COMMENT" and request.provider_state.get("author_login"):
+            if self.github_client.get_authenticated_user_login() == request.provider_state["author_login"]:
+                event = "COMMENT"
         self.github_client.publish_pull_request_review(
             request.repository,
             number,

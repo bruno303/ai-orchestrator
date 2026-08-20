@@ -67,6 +67,30 @@ def test_github_destination_labels_only_after_publication(monkeypatch):
     assert calls == ["review", "label"]
 
 
+def test_github_destination_comments_on_self_authored_pr():
+    published = []
+
+    class GitHub:
+        def get_authenticated_user_login(self):
+            return "bruno303"
+
+        def publish_pull_request_review(self, *args, **kwargs):
+            published.append((args, kwargs))
+
+        def add_pull_request_label(self, *args, **kwargs):
+            pass
+
+    request = ReviewRequest(
+        "review:r#1", "r", "/tmp", "p",
+        {"number": 1, "author_login": "bruno303", "head_sha": "sha"},
+    )
+    GitHubReviewDestination(github_client=GitHub()).publish(
+        request, ReviewResult(True, verdict="request_changes", summary="needs work")
+    )
+
+    assert published[0][0][4] == "COMMENT"
+
+
 def test_github_destination_does_not_label_on_publication_failure():
     class GitHub:
         def publish_pull_request_review(self, *args, **kwargs):
