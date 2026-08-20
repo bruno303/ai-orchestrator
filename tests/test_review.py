@@ -196,3 +196,21 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
     assert result.success
     assert captured["model"] == "provider/model"
     assert captured["variant"] == "fast"
+
+
+def test_review_executor_disables_degenerate_detection_without_fallback(monkeypatch):
+    captured = {}
+
+    def run(*args, **kwargs):
+        captured.update(kwargs)
+        return OpenCodeResult(0, json.dumps({
+            "verdict": "comment", "summary": "ok", "findings": [], "checks": [],
+        }), "", 0.1)
+
+    monkeypatch.setattr("orchestrator.opencode.run_opencode", run)
+    monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", False)
+
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+
+    assert result.success
+    assert captured["detect_degenerate"] is False

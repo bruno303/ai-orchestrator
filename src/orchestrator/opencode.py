@@ -72,7 +72,8 @@ class OpenCodeReviewExecutor:
             log_file=Path(options["log_file"]) if options.get("log_file") else None,
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
-            timeout=options.get("timeout"), detect_degenerate=options.get("detect_degenerate", True),
+            timeout=options.get("timeout"),
+            detect_degenerate=options.get("detect_degenerate", config.MODEL_FALLBACK_ENABLED),
         )
         if result.exit_code != 0:
             return ReviewResult(False, summary=result.stdout or result.stderr,
