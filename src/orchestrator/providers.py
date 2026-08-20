@@ -28,6 +28,33 @@ def validate_provider_state(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+class ProviderContext(dict[str, Any]):
+    """JSON-serializable data owned by an adapter, not the workflow core.
+
+    Providers may use namespaced keys (for example ``git`` or ``github``) to
+    exchange capabilities with compatible adapters. Workflow code may preserve
+    and merge this context but must not depend on individual keys.
+    """
+
+    def __init__(self, value: dict[str, Any] | None = None) -> None:
+        super().__init__(validate_provider_state(dict(value or {})))
+
+    def merged(self, value: dict[str, Any] | None = None) -> "ProviderContext":
+        return ProviderContext({**self, **dict(value or {})})
+
+
+class ExecutorError(RuntimeError):
+    """Adapter-neutral execution failure.
+
+    ``retryable`` lets an executor classify failures without exposing its own
+    exception types to the workflow runtime.
+    """
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+
+
 @dataclass
 class InputEvent:
     event_id: str
@@ -36,10 +63,11 @@ class InputEvent:
     body: str = ""
     number: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
     provider: str = ""
     extra_context: list[str] = field(default_factory=list)
     work_item_id: str = ""
+    trigger: str = "new"
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -53,7 +81,7 @@ class ExecutionRequest:
     agent: str
     model: str | None = None
     variant: str | None = None
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -66,7 +94,7 @@ class ExecutionResult:
     stdout: str = ""
     stderr: str = ""
     duration_seconds: float = 0.0
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -78,7 +106,7 @@ class WorkspaceRequest:
     repository: str
     branch: str
     base_branch: str
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
     purpose: str = "execution"
     repository_url: str = ""
     fetch_url: str = ""
@@ -95,7 +123,7 @@ class WorkspaceRequest:
 class WorkspaceResult:
     workspace: str
     branch: str
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -119,7 +147,7 @@ class PublicationRequest:
     head: str
     base: str
     artifacts: list[Artifact] = field(default_factory=list)
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -130,6 +158,11 @@ class PublicationResult:
     number: int | None = None
     url: str | None = None
     provider_state: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def external_id(self) -> str | None:
+        """Generic external reference; ``number`` remains checkpoint compatible."""
+        return str(self.number) if self.number is not None else None
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)

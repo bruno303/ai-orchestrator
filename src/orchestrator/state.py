@@ -69,6 +69,7 @@ class OutputState(TypedDict, total=False):
     """Provider-owned publication result."""
 
     provider: str
+    external_id: str
     url: str
     provider_state: dict[str, Any]
 

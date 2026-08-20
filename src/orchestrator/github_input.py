@@ -133,6 +133,7 @@ class GitHubPollingInputSource:
                         title=issue.title,
                         body=issue.body,
                         metadata={"kind": "issue"},
+                        trigger="new",
                         provider_state={
                             **repository_state,
                             "source_number": issue.number,
@@ -204,6 +205,7 @@ class GitHubPollingInputSource:
                         "kind": "comment",
                         "compatibility_data": {"pr_number": pr_number},
                     },
+                    trigger="rerun",
                     provider_state={
                         **(provider_state or {}),
                         "comment_id": comment.id,
