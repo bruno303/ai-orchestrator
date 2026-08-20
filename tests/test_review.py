@@ -184,6 +184,7 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
     captured = {}
 
     def run(*args, **kwargs):
+        captured["args"] = args
         captured.update(kwargs)
         return OpenCodeResult(0, json.dumps({
             "verdict": "comment", "summary": "ok", "findings": [], "checks": [],
@@ -194,8 +195,24 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
     result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
 
     assert result.success
+    assert captured["args"][1] is None
     assert captured["model"] == "provider/model"
     assert captured["variant"] == "fast"
+
+
+def test_review_executor_accepts_transcript_before_json(monkeypatch):
+    transcript = "agent output\n\x1b[0m\n" + json.dumps({
+        "verdict": "approve", "summary": "ok", "findings": [], "checks": [],
+    })
+    monkeypatch.setattr(
+        "orchestrator.opencode.run_opencode",
+        lambda *args, **kwargs: OpenCodeResult(0, transcript, "", 0.1),
+    )
+
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+
+    assert result.success
+    assert result.verdict == "approve"
 
 
 def test_review_executor_disables_degenerate_detection_without_fallback(monkeypatch):

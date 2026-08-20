@@ -58,7 +58,7 @@ class OpenCodeExecutor:
 
 
 class OpenCodeReviewExecutor:
-    """Run the review agent and admit only the documented JSON result."""
+    """Run the default agent and admit only the documented JSON result."""
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
@@ -68,7 +68,7 @@ class OpenCodeReviewExecutor:
         options = {**self.options, **request.provider_state}
         model_config = config.MODEL_PRIMARY
         result = run_opencode(
-            request.workspace, options.get("agent", "review"), request.prompt,
+            request.workspace, None, request.prompt,
             log_file=Path(options["log_file"]) if options.get("log_file") else None,
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
@@ -79,9 +79,7 @@ class OpenCodeReviewExecutor:
             return ReviewResult(False, summary=result.stdout or result.stderr,
                                 provider_state={"exit_code": result.exit_code})
         try:
-            value = json.loads(result.stdout.strip())
-            if not isinstance(value, dict):
-                raise ValueError("review output is not an object")
+            value = _extract_review_json(result.stdout)
             verdict = str(value.get("verdict", "")).lower()
             if verdict not in {"approve", "request_changes", "comment"}:
                 raise ValueError("review verdict is invalid")
@@ -113,6 +111,24 @@ class OpenCodeReviewExecutor:
             return ReviewResult(False, summary=f"invalid structured review output: {exc}")
 
 
+def _extract_review_json(output: str) -> dict[str, Any]:
+    """Extract the last JSON object from OpenCode's mixed transcript output."""
+    decoder = json.JSONDecoder()
+    value: dict[str, Any] | None = None
+    for index, character in enumerate(output):
+        if character != "{":
+            continue
+        try:
+            candidate, _ = decoder.raw_decode(output[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            value = candidate
+    if value is None:
+        raise ValueError("review output does not contain a JSON object")
+    return value
+
+
 def detect_loop(
     lines: list[str],
     window: int,
@@ -133,7 +149,7 @@ def detect_loop(
 
 def run_opencode(
     workspace: str | Path,
-    agent: str,
+    agent: str | None,
     prompt: str,
     *,
     timeout: int | None = None,
@@ -142,7 +158,7 @@ def run_opencode(
     variant: str | None = None,
     detect_degenerate: bool = True,
 ) -> OpenCodeResult:
-    """Run `opencode run --agent <agent> --auto` in the given workspace.
+    """Run `opencode run [--agent <agent>] --auto` in the given workspace.
 
     Output is streamed live to `log_file` (if given) while also captured for the
     returned result. `model`/`variant` are passed through as `-m`/`--variant`.
@@ -153,12 +169,12 @@ def run_opencode(
     cmd = [
         config.OPENCODE_BIN,
         "run",
-        "--agent",
-        agent,
         "--auto",
         "--dir",
         str(workspace),
     ]
+    if agent is not None:
+        cmd[2:2] = ["--agent", agent]
     if model is not None:
         cmd += ["-m", model]
     if variant is not None:
@@ -183,7 +199,9 @@ def run_opencode(
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = log_file.open("a")
-        header = f"[orchestrator] opencode run --agent {agent}"
+        header = "[orchestrator] opencode run"
+        if agent is not None:
+            header += f" --agent {agent}"
         if model is not None:
             header += f" --model {model}"
         if variant is not None:
