@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
+from orchestrator import config
 from orchestrator.providers import (
     DESTINATION_PROVIDERS,
     EXECUTOR_PROVIDERS,
@@ -22,12 +21,19 @@ def compose_execution_runtime(
     destination: Destination | None = None,
 ) -> ExecutionRuntime:
     """Compose the issue workflow runtime from provider implementations."""
+    pipeline = config.load_pipeline_config()
     if executor is None:
-        executor = EXECUTOR_PROVIDERS.create("opencode", {"_runtime": True})
+        executor = EXECUTOR_PROVIDERS.create(
+            pipeline.executor.type, {**pipeline.executor.options, "_runtime": True}
+        )
     if workspace_manager is None:
-        workspace_manager = WORKSPACE_PROVIDERS.create("git", {"_runtime": True})
+        workspace_manager = WORKSPACE_PROVIDERS.create(
+            pipeline.workspace_manager.type, {**pipeline.workspace_manager.options, "_runtime": True}
+        )
     if destination is None:
-        destination = DESTINATION_PROVIDERS.create("github", {"_runtime": True})
+        destination = DESTINATION_PROVIDERS.create(
+            pipeline.destination.type, {**pipeline.destination.options, "_runtime": True}
+        )
     return ExecutionRuntime(executor, workspace_manager, destination)
 
 

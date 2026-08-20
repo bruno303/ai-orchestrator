@@ -39,6 +39,7 @@ class InputEvent:
     provider_state: dict[str, Any] = field(default_factory=dict)
     provider: str = ""
     extra_context: list[str] = field(default_factory=list)
+    work_item_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)

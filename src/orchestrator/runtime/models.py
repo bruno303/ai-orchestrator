@@ -17,15 +17,22 @@ from orchestrator.providers import (
 
 @dataclass(frozen=True)
 class IssueContext:
-    """Provider-neutral issue data needed by execution phases."""
+    """Provider-neutral work-item data needed by execution phases."""
 
     task_id: str
     repository: str
-    issue_number: int
+    # Retained as a compatibility alias for callers using the old positional
+    # constructor. Generic runtime code uses work_item_id instead.
+    issue_number: int | None = None
     title: str = ""
     body: str = ""
     extra_context: list[str] = field(default_factory=list)
     provider_state: dict[str, Any] = field(default_factory=dict)
+    work_item_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.work_item_id:
+            object.__setattr__(self, "work_item_id", str(self.issue_number or self.task_id))
 
 
 @dataclass(frozen=True)

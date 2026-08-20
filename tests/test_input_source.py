@@ -96,7 +96,7 @@ def test_malformed_comment_event_does_not_crash_polling(tmp_path):
     assert started == []
 
 
-def test_issue_without_number_is_skipped_polling(tmp_path):
+def test_provider_neutral_issue_without_number_is_accepted(tmp_path):
     from orchestrator.persistence import TaskStore
 
     store = TaskStore(tmp_path / "db.sqlite")
@@ -112,7 +112,8 @@ def test_issue_without_number_is_skipped_polling(tmp_path):
 
     app.poll_once(once=True)
 
-    assert started == []
+    assert started[0][2] == "issue:unknown"
+    assert store.get_task("issue:unknown") is not None
 
 
 def test_review_input_filters_processed_label():

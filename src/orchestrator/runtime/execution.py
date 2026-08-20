@@ -59,7 +59,7 @@ def _extra_context(context: IssueContext) -> str:
 
 
 def plan_prompt(context: IssueContext) -> str:
-    return f"""You are planning the implementation of work item {context.issue_number} in repository {context.repository}.
+    return f"""You are planning the implementation of work item {context.work_item_id} in repository {context.repository}.
 
 Issue title: {context.title}
 
@@ -84,7 +84,7 @@ Restrictions:
 
 
 def implement_prompt(context: IssueContext, plan_path: str = PLAN_FILE) -> str:
-    return f"""You are implementing GitHub issue or equivalent work item #{context.issue_number} in repository {context.repository}.
+    return f"""You are implementing GitHub issue or equivalent work item {context.work_item_id} in repository {context.repository}.
 
 Issue title: {context.title}
 
@@ -110,7 +110,7 @@ Context:
 
 
 def test_prompt(context: IssueContext) -> str:
-    return f"""Run the test suite of the project in this workspace (repository {context.repository}, work item {context.issue_number}).
+    return f"""Run the test suite of the project in this workspace (repository {context.repository}, work item {context.work_item_id}).
 
 Determine the appropriate test command (e.g. pytest, npm test, ./gradlew test) and run it.
 Do NOT modify any code.
@@ -119,7 +119,8 @@ Report the results, including any failures.
 
 
 def pr_body(context: IssueContext, current_body: str | None = None) -> str:
-    closes = f"Closes #{context.issue_number}"
+    source_number = context.provider_state.get("source_number", context.issue_number)
+    closes = f"Closes #{source_number}" if source_number is not None else ""
     if not current_body:
         return closes
     lines = current_body.splitlines()
@@ -135,7 +136,7 @@ def pr_body(context: IssueContext, current_body: str | None = None) -> str:
         skip_blank = False
         remainder_lines.append(line)
     remainder = "\n".join(remainder_lines).strip("\n")
-    return f"{closes}\n\n{remainder}" if remainder else closes
+    return f"{closes}\n\n{remainder}" if closes and remainder else closes or remainder
 
 
 class ExecutionRuntime:
@@ -236,7 +237,7 @@ class ExecutionRuntime:
                     base=request.base,
                     provider_state={
                         "workspace": request.workspace,
-                        "source_number": request.context.issue_number,
+                        **request.context.provider_state,
                         **request.provider_state,
                     },
                 )

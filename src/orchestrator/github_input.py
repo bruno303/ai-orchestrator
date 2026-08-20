@@ -139,6 +139,7 @@ class GitHubPollingInputSource:
                             "branch": f"ai/issue-{issue.number}",
                             "workspace": str(workspace.task_workspace(repository, issue.number)),
                         },
+                        work_item_id=f"{repository}#{issue.number}",
                     )
                 )
         return events
@@ -212,6 +213,7 @@ class GitHubPollingInputSource:
                         "branch": f"ai/issue-{task_number}",
                         "workspace": str(workspace.task_workspace(repository, task_number)),
                     },
+                    work_item_id=task_id,
                 )
             )
         return events

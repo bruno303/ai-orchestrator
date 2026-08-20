@@ -61,7 +61,13 @@ def _input_seed(
     extra_context: list[str] | None = None,
 ) -> dict:
     provider_state = validate_provider_state(event.provider_state)
-    data = {"repository": event.repository, "number": event.number, "title": event.title, "body": event.body}
+    data = {
+        "repository": event.repository,
+        "number": event.number,
+        "work_item_id": event.work_item_id or task_id,
+        "title": event.title,
+        "body": event.body,
+    }
     data.update(event.metadata.get("compatibility_data", {}))
     if extra_context or event.extra_context:
         data["extra_context"] = extra_context or event.extra_context
@@ -94,7 +100,7 @@ class PollingApplication:
         input_source: InputSource,
         run_graph: Callable[[Any, dict, str], dict],
         persist_result: Callable[[Any, dict], None],
-        reset_task: Callable[[Any, str, int, str], None],
+        reset_task: Callable[[Any, InputEvent], None],
         feedback: SourceFeedback | None = None,
         now: Callable[[], str] | None = None,
         input_provider: str | None = None,
@@ -118,13 +124,17 @@ class PollingApplication:
                 return
 
     def _run_issue(self, event: InputEvent) -> None:
-        if event.number is None:
-            print(f"[{self.now()}] skipping issue event without a number: {event.event_id}", flush=True)
-            return
-        task_id = f"{event.repository}#{event.number}"
+        task_id = event.work_item_id or (
+            f"{event.repository}#{event.number}" if event.number is not None else event.event_id
+        )
         # A command comment for the same issue may have been processed earlier
         # in this polling snapshot.
-        if self.store.exists(event.repository, event.number):
+        existing = (
+            self.store.exists_task(task_id)
+            if hasattr(self.store, "exists_task")
+            else self.store.get_task(task_id) is not None
+        )
+        if existing:
             return
         seed = _input_seed(event, task_id, provider=self.input_provider or _input_provider(self.input_source))
         print(f"[{self.now()}] new issue: {task_id} - {event.title}")
@@ -140,7 +150,7 @@ class PollingApplication:
         if task and task["status"] in self._active_statuses():
             return
         self.feedback.mark_started(event)
-        self.reset_task(self.store, event.repository, event.number, f"ai/issue-{event.number}")
+        self.reset_task(self.store, event)
         seed = _input_seed(
             event,
             task_id,
