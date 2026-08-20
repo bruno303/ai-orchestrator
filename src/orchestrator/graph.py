@@ -41,11 +41,18 @@ def _input(state: TaskState) -> dict[str, Any]:
     value = state.get("input") or {}
     data = value.get("data") or {}
     provider_state = validate_provider_state(value.get("provider_state", {}))
+    if not provider_state and state.get("provider_state"):
+        provider_state = validate_provider_state(state["provider_state"])
+    issue_number = data.get("number", data.get("issue_number", state.get("issue_number")))
+    if issue_number is not None and "source_number" not in provider_state:
+        # Compatibility for checkpoints created before provider-owned state.
+        provider_state = {**provider_state, "source_number": issue_number}
     return {
         "provider": value.get("provider", "github"),
         "provider_state": provider_state,
         "repository": data.get("repository", state.get("repository", "")),
-        "issue_number": data.get("number", data.get("issue_number", state.get("issue_number"))),
+        "work_item_id": data.get("work_item_id", state.get("task_id", "")),
+        "issue_number": issue_number,
         "issue_title": data.get("title", data.get("issue_title", state.get("issue_title", ""))),
         "issue_body": data.get("body", data.get("issue_body", state.get("issue_body", ""))),
         "extra_context": data.get("extra_context", state.get("extra_context", [])),
@@ -90,6 +97,7 @@ def _context(state: TaskState) -> IssueContext:
         task_id=state.get("task_id", f"{source['repository']}#{source['issue_number']}"),
         repository=source["repository"],
         issue_number=source["issue_number"],
+        work_item_id=source["work_item_id"],
         title=source["issue_title"],
         body=source["issue_body"],
         extra_context=source["extra_context"],
@@ -149,8 +157,13 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None,
     repository = source["repository"]
     try:
         current_workspace = _workspace(state)
-        branch = current_workspace["branch"] or f"ai/issue-{source['issue_number']}"
-        ws = str(current_workspace["path"] or workspace.task_workspace(repository, source["issue_number"]))
+        branch = current_workspace["branch"] or source["provider_state"].get("branch", "")
+        ws = str(current_workspace["path"] or source["provider_state"].get("workspace", ""))
+        if not branch or not ws:
+            if source["issue_number"] is None:
+                raise ValueError("work item is missing explicit workspace checkout instructions")
+            branch = branch or f"ai/issue-{source['issue_number']}"
+            ws = ws or str(workspace.task_workspace(repository, source["issue_number"]))
         runtime = runtime or compose_execution_runtime(workspace_manager=manager)
         prepared = runtime.prepare(
             PrepareExecutionRequest(
@@ -171,6 +184,7 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None,
     input_value = state.get("input") or {}
     input_data = dict(input_value.get("data") or {})
     input_data.update({"repository": source["repository"], "number": source["issue_number"],
+                       "work_item_id": source["work_item_id"],
                        "title": source["issue_title"], "body": source["issue_body"],
                        "extra_context": source["extra_context"]})
     return {

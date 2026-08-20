@@ -85,7 +85,7 @@ class TaskStore:
         self,
         task_id: str,
         repository: str,
-        issue_number: int,
+        issue_number: int | None = None,
         status: str = state_mod.RECEIVED,
     ) -> None:
         self.conn.execute(
@@ -93,7 +93,7 @@ class TaskStore:
             INSERT OR IGNORE INTO tasks (task_id, repository, issue_number, status)
             VALUES (?, ?, ?, ?)
             """,
-            (task_id, repository, issue_number, status),
+            (task_id, repository, issue_number if issue_number is not None else 0, status),
         )
         self._safe_commit()
 
@@ -192,6 +192,10 @@ class TaskStore:
             "SELECT 1 FROM tasks WHERE repository = ? AND issue_number = ?",
             (repository, issue_number),
         ).fetchone()
+        return row is not None
+
+    def exists_task(self, task_id: str) -> bool:
+        row = self.conn.execute("SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         return row is not None
 
     # ------------------------------------------------------------ comments

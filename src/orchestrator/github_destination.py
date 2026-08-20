@@ -38,23 +38,26 @@ class GitHubDestination:
 
     def publish(self, request: PublicationRequest) -> PublicationResult:
         provider_state = {**self.options, **request.provider_state}
+        issue_number = provider_state.get("issue_number", provider_state.get("source_number"))
+        if issue_number is None:
+            raise ValueError("GitHub publication requires source issue metadata")
         workspace = provider_state["workspace"]
         if not git.has_changes(workspace) and not git.commits_ahead(workspace, request.base):
             raise git.GitError("no changes to commit")
         if git.has_changes(workspace):
-            git.commit_all(workspace, f"{request.title}\n\nCloses #{provider_state['issue_number']}")
+            git.commit_all(workspace, f"{request.title}\n\nCloses #{issue_number}")
         git.push_branch(workspace, request.head)
 
         existing_pr = github.find_open_pr(request.repository, request.head)
         if existing_pr is not None:
             current = github.get_pull_request(request.repository, existing_pr).body
-            body = _body(provider_state["issue_number"], provider_state, current)
+            body = _body(issue_number, provider_state, current)
             if body != current:
                 github.update_pull_request_body(request.repository, existing_pr, body)
             return PublicationResult(number=existing_pr, url=None)
 
         number = github.create_pull_request(
-            request.repository, request.title, request.body,
+            request.repository, request.title, _body(issue_number, provider_state, request.body),
             head=request.head, base=request.base,
         )
         return PublicationResult(number=number)

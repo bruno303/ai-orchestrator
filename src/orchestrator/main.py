@@ -29,13 +29,30 @@ def _parse_ref(ref: str) -> tuple[str, int]:
 
 def _seed_state(store: TaskStore, repository: str, issue_number: int) -> dict:
     issue = github.get_issue(repository, issue_number)
+    try:
+        repository_metadata = github.get_repository(repository)
+    except github.GitHubError:
+        # ``run`` is a compatibility command; retain a usable GitHub checkout
+        # even when repository metadata is unavailable.
+        repository_metadata = {
+            "ssh_url": f"https://github.com/{repository}.git",
+            "default_branch": "",
+        }
     task_id = f"{repository}#{issue_number}"
     store.create_task(task_id, repository, issue_number)
     return {
         "task_id": task_id,
         "input": {"provider": "github", "data": {"repository": repository, "number": issue_number,
-            "title": issue.title, "body": issue.body}, "provider_state": {}},
-        "processing": {}, "workspace": {"branch": f"ai/issue-{issue_number}"}, "output": {},
+            "work_item_id": task_id, "title": issue.title, "body": issue.body}, "provider_state": {
+                "repository_url": repository_metadata.get("ssh_url", ""),
+                "base_branch": repository_metadata.get("default_branch", ""),
+                "branch": f"ai/issue-{issue_number}",
+                "workspace": str(workspace.task_workspace(repository, issue_number)),
+                "source_number": issue_number,
+            }},
+        "processing": {}, "workspace": {"branch": f"ai/issue-{issue_number}",
+            "path": str(workspace.task_workspace(repository, issue_number)),
+            "base_branch": repository_metadata.get("default_branch", "")}, "output": {},
         "status": state_mod.RECEIVED,
         "iteration": 1,
         "phase_attempts": 1,
@@ -155,6 +172,19 @@ def _reset_task(store: TaskStore, repository: str, issue_number: int, branch: st
         (state_mod.RECEIVED, task_id),
     )
     store.conn.commit()
+
+
+def _reset_event_task(store: TaskStore, event) -> None:
+    """Adapt the GitHub comment event to the legacy reset helper."""
+    issue_number = event.number
+    if issue_number is None:
+        raise ValueError("GitHub comment event is missing its issue number")
+    _reset_task(
+        store,
+        event.repository,
+        issue_number,
+        event.provider_state.get("branch", f"ai/issue-{issue_number}"),
+    )
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -468,9 +498,10 @@ def cmd_execute(args: argparse.Namespace) -> None:
                 runtime=runtime.execution_runtime,
             ),
             _persist_result,
-            _reset_task,
+            _reset_event_task,
             now=_now,
             input_provider=runtime.input_provider,
+            feedback=runtime.feedback,
         )
         while True:
             _detect_stale_tasks(store)

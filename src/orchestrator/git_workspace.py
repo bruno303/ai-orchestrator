@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from orchestrator import github, git, workspace
+from orchestrator import git, workspace
 from orchestrator.providers import WorkspaceRequest, WorkspaceResult
 
 
@@ -19,31 +19,41 @@ class GitWorkspaceManager:
 
     def prepare(self, request: WorkspaceRequest) -> WorkspaceResult:
         provider_state = {**self.options, **request.provider_state}
-        repository_url = provider_state.get("repository_url") or github.get_clone_url(request.repository)
-        base_branch = request.base_branch or github.get_default_branch(request.repository)
+        repository_url = request.repository_url or provider_state.get("repository_url")
+        if not repository_url:
+            raise git.GitError("workspace request requires a repository URL")
+        base_branch = request.base_branch or request.target_ref or provider_state.get("base_branch", "")
         repo_dir = git.ensure_base_clone(request.repository, repository_url)
         if not base_branch:
             base_branch = git.detect_default_branch(repo_dir)
 
         if request.purpose not in {"execution", "review"}:
             raise git.GitError(f"unknown workspace purpose: {request.purpose}")
-        review = request.purpose == "review"
-        issue_number = provider_state.get("issue_number")
-        if not review and issue_number is None:
-            issue_number = request.task_id.rsplit("#", 1)[-1]
-        branch = "" if review else request.branch or (f"ai/issue-{issue_number}" if issue_number is not None else "")
-        if not review and not issue_number and not provider_state.get("workspace"):
-            raise git.GitError("execution workspace requires an issue number or path")
-        workspace_path = Path(
-            provider_state.get("workspace")
-            or (workspace.review_workspace(request.repository, int(provider_state["number"])) if review
-                else workspace.task_workspace(request.repository, int(issue_number)))
-        )
+        review = request.checkout_mode == "revision" or request.purpose == "review"
+        branch = "" if review else request.branch
+        if not review and not branch:
+            legacy_checkout = workspace.legacy_task_checkout(request.task_id, request.repository)
+            if legacy_checkout is not None:
+                branch = legacy_checkout[0]
+        workspace_value = request.workspace or provider_state.get("workspace")
+        if not workspace_value:
+            # Legacy checkpoints predate explicit workspace instructions.
+            legacy_checkout = workspace.legacy_task_checkout(request.task_id, request.repository)
+            if request.purpose == "execution" and legacy_checkout is not None:
+                workspace_value = str(legacy_checkout[1])
+            else:
+                raise git.GitError("workspace request requires a workspace path")
+        workspace_path = Path(workspace_value)
         if review:
-            commit = provider_state.get("commit_sha") or provider_state.get("head_sha")
+            commit = request.revision or provider_state.get("revision") or provider_state.get("head_sha")
             if not commit:
-                raise git.GitError("review workspace requires a PR commit SHA")
-            git.fetch_commit(repo_dir, commit, provider_state.get("head_clone_url") or "origin")
+                raise git.GitError("revision workspace requires a commit revision")
+            git.fetch_commit(
+                repo_dir,
+                commit,
+                request.fetch_url or provider_state.get("fetch_url")
+                or provider_state.get("head_clone_url") or "origin",
+            )
             git.create_detached_worktree(repo_dir, workspace_path, commit)
         else:
             git.create_worktree(repo_dir, workspace_path, branch, base_branch)

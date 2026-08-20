@@ -179,6 +179,7 @@ def test_run_force_resets_state(allowlist, tmp_path, monkeypatch):
 
     issue = github.Issue(number=7, title="t", body="b", html_url="u")
     monkeypatch.setattr(github, "get_issue", lambda repo, n: issue)
+    monkeypatch.setattr(github, "get_repository", lambda repo: {"ssh_url": "git@github.com:company/backend.git", "default_branch": "main"})
     monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
     monkeypatch.setattr("orchestrator.main.build_graph", lambda checkpointer, on_node_start=None: FakeGraph([]))
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from orchestrator import config, github
+from orchestrator import config, github, workspace
 from orchestrator.providers import ReviewEvent, ReviewRequest, ReviewResult
 
 
@@ -19,6 +19,7 @@ class GitHubReviewInputSource:
     def poll(self) -> list[ReviewEvent]:
         events: list[ReviewEvent] = []
         for repository in self.config_module.allowed_repositories():
+            repository_state = self._repository_state(repository)
             try:
                 prs = self.github_client.list_open_pull_requests(repository)
                 for pr in prs:
@@ -36,6 +37,10 @@ class GitHubReviewInputSource:
                         metadata={"url": detail.url},
                         provider_state={
                             "number": pr.number,
+                            "workspace": str(workspace.review_workspace(repository, pr.number)),
+                            "repository_url": repository_state.get("repository_url", ""),
+                            "fetch_url": detail.head_clone_url,
+                            "revision": detail.head_sha,
                             "head_ref": detail.head_ref, "base_ref": detail.base_ref,
                         "head_sha": detail.head_sha,
                             "head_clone_url": detail.head_clone_url,
@@ -47,6 +52,13 @@ class GitHubReviewInputSource:
             except Exception as exc:
                 print(f"[review] {repository} listing: {exc}", flush=True)
         return events
+
+    def _repository_state(self, repository: str) -> dict[str, str]:
+        try:
+            metadata = self.github_client.get_repository(repository)
+        except Exception:
+            return {}
+        return {"repository_url": metadata.get("ssh_url", "")}
 
 
 def _summary(result: ReviewResult) -> str:

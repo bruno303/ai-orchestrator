@@ -32,10 +32,13 @@ class ReviewRuntime:
 
     def prepare(self, request: PrepareReviewRequest) -> PrepareReviewResult:
         provider_state = validate_provider_state(request.event.provider_state)
-        number = provider_state.get("number")
-        if not isinstance(number, int) or isinstance(number, bool):
-            raise ReviewExecutionError("review event is missing a pull-request number")
-        workspace_path = request.workspace or str(workspace.review_workspace(request.event.repository, number))
+        workspace_path = request.workspace or provider_state.get("workspace", "")
+        if not workspace_path:
+            # Compatibility for checkpoints created before explicit workspace data.
+            number = provider_state.get("number")
+            if not isinstance(number, int) or isinstance(number, bool):
+                raise ReviewExecutionError("review event is missing workspace instructions")
+            workspace_path = str(workspace.review_workspace(request.event.repository, number))
         try:
             result = self.workspace_manager.prepare(
                 WorkspaceRequest(
@@ -45,6 +48,12 @@ class ReviewRuntime:
                     provider_state.get("base_ref", ""),
                     {**provider_state, "workspace": workspace_path},
                     purpose="review",
+                    repository_url=provider_state.get("repository_url", ""),
+                    fetch_url=provider_state.get("fetch_url", ""),
+                    revision=provider_state.get("revision", "") or provider_state.get("head_sha", ""),
+                    target_ref=provider_state.get("base_ref", ""),
+                    checkout_mode="revision",
+                    workspace=workspace_path,
                 )
             )
             workspace_provider_state = validate_provider_state(result.provider_state)
