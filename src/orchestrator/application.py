@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from orchestrator import config, github, state as state_mod
-from orchestrator.github_input import GitHubPollingInputSource, _pr_context_block
+from orchestrator import config, state as state_mod
 from orchestrator.providers import (
-    Destination, Executor, InputEvent, InputSource, WorkspaceManager, validate_provider_state,
+    Destination, Executor, InputEvent, InputSource, SourceFeedback, WorkspaceManager,
+    validate_provider_state,
 )
 from orchestrator.runtime import compose_execution_runtime
 from orchestrator.runtime.execution import ExecutionRuntime
@@ -20,6 +20,7 @@ class Runtime:
     executor: Executor
     workspace_manager: WorkspaceManager
     destination: Destination
+    feedback: SourceFeedback | None = None
     input_provider: str | None = None
     execution_runtime: ExecutionRuntime | None = None
 
@@ -44,6 +45,7 @@ def compose_runtime(store: Any) -> Runtime:
         executor=executor,
         workspace_manager=workspace_manager,
         destination=destination,
+        feedback=getattr(input_source, "feedback", None),
         input_provider=pipeline.input_source.type,
         execution_runtime=compose_execution_runtime(
             executor=executor, workspace_manager=workspace_manager, destination=destination
@@ -60,13 +62,18 @@ def _input_seed(
 ) -> dict:
     provider_state = validate_provider_state(event.provider_state)
     data = {"repository": event.repository, "number": event.number, "title": event.title, "body": event.body}
-    if extra_context:
-        data["extra_context"] = extra_context
+    data.update(event.metadata.get("compatibility_data", {}))
+    if extra_context or event.extra_context:
+        data["extra_context"] = extra_context or event.extra_context
     return {
         "task_id": task_id,
         "input": {"provider": provider or event.provider or "github", "data": data, "provider_state": provider_state},
         "processing": {"phase_attempts": 1},
-        "workspace": {"branch": f"ai/issue-{event.number}"},
+        "workspace": {
+            "branch": provider_state.get("branch", ""),
+            "path": provider_state.get("workspace", ""),
+            "base_branch": provider_state.get("base_branch", ""),
+        },
         "output": {},
         "status": state_mod.RECEIVED,
         "iteration": 1,
@@ -88,7 +95,7 @@ class PollingApplication:
         run_graph: Callable[[Any, dict, str], dict],
         persist_result: Callable[[Any, dict], None],
         reset_task: Callable[[Any, str, int, str], None],
-        github_client: Any = github,
+        feedback: SourceFeedback | None = None,
         now: Callable[[], str] | None = None,
         input_provider: str | None = None,
     ) -> None:
@@ -97,7 +104,7 @@ class PollingApplication:
         self.run_graph = run_graph
         self.persist_result = persist_result
         self.reset_task = reset_task
-        self.github = github_client
+        self.feedback = feedback or getattr(input_source, "feedback", None) or _NoopFeedback()
         self.now = now or (lambda: "--:--:--")
         self.input_provider = input_provider
 
@@ -125,62 +132,59 @@ class PollingApplication:
         self.persist_result(self.store, self.run_graph(self.store, seed, task_id))
 
     def _run_comment(self, event: InputEvent) -> None:
-        comment = event.metadata.get("comment")
-        if comment is None or event.number is None:
+        if event.provider_state.get("comment_id") is None or event.number is None:
             print(f"[{self.now()}] skipping malformed comment event: {event.event_id}", flush=True)
             return
         task_id = f"{event.repository}#{event.number}"
         task = self.store.get_task(task_id)
         if task and task["status"] in self._active_statuses():
             return
-        self.store.mark_comment_handled(comment.id, task_id, event.repository, event.number, "STARTED")
-        try:
-            self.github.add_reaction(event.repository, comment.id, "eyes")
-        except self.github.GitHubError:
-            pass
+        self.feedback.mark_started(event)
         self.reset_task(self.store, event.repository, event.number, f"ai/issue-{event.number}")
-        try:
-            issue = self.github.get_issue(event.repository, event.number)
-        except self.github.GitHubError as exc:
-            self.store.update_comment_status(comment.id, state_mod.FAILED)
-            try:
-                self.github.add_reaction(event.repository, comment.id, "-1")
-            except self.github.GitHubError:
-                pass
-            print(f"[{self.now()}] command comment {comment.id}: could not load issue: {exc}", flush=True)
-            return
-        pr_number = event.metadata.get("pr_number")
-        context: list[str] = []
-        if pr_number is None:
-            try:
-                pr_number = self.github.find_open_pr(event.repository, f"ai/issue-{event.number}")
-            except self.github.GitHubError:
-                pr_number = None
-        if pr_number is not None:
-            try:
-                context.append(_pr_context_block(self.github.get_pull_request(event.repository, pr_number)))
-            except self.github.GitHubError:
-                pass
-        context.append(comment.body)
-        seed = _input_seed(event, task_id, provider=self.input_provider or _input_provider(self.input_source), extra_context=context)
-        seed["input"]["data"]["title"] = issue.title
-        seed["input"]["data"]["body"] = issue.body
-        seed["input"]["data"]["pr_number"] = pr_number
-        print(f"[{self.now()}] command comment {comment.id} on {event.repository} ({task_id})", flush=True)
+        seed = _input_seed(
+            event,
+            task_id,
+            provider=self.input_provider or _input_provider(self.input_source),
+        )
+        print(
+            f"[{self.now()}] command comment {event.provider_state['comment_id']} "
+            f"on {event.repository} ({task_id})",
+            flush=True,
+        )
         self.store.create_task(task_id, event.repository, event.number)
-        result = self.run_graph(self.store, seed, task_id)
-        self.persist_result(self.store, result)
-        status = result.get("status", state_mod.FAILED)
         try:
-            self.github.add_reaction(event.repository, comment.id, "rocket" if status == state_mod.COMPLETED else "-1")
-        except self.github.GitHubError:
-            pass
-        self.store.update_comment_status(comment.id, status)
+            result = self.run_graph(self.store, seed, task_id)
+            self.persist_result(self.store, result)
+            status = result.get("status", state_mod.FAILED)
+            if status == state_mod.COMPLETED:
+                self.feedback.mark_succeeded(event)
+            else:
+                self.feedback.mark_failed(event, result.get("error"))
+        except Exception as exc:
+            self.feedback.mark_failed(event, str(exc))
+            raise
 
     @staticmethod
     def _active_statuses() -> set[str]:
-        from orchestrator.github_input import ACTIVE_STATUSES
-        return ACTIVE_STATUSES
+        return {
+            state_mod.RECEIVED,
+            state_mod.PREPARING,
+            state_mod.PLANNING,
+            state_mod.IMPLEMENTING,
+            state_mod.TESTING,
+            state_mod.CREATING_PR,
+        }
 
 
 ApplicationService = PollingApplication
+
+
+class _NoopFeedback:
+    def mark_started(self, event: InputEvent) -> None:
+        return None
+
+    def mark_succeeded(self, event: InputEvent) -> None:
+        return None
+
+    def mark_failed(self, event: InputEvent, error: str | None = None) -> None:
+        return None

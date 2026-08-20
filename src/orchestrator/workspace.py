@@ -22,6 +22,14 @@ def review_workspace(repository: str, number: int) -> Path:
     return config.WORKSPACES_DIR / f"{repository.replace('/', '-')}-review-{number}"
 
 
+def legacy_task_checkout(task_id: str, repository: str) -> tuple[str, Path] | None:
+    """Resolve old task IDs for checkpoints created before explicit checkout data."""
+    reference = task_id.rsplit("#", 1)[-1]
+    if not reference.isdigit():
+        return None
+    return f"ai/issue-{reference}", task_workspace(repository, int(reference))
+
+
 def task_logs_dir(task_id: str) -> Path:
     return config.LOGS_DIR / task_id.replace("/", "-").replace("#", "-")
 

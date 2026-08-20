@@ -471,6 +471,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
             _reset_task,
             now=_now,
             input_provider=runtime.input_provider,
+            feedback=runtime.feedback,
         )
         while True:
             _detect_stale_tasks(store)

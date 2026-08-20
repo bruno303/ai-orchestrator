@@ -137,25 +137,34 @@ support arbitrary unchanged-file locations.
 
 ## How it works
 
+Provider adapters translate external events into neutral workflow requests.
 Workflow engines decide which step runs next; reusable runtime services perform
-the side effects. The issue and review workflows remain separate and share the
-provider implementations underneath:
+the side effects. The issue and review workflows remain separate:
 
 ```
-Issue source
-    -> LangGraph issue workflow
-    -> ExecutionRuntime: prepare / plan / implement / test / publish / cleanup
-    -> Executor / WorkspaceManager / Destination
+GitHub Issue/Comment
+    -> GitHub Work Input + Feedback
+    -> WorkItem / InputEvent
+    -> Generic execution workflow/runtime
+    -> ChangeRequest / PublicationRequest
+    -> GitHub Change Destination
+    -> GitHub PR
 
-PR review source
-    -> ReviewApplication
-    -> ReviewRuntime: prepare / execute_review / publish_review / cleanup_review
-    -> ReviewExecutor / WorkspaceManager / ReviewDestination
+GitHub PR
+    -> GitHub Review Input
+    -> ReviewTarget / ReviewEvent
+    -> Generic review workflow/runtime
+    -> ReviewOutcome / ReviewResult
+    -> GitHub Review Destination
+    -> GitHub review + processed marker
 ```
 
 Runtime operations accept typed request objects rather than LangGraph state, so
 the same issue and review steps can later be called by an HTTP API, n8n, or
 another workflow engine without duplicating OpenCode, git, or provider logic.
+`GitWorkspaceManager` is provider-neutral: adapters provide explicit clone/fetch
+URLs, refs, revisions, checkout mode, and workspace paths; it performs only git
+clone, fetch, worktree, and cleanup operations.
 LangGraph remains responsible for issue checkpoints and routing; the polling
 review workflow remains independently invokable and does not use issue
 checkpoints.
@@ -185,11 +194,7 @@ To add a provider, implement the relevant protocol in `providers.py`, register
 its factory in the matching registry, and configure its type. Input events carry
 the configured input provider identity, and provider metadata belongs in the
 boundary request/result `provider_state` or the owning namespace. Do not put
-service-specific values in the workflow's generic fields. The current application
-workflow still assumes GitHub issue numbering, Git branches, and pull requests,
-so other providers require corresponding workflow/adaptor work; the boundary is
-extensible, not a claim that arbitrary sources and destinations are already
-fully supported.
+service-specific values in the workflow's generic fields.
 
 - **Isolation**: each task gets its own `git worktree` under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,

@@ -37,11 +37,7 @@ class ReviewApplication:
     def poll_once(self) -> list[ReviewEvent]:
         processed: list[ReviewEvent] = []
         for event in self.input_source.poll():
-            number = event.provider_state.get("number")
-            if not isinstance(number, int) or isinstance(number, bool):
-                print(f"[review] {event.repository}: missing PR number", flush=True)
-                continue
-            task_id = f"review:{event.repository}#{number}"
+            task_id = event.event_id
             prepared = None
             try:
                 prepared = self.runtime.prepare(PrepareReviewRequest(event, task_id))
@@ -49,13 +45,13 @@ class ReviewApplication:
                 self.runtime.publish_review(PublishReviewRequest(prepared, execution))
                 processed.append(event)
             except Exception as exc:
-                print(f"[review] {event.repository}#{number}: {exc}", flush=True)
+                print(f"[review] {event.event_id}: {exc}", flush=True)
             finally:
                 if prepared is not None:
                     try:
                         self.runtime.cleanup_review(CleanupReviewRequest(prepared))
                     except Exception as exc:
-                        print(f"[review] cleanup {event.repository}#{number}: {exc}", flush=True)
+                        print(f"[review] cleanup {event.event_id}: {exc}", flush=True)
         return processed
 
 

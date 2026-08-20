@@ -38,6 +38,7 @@ class InputEvent:
     metadata: dict[str, Any] = field(default_factory=dict)
     provider_state: dict[str, Any] = field(default_factory=dict)
     provider: str = ""
+    extra_context: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -78,6 +79,12 @@ class WorkspaceRequest:
     base_branch: str
     provider_state: dict[str, Any] = field(default_factory=dict)
     purpose: str = "execution"
+    repository_url: str = ""
+    fetch_url: str = ""
+    target_ref: str = ""
+    revision: str = ""
+    checkout_mode: str = "branch"
+    workspace: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -170,6 +177,17 @@ class ReviewResult:
 @runtime_checkable
 class InputSource(Protocol):
     def poll(self) -> list[InputEvent]: ...
+
+
+@runtime_checkable
+class SourceFeedback(Protocol):
+    """Semantic lifecycle notifications for an input event."""
+
+    def mark_started(self, event: InputEvent) -> None: ...
+
+    def mark_succeeded(self, event: InputEvent) -> None: ...
+
+    def mark_failed(self, event: InputEvent, error: str | None = None) -> None: ...
 
 
 @runtime_checkable
@@ -281,10 +299,13 @@ class _PlaceholderDestination:
 def _input_factory(options: dict[str, Any]) -> object:
     if not options.pop("_runtime", False):
         return _PlaceholderInputSource(options)
-    from orchestrator.github_input import GitHubPollingInputSource
+    from orchestrator.github_input import GitHubPollingInputSource, GitHubSourceFeedback
     from orchestrator.persistence import TaskStore
 
-    return GitHubPollingInputSource(options.pop("store", None) or TaskStore(), options=options)
+    store = options.pop("store", None) or TaskStore()
+    source = GitHubPollingInputSource(store, options=options)
+    source.feedback = GitHubSourceFeedback(store, source.github_client)
+    return source
 
 
 def _executor_factory(options: dict[str, Any]) -> object:

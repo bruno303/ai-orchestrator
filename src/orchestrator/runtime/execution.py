@@ -59,7 +59,7 @@ def _extra_context(context: IssueContext) -> str:
 
 
 def plan_prompt(context: IssueContext) -> str:
-    return f"""You are planning the implementation of GitHub issue #{context.issue_number} in repository {context.repository}.
+    return f"""You are planning the implementation of work item {context.issue_number} in repository {context.repository}.
 
 Issue title: {context.title}
 
@@ -84,7 +84,7 @@ Restrictions:
 
 
 def implement_prompt(context: IssueContext, plan_path: str = PLAN_FILE) -> str:
-    return f"""You are implementing GitHub issue #{context.issue_number} in repository {context.repository}.
+    return f"""You are implementing GitHub issue or equivalent work item #{context.issue_number} in repository {context.repository}.
 
 Issue title: {context.title}
 
@@ -110,7 +110,7 @@ Context:
 
 
 def test_prompt(context: IssueContext) -> str:
-    return f"""Run the test suite of the project in this workspace (repository {context.repository}, issue #{context.issue_number}).
+    return f"""Run the test suite of the project in this workspace (repository {context.repository}, work item {context.issue_number}).
 
 Determine the appropriate test command (e.g. pytest, npm test, ./gradlew test) and run it.
 Do NOT modify any code.
@@ -152,10 +152,8 @@ class ExecutionRuntime:
                 f"repository {request.context.repository} is not in the allowlist"
             )
         current_state = validate_provider_state(request.provider_state)
-        branch = request.branch or f"ai/issue-{request.context.issue_number}"
-        workspace_path = request.workspace or str(
-            workspace.task_workspace(request.context.repository, request.context.issue_number)
-        )
+        branch = request.branch or current_state.get("branch", "")
+        workspace_path = request.workspace or current_state.get("workspace", "")
         try:
             result = self.workspace_manager.prepare(
                 WorkspaceRequest(
@@ -167,9 +165,12 @@ class ExecutionRuntime:
                         **current_state,
                         "repository_url": current_state.get("repository_url") or request.context.provider_state.get("repository_url"),
                         "workspace": workspace_path,
-                        "issue_number": request.context.issue_number,
                     },
                     purpose="execution",
+                    repository_url=current_state.get("repository_url") or request.context.provider_state.get("repository_url", ""),
+                    target_ref=request.base_branch,
+                    checkout_mode="branch",
+                    workspace=workspace_path,
                 )
             )
             provider_state = validate_provider_state(result.provider_state)
@@ -230,12 +231,12 @@ class ExecutionRuntime:
                 PublicationRequest(
                     repository=request.context.repository,
                     title=title,
-                    body=pr_body(request.context),
+                    body="",
                     head=request.head,
                     base=request.base,
                     provider_state={
                         "workspace": request.workspace,
-                        "issue_number": request.context.issue_number,
+                        "source_number": request.context.issue_number,
                         **request.provider_state,
                     },
                 )
