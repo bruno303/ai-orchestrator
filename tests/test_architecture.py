@@ -12,7 +12,10 @@ def test_generic_layers_do_not_reference_github_reactions_or_client():
         root / "git_workspace.py",
         root / "runtime",
     ]
-    forbidden = ("from orchestrator import github", "github.", '"eyes"', '"rocket"', "ai-reviewed")
+    forbidden = (
+        "from orchestrator import github", "github.", '"eyes"', '"rocket"',
+        "ai-reviewed", "comment_id",
+    )
     for path in paths:
         files = [path] if path.is_file() else sorted(path.glob("*.py"))
         text = "\n".join(file.read_text() for file in files)

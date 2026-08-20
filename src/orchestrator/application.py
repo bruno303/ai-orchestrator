@@ -142,10 +142,7 @@ class PollingApplication:
         self.persist_result(self.store, self.run_graph(self.store, seed, task_id))
 
     def _run_comment(self, event: InputEvent) -> None:
-        if event.provider_state.get("comment_id") is None or event.number is None:
-            print(f"[{self.now()}] skipping malformed comment event: {event.event_id}", flush=True)
-            return
-        task_id = f"{event.repository}#{event.number}"
+        task_id = event.work_item_id or event.event_id
         task = self.store.get_task(task_id)
         if task and task["status"] in self._active_statuses():
             return
@@ -156,8 +153,9 @@ class PollingApplication:
             task_id,
             provider=self.input_provider or _input_provider(self.input_source),
         )
+        event_reference = event.event_id.rsplit(":", 1)[-1]
         print(
-            f"[{self.now()}] command comment {event.provider_state['comment_id']} "
+            f"[{self.now()}] command comment {event_reference} "
             f"on {event.repository} ({task_id})",
             flush=True,
         )

@@ -77,23 +77,51 @@ def test_issue_event_is_skipped_if_task_was_created_by_an_earlier_event(tmp_path
     assert started == []
 
 
-def test_malformed_comment_event_does_not_crash_polling(tmp_path):
+def test_provider_neutral_comment_event_uses_its_work_item_id(tmp_path):
     from orchestrator.persistence import TaskStore
 
+    class Feedback:
+        def __init__(self):
+            self.events = []
+
+        def mark_started(self, event):
+            self.events.append(("started", event.event_id))
+
+        def mark_succeeded(self, event):
+            self.events.append(("succeeded", event.event_id))
+
+        def mark_failed(self, event, error=None):
+            self.events.append(("failed", event.event_id, error))
+
     store = TaskStore(tmp_path / "db.sqlite")
+    reset = []
     started = []
-    event = InputEvent("comment:1", "r", "", number=1, metadata={"kind": "comment"})
+    feedback = Feedback()
+    event = InputEvent(
+        "comment:external-1", "r", "Follow up", metadata={"kind": "comment"},
+        work_item_id="external-work-42",
+    )
     app = PollingApplication(
         store,
         FakeSource([event]),
-        lambda *args: started.append(args),
+        lambda current_store, seed, task_id: started.append((seed, task_id)) or {
+            "task_id": task_id, "status": "COMPLETED"
+        },
         lambda *args: None,
-        lambda *args: None,
+        lambda current_store, current_event: reset.append(current_event.event_id),
+        feedback=feedback,
     )
 
     app.poll_once(once=True)
 
-    assert started == []
+    assert started[0][1] == "external-work-42"
+    assert started[0][0]["input"]["data"]["work_item_id"] == "external-work-42"
+    assert store.get_task("external-work-42") is not None
+    assert reset == ["comment:external-1"]
+    assert feedback.events == [
+        ("started", "comment:external-1"),
+        ("succeeded", "comment:external-1"),
+    ]
 
 
 def test_provider_neutral_issue_without_number_is_accepted(tmp_path):
