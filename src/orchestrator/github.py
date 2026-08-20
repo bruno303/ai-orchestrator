@@ -248,7 +248,7 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
 
 def get_authenticated_user_login() -> str:
     """Return the login for the GitHub account used by the gh CLI."""
-    return _api("user", "login").strip()
+    return _api("user", ".login").strip()
 
 
 def _changed_lines(files: list[dict]) -> dict[str, dict[str, list[int]]]:
