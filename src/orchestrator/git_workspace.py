@@ -20,9 +20,8 @@ class GitWorkspaceManager:
     def prepare(self, request: WorkspaceRequest) -> WorkspaceResult:
         provider_state = {**self.options, **request.provider_state}
         repository_url = request.repository_url or provider_state.get("repository_url")
-        # A bare git remote name remains a valid compatibility input; normal
-        # provider composition supplies an explicit URL.
-        repository_url = repository_url or request.repository
+        if not repository_url:
+            raise git.GitError("workspace request requires a repository URL")
         base_branch = request.base_branch or request.target_ref or provider_state.get("base_branch", "")
         repo_dir = git.ensure_base_clone(request.repository, repository_url)
         if not base_branch:

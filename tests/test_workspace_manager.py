@@ -50,17 +50,36 @@ def test_prepare_derives_issue_number_from_task_id(remote_repo):
     manager.cleanup(result)
 
 
+def test_prepare_requires_explicit_repository_url(monkeypatch):
+    cloned = False
+
+    def ensure_base_clone(*args):
+        nonlocal cloned
+        cloned = True
+
+    monkeypatch.setattr(git, "ensure_base_clone", ensure_base_clone)
+
+    with pytest.raises(git.GitError, match="requires a repository URL"):
+        GitWorkspaceManager().prepare(WorkspaceRequest(
+            "company/backend#1", "company/backend", "ai/issue-1", "main",
+            {"workspace": "/tmp/workspace"},
+        ))
+
+    assert not cloned
+
+
 def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch, tmp_path):
     fetched = []
     monkeypatch.setattr(git, "ensure_base_clone", lambda repository, url: tmp_path / "repo")
     monkeypatch.setattr(git, "fetch_commit", lambda repo, commit, remote: fetched.append((commit, remote)))
     monkeypatch.setattr(git, "create_detached_worktree", lambda repo, path, commit: None)
-    monkeypatch.setattr("orchestrator.github.get_clone_url", lambda repository: "origin-url")
-    monkeypatch.setattr("orchestrator.github.get_default_branch", lambda repository: "main")
     manager = GitWorkspaceManager()
     result = manager.prepare(WorkspaceRequest(
         "review:company/backend#4", "company/backend", "", "main",
-        {"head_sha": "fork-sha", "head_clone_url": "", "workspace": str(tmp_path / "ws")},
+        {
+            "repository_url": "origin-url", "head_sha": "fork-sha",
+            "head_clone_url": "", "workspace": str(tmp_path / "ws"),
+        },
         purpose="review",
     ))
     assert fetched == [("fork-sha", "origin")]
@@ -70,11 +89,9 @@ def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch
 def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
     monkeypatch.setattr(git, "ensure_base_clone", lambda repository, url: tmp_path / "repo")
     monkeypatch.setattr(git, "fetch_commit", lambda *args: (_ for _ in ()).throw(git.GitError("unknown commit")))
-    monkeypatch.setattr("orchestrator.github.get_clone_url", lambda repository: "origin-url")
-    monkeypatch.setattr("orchestrator.github.get_default_branch", lambda repository: "main")
     with pytest.raises(git.GitError, match="unknown commit"):
         GitWorkspaceManager().prepare(WorkspaceRequest(
             "review:company/backend#4", "company/backend", "", "main",
-            {"head_sha": "missing", "workspace": str(tmp_path / "ws")},
+            {"repository_url": "origin-url", "head_sha": "missing", "workspace": str(tmp_path / "ws")},
             purpose="review",
         ))
