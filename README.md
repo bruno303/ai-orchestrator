@@ -152,25 +152,24 @@ support arbitrary unchanged-file locations.
 
 ## How it works
 
-Provider adapters translate external events into neutral workflow requests.
+Provider adapters translate external events into neutral domain values.
 Workflow engines decide which step runs next; reusable runtime services perform
-the side effects. The issue and review workflows remain separate:
+the side effects. Execution and review remain separate:
 
 ```
 GitHub Issue/Comment
     -> GitHub Work Input + Feedback
-    -> WorkItem / InputEvent
+    -> WorkItem(id: str, context: Context) / InputEvent
     -> Generic execution workflow/runtime
-    -> ChangeRequest / PublicationRequest
+    -> Destination.publish(ChangeRequest + Context)
     -> GitHub Change Destination
     -> GitHub PR
 
 GitHub PR
     -> GitHub Review Input
-    -> ReviewTarget / ReviewEvent
+    -> ReviewTarget(id: str, context: Context)
     -> Generic review workflow/runtime
-    -> ReviewOutcome / ReviewResult
-    -> GitHub Review Destination
+    -> ReviewDestination.publish(ReviewTarget, ReviewOutcome)
     -> GitHub review + processed marker
 ```
 
@@ -184,7 +183,31 @@ LangGraph remains responsible for issue checkpoints and routing; the polling
 review workflow remains independently invokable and does not use issue
 checkpoints.
 
-The runtime is provider-neutral at its integration boundaries:
+Every task or review target has exactly one mandatory, non-empty, opaque string
+ID. Providers use their stable identifier when one exists (`owner/repo#123`,
+`ABC-42`, or `MR-abc`). An input boundary calls `ensure_task_id` once to create
+a UUID when its source has no identifier. IDs are never converted to integers,
+and there is no separate `source_item_id`.
+
+Cross-step integration state is a JSON-serializable `Context` whose top-level
+keys are provider-owned namespaces. For example, GitHub source metadata belongs
+under `github`, checkout metadata under `git`, and executor session data under
+`opencode`. Updating one namespace preserves all unrelated namespaces. Generic
+application and runtime code may pass and merge Context, but it must never read
+provider-specific namespaces or keys. Providers may read and update their own
+namespace. Context is data-only so it remains safe in LangGraph checkpoints,
+SQLite state, process restarts, and future HTTP or n8n boundaries.
+
+Provider-specific logging enrichment is supplied by an optional
+`ContextPresenter`. The generic application logs the presenter's generic
+key/value result and does not know how provider metadata was extracted.
+
+Publication is provider-neutral: execution destinations receive a
+`ChangeRequest` and return `PublishedChange`; review destinations receive a
+`ReviewTarget` plus typed `ReviewOutcome` and return `PublishedReview`. A GitHub
+destination interprets `context.github` to implement issue-closing text, PR
+reuse, inline review validation, and processed labels. None of that behavior is
+owned by the generic runtime.
 
 The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the GitHub
 destination. New seeds and graph updates write only the `input`, `processing`,
@@ -192,8 +215,8 @@ destination. New seeds and graph updates write only the `input`, `processing`,
 serializable and lets a provider retain its own metadata without adding
 provider-specific fields to workflow logic. Legacy flat fields are read only
 when resuming old checkpoints or compatibility callers; they are never added to
-new state. Existing GitHub task IDs (`owner/repo#issue`) and SQLite task
-metadata remain supported.
+new state. SQLite uses `task_id TEXT PRIMARY KEY NOT NULL`; provider numeric IDs
+are not task columns, and legacy PR numbers migrate to generic `external_id`.
 
 Pipeline providers can be selected in `config/repositories.yaml`:
 
@@ -207,9 +230,8 @@ pipeline:
 
 To add a provider, implement the relevant protocol in `providers.py`, register
 its factory in the matching registry, and configure its type. Input events carry
-the configured input provider identity, and provider metadata belongs in the
-boundary request/result `provider_state` or the owning namespace. Do not put
-service-specific values in the workflow's generic fields.
+the configured input provider identity, and provider metadata belongs in its
+Context namespace. Do not put service-specific values in generic fields.
 
 - **Isolation**: each task gets its own `git worktree` under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,

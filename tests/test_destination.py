@@ -1,6 +1,7 @@
 """Tests for GitHub destination publication."""
 
 from orchestrator import git
+from orchestrator.domain import ChangeRequest, Context, PublishedChange
 from orchestrator.github_destination import GitHubDestination
 from orchestrator.providers import PublicationRequest
 
@@ -24,12 +25,11 @@ def test_destination_replaces_duplicate_exact_closing_lines():
     assert _body(12, {}, body) == "Closes #12\n\nSummary\n\nDetails"
 
 
-def test_graph_body_matches_issue_number_exactly_and_removes_duplicates():
-    from orchestrator.graph import _pr_body
+def test_github_body_matches_issue_number_exactly_and_removes_duplicates():
+    from orchestrator.github_destination import _body
 
-    state = {"input": {"data": {"number": 12}}}
     body = "Summary\n\nCloses #12\n\nCloses #123\n\nCloses #12\n\nDetails"
-    assert _pr_body(state, body) == "Closes #12\n\nSummary\n\nCloses #123\n\nDetails"
+    assert _body(12, {}, body) == "Closes #12\n\nSummary\n\nCloses #123\n\nDetails"
 
 
 def test_destination_reuses_existing_pr_without_changing_body(monkeypatch, tmp_path):
@@ -58,3 +58,32 @@ def test_destination_reuses_existing_pr_without_changing_body(monkeypatch, tmp_p
     assert result.number == 7
     assert calls[0] == ("push", "ai/issue-1")
     assert calls == [("push", "ai/issue-1")]
+
+
+def test_github_destination_reads_issue_metadata_from_its_namespace(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(git, "has_changes", lambda value: True)
+    monkeypatch.setattr(git, "commits_ahead", lambda *args: 0)
+    monkeypatch.setattr(git, "commit_all", lambda workspace, message: calls.append(("commit", message)))
+    monkeypatch.setattr(git, "push_branch", lambda workspace, branch: calls.append(("push", branch)))
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *args: None)
+    monkeypatch.setattr(
+        "orchestrator.github.create_pull_request",
+        lambda repository, title, body, **kwargs: calls.append(("create", body, kwargs)) or 23,
+    )
+    request = ChangeRequest(
+        "company/backend#7", "company/backend", "feat: task", "description",
+        "ai/issue-7", "main",
+        Context({
+            "github": {"issue_number": 7},
+            "git": {"workspace": str(tmp_path)},
+            "opencode": {"session_id": "s1"},
+        }),
+    )
+
+    result = GitHubDestination().publish(request)
+
+    assert isinstance(result, PublishedChange)
+    assert result.id == "23"
+    assert calls[0] == ("commit", "feat: task\n\nCloses #7")
+    assert calls[2][1].startswith("Closes #7")

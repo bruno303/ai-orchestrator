@@ -25,23 +25,7 @@ class TaskStore:
         # connection: sharing one connection between worker threads and the main
         # thread corrupts sqlite3's transaction tracking under lock contention.
         self.checkpoint_conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=30)
-        self.conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                task_id TEXT PRIMARY KEY,
-                repository TEXT NOT NULL,
-                issue_number INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                workspace TEXT,
-                branch TEXT,
-                pr_number INTEGER,
-                external_id TEXT,
-                error TEXT,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
+        self._ensure_tasks_schema()
         self.conn.execute(
             """
             CREATE TABLE IF NOT EXISTS handled_comments (
@@ -55,22 +39,76 @@ class TaskStore:
             """
         )
         self._safe_commit()
-        self._migrate()
 
-    def _migrate(self) -> None:
-        """Idempotent column additions for existing databases."""
-        existing = {r[1] for r in self.conn.execute("PRAGMA table_info(tasks)")}
-        for column, ddl in (
-            ("current_node", "TEXT"),
-            ("node_started_at", "TEXT"),
-            ("input_provider", "TEXT"),
-            ("output_provider", "TEXT"),
-            ("publication_url", "TEXT"),
-            ("external_id", "TEXT"),
-        ):
-            if column not in existing:
-                self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {column} {ddl}")
-        self._safe_commit()
+    @staticmethod
+    def _create_tasks_sql(table: str = "tasks") -> str:
+        return f"""
+            CREATE TABLE {table} (
+                task_id TEXT PRIMARY KEY NOT NULL,
+                repository TEXT NOT NULL,
+                status TEXT NOT NULL,
+                workspace TEXT,
+                branch TEXT,
+                input_provider TEXT,
+                output_provider TEXT,
+                external_id TEXT,
+                publication_url TEXT,
+                error TEXT,
+                current_node TEXT,
+                node_started_at TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """
+
+    def _ensure_tasks_schema(self) -> None:
+        """Create or transactionally migrate tasks to opaque string identity."""
+        exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+        ).fetchone()
+        if not exists:
+            self.conn.execute(self._create_tasks_sql())
+            return
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(tasks)")}
+        desired = {
+            "task_id", "repository", "status", "workspace", "branch", "input_provider",
+            "output_provider", "external_id", "publication_url", "error", "current_node",
+            "node_started_at", "created_at", "updated_at",
+        }
+        if columns == desired:
+            return
+
+        def value(name: str, fallback: str = "NULL") -> str:
+            return name if name in columns else fallback
+
+        external_id = value("external_id")
+        if "pr_number" in columns:
+            external_id = f"COALESCE({external_id}, CAST(pr_number AS TEXT))"
+        try:
+            self.conn.execute("BEGIN")
+            self.conn.execute("DROP TABLE IF EXISTS tasks_v2")
+            self.conn.execute(self._create_tasks_sql("tasks_v2"))
+            self.conn.execute(
+                f"""
+                INSERT INTO tasks_v2 (
+                    task_id, repository, status, workspace, branch, input_provider,
+                    output_provider, external_id, publication_url, error, current_node,
+                    node_started_at, created_at, updated_at
+                )
+                SELECT task_id, repository, status, {value('workspace')}, {value('branch')},
+                       {value('input_provider')}, {value('output_provider')}, {external_id},
+                       {value('publication_url')}, {value('error')}, {value('current_node')},
+                       {value('node_started_at')}, {value('created_at', "datetime('now')")},
+                       {value('updated_at', "datetime('now')")}
+                FROM tasks
+                """
+            )
+            self.conn.execute("DROP TABLE tasks")
+            self.conn.execute("ALTER TABLE tasks_v2 RENAME TO tasks")
+            self.conn.commit()
+        except sqlite3.Error:
+            self.conn.rollback()
+            raise
 
     def _safe_commit(self) -> None:
         """Commit, converting transaction conflicts into a clear PersistenceError."""
@@ -87,15 +125,18 @@ class TaskStore:
         self,
         task_id: str,
         repository: str,
-        issue_number: int | None = None,
         status: str = state_mod.RECEIVED,
     ) -> None:
+        if not isinstance(task_id, str) or not task_id.strip():
+            raise ValueError("task_id must be a non-empty string")
+        if not isinstance(status, str):
+            status = state_mod.RECEIVED
         self.conn.execute(
             """
-            INSERT OR IGNORE INTO tasks (task_id, repository, issue_number, status)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO tasks (task_id, repository, status)
+            VALUES (?, ?, ?)
             """,
-            (task_id, repository, issue_number if issue_number is not None else 0, status),
+            (task_id.strip(), repository, status),
         )
         self._safe_commit()
 
@@ -106,8 +147,8 @@ class TaskStore:
         status: str | None = None,
         workspace: str | None = None,
         branch: str | None = None,
-        pr_number: int | None = None,
         external_id: str | None = None,
+        pr_number: int | None = None,
         error: str | None = None,
         input_provider: str | None = None,
         output_provider: str | None = None,
@@ -124,9 +165,8 @@ class TaskStore:
         if branch is not None:
             fields.append("branch = ?")
             values.append(branch)
-        if pr_number is not None:
-            fields.append("pr_number = ?")
-            values.append(pr_number)
+        if external_id is None and pr_number is not None:
+            external_id = str(pr_number)
         if external_id is not None:
             fields.append("external_id = ?")
             values.append(external_id)
@@ -187,18 +227,26 @@ class TaskStore:
 
     def get_task(self, task_id: str) -> dict | None:
         row = self.conn.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        result = dict(row)
+        result["pr_number"] = (
+            int(result["external_id"])
+            if result.get("external_id") and str(result["external_id"]).isdigit() else None
+        )
+        return result
 
     def list_tasks(self) -> list[dict]:
         rows = self.conn.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
-        return [dict(row) for row in rows]
-
-    def exists(self, repository: str, issue_number: int) -> bool:
-        row = self.conn.execute(
-            "SELECT 1 FROM tasks WHERE repository = ? AND issue_number = ?",
-            (repository, issue_number),
-        ).fetchone()
-        return row is not None
+        results = []
+        for row in rows:
+            value = dict(row)
+            value["pr_number"] = (
+                int(value["external_id"])
+                if value.get("external_id") and str(value["external_id"]).isdigit() else None
+            )
+            results.append(value)
+        return results
 
     def exists_task(self, task_id: str) -> bool:
         row = self.conn.execute("SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)).fetchone()

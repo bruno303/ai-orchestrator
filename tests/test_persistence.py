@@ -15,7 +15,7 @@ def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
         "issue_number INTEGER NOT NULL, status TEXT NOT NULL, workspace TEXT, branch TEXT, "
         "pr_number INTEGER, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), "
         "updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
-    conn.execute("INSERT INTO tasks (task_id, repository, issue_number, status) VALUES ('r#1', 'r', 1, 'RECEIVED')")
+    conn.execute("INSERT INTO tasks (task_id, repository, issue_number, status, pr_number) VALUES ('r#1', 'r', 1, 'RECEIVED', 19)")
     conn.commit()
     conn.close()
 
@@ -25,7 +25,11 @@ def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
     assert row["task_id"] == "r#1"
     assert row["input_provider"] == "legacy"
     assert row["output_provider"] == "github"
-    assert "external_id" in row
+    assert row["external_id"] == "19"
+    columns = {value[1] for value in store.conn.execute("PRAGMA table_info(tasks)")}
+    assert "issue_number" not in columns
+    assert "pr_number" not in columns
+    assert columns >= {"task_id", "repository", "external_id", "publication_url"}
 
 
 def test_publication_url_is_persisted(tmp_path):

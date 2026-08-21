@@ -4,12 +4,37 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+
+from orchestrator.domain import (
+    Artifact,
+    ChangeRequest,
+    Context,
+    ContextPresenter,
+    PublishedChange,
+    PublishedReview,
+    ReviewOutcome,
+    ReviewTarget,
+    WorkItem,
+    ensure_task_id,
+)
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Context):
+        return value.to_dict()
+    if hasattr(value, "to_dict") and not hasattr(value, "__dataclass_fields__"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
 
 
 def _json_dict(value: object) -> dict[str, Any]:
     """Return the plain, checkpoint- and JSON-serializable form of a model."""
-    result = asdict(value)  # type: ignore[arg-type]
+    result = _json_value(asdict(value))  # type: ignore[arg-type]
     try:
         json.dumps(result, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -28,19 +53,18 @@ def validate_provider_state(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
-class ProviderContext(dict[str, Any]):
-    """JSON-serializable data owned by an adapter, not the workflow core.
+ProviderContext = Context
 
-    Providers may use namespaced keys (for example ``git`` or ``github``) to
-    exchange capabilities with compatible adapters. Workflow code may preserve
-    and merge this context but must not depend on individual keys.
-    """
 
-    def __init__(self, value: dict[str, Any] | None = None) -> None:
-        super().__init__(validate_provider_state(dict(value or {})))
-
-    def merged(self, value: dict[str, Any] | None = None) -> "ProviderContext":
-        return ProviderContext({**self, **dict(value or {})})
+def _legacy_context(value: Context | Mapping[str, Any] | None, namespace: str) -> Context:
+    if isinstance(value, Context):
+        return value
+    data = dict(value or {})
+    if not data:
+        return Context()
+    if all(isinstance(item, Mapping) for item in data.values()):
+        return Context(data)  # type: ignore[arg-type]
+    return Context({namespace: data})
 
 
 class ExecutorError(RuntimeError):
@@ -55,19 +79,85 @@ class ExecutorError(RuntimeError):
         self.retryable = retryable
 
 
-@dataclass
+@dataclass(frozen=True, init=False)
 class InputEvent:
+    """Lifecycle event around the canonical execution work item."""
+
     event_id: str
-    repository: str
-    title: str
-    body: str = ""
-    number: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
-    provider: str = ""
-    extra_context: list[str] = field(default_factory=list)
-    work_item_id: str = ""
-    trigger: str = "new"
+    work_item: WorkItem
+    trigger: str
+    context: Context
+    metadata: dict[str, Any]
+
+    def __init__(
+        self,
+        event_id: str,
+        work_item: WorkItem | str,
+        title: str = "",
+        body: str = "",
+        number: int | None = None,
+        metadata: dict[str, Any] | None = None,
+        provider_state: Context | Mapping[str, Any] | None = None,
+        provider: str = "",
+        extra_context: list[str] | tuple[str, ...] | None = None,
+        work_item_id: str = "",
+        trigger: str = "new",
+        context: Context | Mapping[str, Any] | None = None,
+    ) -> None:
+        if isinstance(work_item, WorkItem):
+            item = work_item
+        else:
+            legacy = _legacy_context(provider_state, provider or "legacy")
+            source_id = work_item_id or (
+                f"{work_item}#{number}" if number is not None else ensure_task_id(event_id)
+            )
+            item = WorkItem(
+                source_id, work_item, title, body, tuple(extra_context or ()), provider, legacy
+            )
+        object.__setattr__(self, "event_id", event_id)
+        object.__setattr__(self, "work_item", item)
+        object.__setattr__(self, "trigger", trigger)
+        object.__setattr__(self, "context", _legacy_context(context, item.input_provider or "event"))
+        object.__setattr__(self, "metadata", dict(metadata or {}))
+
+    @property
+    def repository(self) -> str:
+        return self.work_item.repository
+
+    @property
+    def title(self) -> str:
+        return self.work_item.title
+
+    @property
+    def body(self) -> str:
+        return self.work_item.description
+
+    @property
+    def extra_context(self) -> list[str]:
+        return list(self.work_item.extra_context)
+
+    @property
+    def provider(self) -> str:
+        return self.work_item.input_provider
+
+    @property
+    def work_item_id(self) -> str:
+        return self.work_item.id
+
+    @property
+    def provider_state(self) -> dict[str, Any]:
+        """Deprecated flattened compatibility view."""
+        combined = self.work_item.context.merged(self.context).to_dict()
+        if len(combined) == 1:
+            return dict(next(iter(combined.values())))
+        return combined
+
+    @property
+    def number(self) -> int | None:
+        value = self.work_item.context.namespace("github").get("issue_number")
+        if value is None:
+            value = self.provider_state.get("source_number")
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -82,6 +172,7 @@ class ExecutionRequest:
     model: str | None = None
     variant: str | None = None
     provider_state: dict[str, Any] = field(default_factory=ProviderContext)
+    context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -95,6 +186,7 @@ class ExecutionResult:
     stderr: str = ""
     duration_seconds: float = 0.0
     provider_state: dict[str, Any] = field(default_factory=ProviderContext)
+    context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -114,6 +206,7 @@ class WorkspaceRequest:
     revision: str = ""
     checkout_mode: str = "branch"
     workspace: str = ""
+    context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -124,16 +217,12 @@ class WorkspaceResult:
     workspace: str
     branch: str
     provider_state: dict[str, Any] = field(default_factory=ProviderContext)
+    context: Context = field(default_factory=Context)
+    base_branch: str = ""
 
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class Artifact:
-    path: str
-    kind: str = "file"
-    metadata: dict[str, Any] = field(default_factory=dict)
+    def __post_init__(self) -> None:
+        if not self.base_branch and isinstance(self.provider_state, dict):
+            self.base_branch = str(self.provider_state.get("base_branch", ""))
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -168,16 +257,43 @@ class PublicationResult:
         return _json_dict(self)
 
 
-@dataclass
-class ReviewEvent:
-    """Provider-neutral notification that a pull request should be reviewed."""
+@dataclass(frozen=True, init=False)
+class ReviewEvent(ReviewTarget):
+    """Deprecated constructor-compatible alias for :class:`ReviewTarget`."""
 
-    event_id: str
-    repository: str
-    title: str = ""
-    body: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any]
+
+    def __init__(self, event_id: str, repository: str, title: str = "", body: str = "",
+                 metadata: dict[str, Any] | None = None,
+                 provider_state: Context | Mapping[str, Any] | None = None, **kwargs: Any) -> None:
+        legacy = dict(provider_state or {}) if not isinstance(provider_state, Context) else {}
+        context = kwargs.pop("context", None)
+        if context is None and legacy:
+            context = Context({
+                "github": {
+                    **({"pr_number": legacy["number"]} if legacy.get("number") is not None else {}),
+                    **{key: legacy[key] for key in ("changed_files", "changed_lines", "author_login") if key in legacy},
+                },
+                "git": {
+                    **{key: legacy[key] for key in ("repository_url", "fetch_url", "workspace") if key in legacy},
+                    **({"revision": legacy["head_sha"]} if legacy.get("head_sha") else {}),
+                },
+            })
+        context = context or _legacy_context(provider_state, "legacy")
+        ReviewTarget.__init__(self, event_id, repository, title, body,
+                              kwargs.pop("source_ref", legacy.get("head_ref", "")),
+                              kwargs.pop("target_ref", legacy.get("base_ref", "")),
+                              kwargs.pop("revision", legacy.get("head_sha", "")),
+                              kwargs.pop("input_provider", ""), context)
+        object.__setattr__(self, "metadata", dict(metadata or {}))
+
+    @property
+    def event_id(self) -> str:
+        return self.id
+
+    @property
+    def body(self) -> str:
+        return self.description
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -190,6 +306,8 @@ class ReviewRequest:
     workspace: str
     prompt: str
     provider_state: dict[str, Any] = field(default_factory=dict)
+    context: Context = field(default_factory=Context)
+    log_file: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -243,17 +361,17 @@ class Destination(Protocol):
 
 @runtime_checkable
 class ReviewInputSource(Protocol):
-    def poll(self) -> list[ReviewEvent]: ...
+    def poll(self) -> list[ReviewTarget]: ...
 
 
 @runtime_checkable
 class ReviewExecutor(Protocol):
-    def execute(self, request: ReviewRequest) -> ReviewResult: ...
+    def execute(self, request: ReviewRequest) -> ReviewOutcome: ...
 
 
 @runtime_checkable
 class ReviewDestination(Protocol):
-    def publish(self, request: ReviewRequest, result: ReviewResult) -> None: ...
+    def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview: ...
 
 
 class UnknownProviderError(ValueError):
@@ -326,8 +444,10 @@ class _PlaceholderWorkspaceManager:
 class _PlaceholderDestination:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def publish(self, request: PublicationRequest) -> PublicationResult:
-        return PublicationResult(provider_state={"options": self.options})
+    def publish(self, request: ChangeRequest) -> PublishedChange:
+        if isinstance(request, PublicationRequest):
+            return PublicationResult(provider_state={"options": self.options})
+        return PublishedChange(provider="placeholder", context=request.context)
 
 
 def _input_factory(options: dict[str, Any]) -> object:
@@ -376,7 +496,7 @@ DESTINATION_PROVIDERS = ProviderRegistry({"github": _destination_factory}, Desti
 class _PlaceholderReviewInputSource:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def poll(self) -> list[ReviewEvent]:
+    def poll(self) -> list[ReviewTarget]:
         return []
 
 
@@ -384,16 +504,16 @@ class _PlaceholderReviewInputSource:
 class _PlaceholderReviewExecutor:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def execute(self, request: ReviewRequest) -> ReviewResult:
-        return ReviewResult(False, summary="review executor provider is not wired", provider_state={"options": self.options})
+    def execute(self, request: ReviewRequest) -> ReviewOutcome:
+        return ReviewOutcome(False, summary="review executor provider is not wired", context=request.context)
 
 
 @dataclass
 class _PlaceholderReviewDestination:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def publish(self, request: ReviewRequest, result: ReviewResult) -> None:
-        return None
+    def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview:
+        return PublishedReview(provider="placeholder", context=target.context)
 
 
 def _review_input_factory(options: dict[str, Any]) -> object:

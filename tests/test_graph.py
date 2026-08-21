@@ -48,7 +48,7 @@ def test_full_flow(remote_repo, allowlist, store, monkeypatch):
     assert result["status"] == state_mod.COMPLETED
     assert result["output"]["external_id"] == "42"
     assert result["workspace"]["path"] == str(workspace.task_workspace("company/backend", 1))
-    assert result["input"]["data"]["number"] == 1
+    assert result["processing"]["context"]["github"]["issue_number"] == 1
     assert "review_verdict" not in result["processing"]
     assert "review_result" not in result["processing"]
     assert nodes == ["prepare_workspace", "plan", "implement", "test", "create_pr", "cleanup"]
@@ -124,7 +124,7 @@ def test_executor_reported_failure_fails_even_with_zero_exit_code(remote_repo, a
 
     assert result["status"] == state_mod.FAILED
     assert "reported failure" in result["error"]
-    assert result["processing"]["provider_state"] == {"executor_run": "rejected"}
+    assert result["processing"]["context"]["opencode"] == {"executor_run": "rejected"}
 
 
 def test_executor_provider_state_is_forwarded_to_next_phase(tmp_path):
@@ -170,7 +170,7 @@ def test_graph_uses_injected_executor(remote_repo, allowlist, store, monkeypatch
             if request.agent == "plan":
                 return ExecutionResult(True, 0, stdout="# Plan\n\nDo it.", provider_state={"executor_run": "plan"})
             if request.agent == "build":
-                if "You are implementing" in request.prompt:
+                if "Implement work item" in request.prompt:
                     Path(request.workspace, "work.txt").write_text("implemented\n")
                     return ExecutionResult(True, 0, stdout="implemented", provider_state={"executor_run": "implement"})
                 return ExecutionResult(True, 0, stdout="tested", provider_state={"executor_run": "test"})
@@ -184,7 +184,7 @@ def test_graph_uses_injected_executor(remote_repo, allowlist, store, monkeypatch
 
     assert result["status"] == state_mod.COMPLETED
     assert [agent for agent, _ in calls] == ["plan", "build", "build"]
-    assert result["processing"]["provider_state"] == {"executor_run": "test"}
+    assert result["processing"]["context"]["opencode"] == {"executor_run": "test"}
 
 
 def test_executor_provider_state_survives_failure(remote_repo, allowlist, store, monkeypatch):
@@ -196,7 +196,7 @@ def test_executor_provider_state_survives_failure(remote_repo, allowlist, store,
     result = graph.invoke(_seed(remote_repo, 16), config={"configurable": {"thread_id": "company/backend#16"}})
 
     assert result["status"] == state_mod.FAILED
-    assert result["processing"]["provider_state"] == {"executor_run": "failed"}
+    assert result["processing"]["context"]["opencode"] == {"executor_run": "failed"}
     assert "provider_state" not in result
 
 
@@ -254,7 +254,7 @@ def test_prepare_workspace_uses_manager_default_when_base_branch_is_missing(allo
     result = prepare_workspace(seed, FakeWorkspaceManager())
 
     assert result["workspace"]["base_branch"] == "develop"
-    assert result["workspace"]["provider_state"] == {"base_branch": "develop", "provider_token": "resolved"}
+    assert result["workspace"]["context"]["workspace"] == {"base_branch": "develop", "provider_token": "resolved"}
 
 
 def test_prepare_workspace_preserves_requested_base_branch(allowlist, tmp_path):
@@ -290,17 +290,9 @@ def test_prepare_workspace_forwards_provider_state(allowlist, tmp_path):
     prepare_workspace(seed, StatefulWorkspaceManager())
 
 
-def test_legacy_review_metadata_does_not_change_pr_body():
-    from orchestrator.graph import _pr_body
-
-    state = {
-        "input": {"data": {"number": 8}},
-        "processing": {
-            "review_verdict": "CHANGES_REQUIRED",
-            "review_result": "FINDINGS:\n- keep the metadata",
-        },
-    }
-    assert _pr_body(state) == "Closes #8"
+def test_generic_runtime_does_not_own_github_pr_body_logic():
+    import orchestrator.graph as graph
+    assert not hasattr(graph, "_pr_body")
 
 
 def test_new_graph_updates_are_namespace_only(allowlist, tmp_path):
@@ -325,7 +317,7 @@ def test_new_graph_updates_are_namespace_only(allowlist, tmp_path):
 
     assert set(update) <= {"input", "workspace", "status"}
     assert not {"repository", "issue_number", "branch", "workspace_path", "provider_state"} & set(update)
-    assert update["input"]["provider"] == "custom_input"
+    assert update["workspace"]["context"]["workspace"]["base_branch"] == "main"
 
 
 def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_path):
@@ -374,7 +366,7 @@ def test_namespace_only_checkpoint_retains_phase_results(allowlist, store, tmp_p
 
     assert calls == ["plan", "build", "build"]
     assert result["processing"]["review_verdict"] == "APPROVED"
-    assert result["output"]["provider_state"]["remote_id"] == "123"
+    assert result["output"]["context"]["destination"]["remote_id"] == "123"
     assert not {"repository", "issue_number", "pr_number"} & set(result)
 
 
@@ -401,7 +393,7 @@ def test_injected_provider_identity_is_written_to_namespaces(allowlist, tmp_path
              "processing": {"review_verdict": "APPROVED"}}
     result = create_pr(state, NamedDestination())
     assert result["output"]["provider"] == "remote_destination"
-    assert result["output"]["provider_state"]["remote_id"] == "301"
+    assert result["output"]["context"]["destination"]["remote_id"] == "301"
 
 
 def test_destination_publication_url_is_retained(allowlist, tmp_path):
@@ -644,7 +636,7 @@ def test_implement_retries_once_then_succeeds(remote_repo, allowlist, store, mon
     monkeypatch.setattr(config, "MODEL_FALLBACK", config.ModelConfig("verboo/glm-4.7-flash", "high"))
     monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", True)
     monkeypatch.setenv("FAKE_OPCODE_LOOP_ONCE", "verboo/deepseek-v4-flash")
-    monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "implementing GitHub issue")
+    monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "Implement work item")
     model_file = tmp_path / "models.txt"
     monkeypatch.setenv("FAKE_OPCODE_MODEL_FILE", str(model_file))
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 42)
@@ -673,7 +665,7 @@ def test_implement_fails_after_max_attempts(remote_repo, allowlist, store, monke
     monkeypatch.setattr(config, "MODEL_FALLBACK", config.ModelConfig("verboo/glm-4.7-flash", "high"))
     monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", True)
     monkeypatch.setenv("FAKE_OPCODE_LOOP", "1")
-    monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "implementing GitHub issue")
+    monkeypatch.setenv("FAKE_OPCODE_LOOP_PROMPT", "Implement work item")
     monkeypatch.setattr("orchestrator.github.create_pull_request", lambda *a, **k: 42)
     monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *a, **k: None)
     graph = build_graph(store.checkpointer())

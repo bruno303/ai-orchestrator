@@ -3,23 +3,38 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from orchestrator import config
 
 
-def task_name(repository: str, issue_number: int) -> str:
-    """company/backend#123 -> company-backend-123"""
-    return f"{repository.replace('/', '-')}-{issue_number}"
+def safe_task_token(task_id: str) -> str:
+    """Return a deterministic readable path component for an opaque ID."""
+    if not isinstance(task_id, str) or not task_id.strip():
+        raise ValueError("task id must be a non-empty string")
+    value = task_id.strip()
+    token = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-._") or "task"
+    canonical_github = re.fullmatch(r"[\w.-]+/[\w.-]+#\d+", value)
+    if token != value and canonical_github is None:
+        token = f"{token}-{hashlib.sha256(value.encode()).hexdigest()[:8]}"
+    return token[:180]
 
 
-def task_workspace(repository: str, issue_number: int) -> Path:
-    return config.WORKSPACES_DIR / task_name(repository, issue_number)
+def task_name(task_id: str, legacy_id: int | str | None = None) -> str:
+    """Compatibility wrapper; new callers pass the canonical task ID only."""
+    return safe_task_token(f"{task_id}#{legacy_id}" if legacy_id is not None else task_id)
 
 
-def review_workspace(repository: str, number: int) -> Path:
-    return config.WORKSPACES_DIR / f"{repository.replace('/', '-')}-review-{number}"
+def task_workspace(task_id: str, legacy_id: int | str | None = None) -> Path:
+    return config.WORKSPACES_DIR / task_name(task_id, legacy_id)
+
+
+def review_workspace(task_id: str, legacy_id: int | str | None = None) -> Path:
+    identity = f"review:{task_id}#{legacy_id}" if legacy_id is not None else task_id
+    return config.WORKSPACES_DIR / safe_task_token(identity)
 
 
 def legacy_task_checkout(task_id: str, repository: str) -> tuple[str, Path] | None:
@@ -31,7 +46,7 @@ def legacy_task_checkout(task_id: str, repository: str) -> tuple[str, Path] | No
 
 
 def task_logs_dir(task_id: str) -> Path:
-    return config.LOGS_DIR / task_id.replace("/", "-").replace("#", "-")
+    return config.LOGS_DIR / safe_task_token(task_id)
 
 
 def task_event_log(task_id: str) -> Path:

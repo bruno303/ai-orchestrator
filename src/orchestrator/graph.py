@@ -1,4 +1,4 @@
-"""LangGraph workflow: Issue -> workspace -> plan -> implement -> test -> PR."""
+"""LangGraph workflow for provider-neutral work-item execution."""
 
 from __future__ import annotations
 
@@ -7,57 +7,64 @@ from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from orchestrator import state as state_mod, workspace
-from orchestrator.providers import (
-    Destination, ExecutionResult, Executor, WorkspaceManager, WorkspaceResult, validate_provider_state,
-)
+from orchestrator import state as state_mod
+from orchestrator.domain import Context, WorkItem
+from orchestrator.domain.legacy import work_item_from_legacy_state
+from orchestrator.providers import Destination, ExecutionResult, Executor, WorkspaceManager, WorkspaceResult
 from orchestrator.runtime import compose_execution_runtime
 from orchestrator.runtime.errors import RuntimeOperationError
-from orchestrator.runtime.execution import PLAN_FILE, plan_prompt as runtime_plan_prompt
-from orchestrator.runtime.execution import implement_prompt as runtime_implement_prompt
-from orchestrator.runtime.execution import pr_body as runtime_pr_body
+from orchestrator.runtime.execution import PLAN_FILE, implement_prompt as runtime_implement_prompt
+from orchestrator.runtime.execution import plan_prompt as runtime_plan_prompt
 from orchestrator.runtime.execution import test_prompt as runtime_test_prompt
 from orchestrator.runtime.models import (
     AgentRequest,
     CleanupRequest,
     ImplementationRequest,
-    IssueContext,
     PlanRequest,
     PrepareExecutionRequest,
     PublishRequest,
     TestRequest,
+    WorkContext,
 )
 from orchestrator.state import TaskState
 
+
+# Generic application/runtime code may pass and merge Context, but may not
+# inspect provider-specific namespaces or keys.
 def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
-def _fail(state: TaskState, error: str) -> dict[str, Any]:
+def _fail(error: str) -> dict[str, Any]:
     return {"status": state_mod.FAILED, "error": error}
 
 
-def _input(state: TaskState) -> dict[str, Any]:
+def _item(state: TaskState) -> WorkItem:
     value = state.get("input") or {}
     data = value.get("data") or {}
-    provider_state = validate_provider_state(value.get("provider_state", {}))
-    if not provider_state and state.get("provider_state"):
-        provider_state = validate_provider_state(state["provider_state"])
-    issue_number = data.get("number", data.get("issue_number", state.get("issue_number")))
-    # Old checkpoints stored GitHub issue fields flat. Preserve their ability to
-    # resume without teaching new provider-neutral state about those conventions.
-    if "input" not in state and issue_number is not None and "source_number" not in provider_state:
-        provider_state = {**provider_state, "source_number": issue_number}
-    return {
-        "provider": value.get("provider", ""),
-        "provider_state": provider_state,
-        "repository": data.get("repository", state.get("repository", "")),
-        "work_item_id": data.get("work_item_id", state.get("task_id", "")),
-        "issue_number": issue_number,
-        "issue_title": data.get("title", data.get("issue_title", state.get("issue_title", ""))),
-        "issue_body": data.get("body", data.get("issue_body", state.get("issue_body", ""))),
-        "extra_context": data.get("extra_context", state.get("extra_context", [])),
-    }
+    if data.get("id"):
+        return WorkItem(
+            data["id"], data["repository"], data.get("title", ""),
+            data.get("description", ""), tuple(data.get("extra_context", ())),
+            data.get("input_provider", value.get("provider", "")),
+            Context.from_dict(data.get("context") or value.get("context") or {}),
+        )
+    return work_item_from_legacy_state(state)
+
+
+def _work(state: TaskState) -> WorkContext:
+    return WorkContext(_item(state))
+
+
+def _context(state: TaskState) -> Context:
+    processing = state.get("processing") or {}
+    value = processing.get("context")
+    if value is not None:
+        return Context.from_dict(value)
+    workspace_value = state.get("workspace") or {}
+    if isinstance(workspace_value, dict) and workspace_value.get("context") is not None:
+        return Context.from_dict(workspace_value["context"])
+    return _item(state).context
 
 
 def _processing(state: TaskState, updates: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -75,16 +82,16 @@ def _workspace(state: TaskState) -> dict[str, Any]:
     if not isinstance(value, dict):
         value = {"path": value}
     result = dict(value)
-    fallbacks = (("path", "workspace_path"), ("branch", "branch"), ("base_branch", "base_branch"),
-                 ("provider_state", "provider_state"))
-    for key, legacy in fallbacks:
-        if key not in result and state.get(legacy) is not None and not isinstance(state.get(legacy), dict):
-            result[key] = state[legacy]
     result.setdefault("path", "")
     result.setdefault("branch", "")
     result.setdefault("base_branch", "")
-    if "provider_state" not in result:
-        result["provider_state"] = {}
+    if not result["path"]:
+        result["path"] = state.get("workspace_path", "")
+    if not result["branch"]:
+        result["branch"] = state.get("branch", "")
+    if not result["base_branch"]:
+        result["base_branch"] = state.get("base_branch", "")
+    result.setdefault("context", _context(state).to_dict())
     return result
 
 
@@ -92,47 +99,16 @@ def _provider_name(component: Any, default: str) -> str:
     return str(getattr(component, "provider_type", getattr(component, "provider_name", default)))
 
 
-def _context(state: TaskState) -> IssueContext:
-    source = _input(state)
-    return IssueContext(
-        task_id=state.get("task_id", f"{source['repository']}#{source['issue_number']}"),
-        repository=source["repository"],
-        issue_number=source["issue_number"],
-        work_item_id=source["work_item_id"],
-        title=source["issue_title"],
-        body=source["issue_body"],
-        extra_context=source["extra_context"],
-        provider_state=source["provider_state"],
-    )
-
-
-def _processing_provider_state(state: TaskState) -> dict[str, Any]:
-    return validate_provider_state(_processing(state).get("provider_state", {}))
-
-
-def _runtime_error(state: TaskState, exc: Exception) -> dict[str, Any]:
-    updates = _fail(state, str(exc))
+def _runtime_error(exc: Exception) -> dict[str, Any]:
+    updates = _fail(str(exc))
     if isinstance(exc, RuntimeOperationError):
         if exc.attempts is not None:
             updates["phase_attempts"] = exc.attempts
         if exc.provider_state:
-            updates["processing"] = _processing(state, {"provider_state": exc.provider_state})
-    return updates
-
-
-def _namespace_updates(state: TaskState, *, input_data: dict[str, Any] | None = None,
-                      processing: dict[str, Any] | None = None,
-                      workspace_data: dict[str, Any] | None = None,
-                      output: dict[str, Any] | None = None) -> dict[str, Any]:
-    updates: dict[str, Any] = {}
-    if input_data is not None:
-        updates["input"] = input_data
-    if processing is not None:
-        updates["processing"] = processing
-    if workspace_data is not None:
-        updates["workspace"] = workspace_data
-    if output is not None:
-        updates["output"] = output
+            try:
+                updates["processing"] = {"context": Context.from_dict(exc.provider_state).to_dict()}
+            except (TypeError, ValueError):
+                pass
     return updates
 
 
@@ -142,63 +118,40 @@ def _run_opencode(
     runtime = compose_execution_runtime(executor=executor)
     try:
         result = runtime.execute_phase(
-            AgentRequest(_context(state), node, agent, prompt, _workspace(state)["path"], _processing_provider_state(state))
+            AgentRequest(_work(state), node, agent, prompt, _workspace(state)["path"], _context(state))
         )
     except Exception as exc:
-        return _runtime_error(state, exc), None
-    return {"phase_attempts": result.attempts, "processing": _processing(state, {"provider_state": result.provider_state})}, result.execution
-
-
-# ---------------------------------------------------------------- nodes
+        return _runtime_error(exc), None
+    return {
+        "phase_attempts": result.attempts,
+        "processing": _processing(state, {"context": result.context.to_dict()}),
+    }, result.execution
 
 
 def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None, runtime=None) -> dict[str, Any]:
     print(f"[{_now()}] prepare_workspace: starting", flush=True)
-    source = _input(state)
-    repository = source["repository"]
     try:
-        current_workspace = _workspace(state)
-        branch = current_workspace["branch"] or source["provider_state"].get("branch", "")
-        ws = str(current_workspace["path"] or source["provider_state"].get("workspace", ""))
-        if not branch or not ws:
-            if "input" in state or source["issue_number"] is None:
-                raise ValueError("work item is missing explicit workspace instructions")
-            # Legacy checkpoint compatibility only. New input sources must
-            # supply workspace instructions through their provider context.
-            branch = branch or f"ai/issue-{source['issue_number']}"
-            ws = ws or str(workspace.task_workspace(repository, source["issue_number"]))
+        current = _workspace(state)
         runtime = runtime or compose_execution_runtime(workspace_manager=manager)
-        prepared = runtime.prepare(
-            PrepareExecutionRequest(
-                _context(state), branch, current_workspace["base_branch"], ws,
-                {**current_workspace["provider_state"], "repository_url": source["provider_state"].get("repository_url", state.get("repository_url"))},
-            )
-        )
+        prepared = runtime.prepare(PrepareExecutionRequest(
+            _work(state), current["branch"], current["base_branch"], current["path"], _context(state)
+        ))
     except Exception as exc:
         print(f"[{_now()}] prepare_workspace: ERROR {exc}", flush=True)
-        return _runtime_error(state, exc)
+        return _runtime_error(exc)
     result = prepared.workspace
-    provider_state = result.provider_state
-    resolved_base_branch = prepared.base_branch
     print(
-        f"[{_now()}] prepare_workspace: workspace={result.workspace} branch={result.branch} base={resolved_base_branch}",
-        flush=True,
+        f"[{_now()}] prepare_workspace: workspace={result.workspace} "
+        f"branch={result.branch} base={prepared.base_branch}", flush=True,
     )
-    input_value = state.get("input") or {}
-    input_data = dict(input_value.get("data") or {})
-    input_data.update({"repository": source["repository"], "number": source["issue_number"],
-                       "work_item_id": source["work_item_id"],
-                       "title": source["issue_title"], "body": source["issue_body"],
-                       "extra_context": source["extra_context"]})
     return {
-        **_namespace_updates(
-            state,
-            input_data={"provider": source["provider"], "provider_state": source["provider_state"],
-                        "data": input_data},
-            workspace_data={"provider": _provider_name(manager or getattr(runtime, "workspace_manager", None), "git"), "path": result.workspace, "branch": result.branch,
-                            "base_branch": resolved_base_branch,
-                            "provider_state": provider_state},
-        ),
+        "workspace": {
+            "provider": _provider_name(manager or getattr(runtime, "workspace_manager", None), ""),
+            "path": result.workspace,
+            "branch": result.branch,
+            "base_branch": prepared.base_branch,
+            "context": prepared.context.to_dict(),
+        },
         "status": state_mod.PREPARING,
     }
 
@@ -206,13 +159,15 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None,
 def plan(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
     try:
         runtime = runtime or compose_execution_runtime(executor=executor)
-        result = runtime.plan(PlanRequest(_context(state), _workspace(state)["path"], _processing_provider_state(state)))
+        result = runtime.plan(PlanRequest(_work(state), _workspace(state)["path"], _context(state)))
     except Exception as exc:
-        return _runtime_error(state, exc)
-    processing = {**_processing(state, {"provider_state": result.phase.provider_state}), "plan_path": result.plan_path, "plan_summary": result.summary}
+        return _runtime_error(exc)
     return {
         "status": state_mod.PLANNING,
-        "processing": processing,
+        "processing": _processing(state, {
+            "context": result.phase.context.to_dict(), "plan_path": result.plan_path,
+            "plan_summary": result.summary,
+        }),
         "phase_attempts": result.phase.attempts,
     }
 
@@ -220,13 +175,16 @@ def plan(state: TaskState, executor: Executor | None = None, runtime=None) -> di
 def implement(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
     try:
         runtime = runtime or compose_execution_runtime(executor=executor)
-        result = runtime.implement(ImplementationRequest(_context(state), _workspace(state)["path"], PLAN_FILE, _processing_provider_state(state)))
+        result = runtime.implement(ImplementationRequest(
+            _work(state), _workspace(state)["path"], PLAN_FILE, _context(state)
+        ))
     except Exception as exc:
-        return _runtime_error(state, exc)
-    processing = {**_processing(state, {"provider_state": result.phase.provider_state}), "implementation_result": result.summary}
+        return _runtime_error(exc)
     return {
         "status": state_mod.IMPLEMENTING,
-        "processing": processing,
+        "processing": _processing(state, {
+            "context": result.phase.context.to_dict(), "implementation_result": result.summary,
+        }),
         "phase_attempts": result.phase.attempts,
     }
 
@@ -234,112 +192,70 @@ def implement(state: TaskState, executor: Executor | None = None, runtime=None) 
 def test(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
     try:
         runtime = runtime or compose_execution_runtime(executor=executor)
-        result = runtime.test(TestRequest(_context(state), _workspace(state)["path"], _processing_provider_state(state)))
+        result = runtime.test(TestRequest(_work(state), _workspace(state)["path"], _context(state)))
     except Exception as exc:
-        return _runtime_error(state, exc)
-    processing = {**_processing(state, {"provider_state": result.phase.provider_state}), "test_result": result.summary}
+        return _runtime_error(exc)
     return {
         "status": state_mod.TESTING,
-        "processing": processing,
+        "processing": _processing(state, {
+            "context": result.phase.context.to_dict(), "test_result": result.summary,
+        }),
         "phase_attempts": result.phase.attempts,
     }
 
 
 def create_pr(state: TaskState, destination: Destination | None = None, runtime=None) -> dict[str, Any]:
-    print(f"[{_now()}] create_pr: starting", flush=True)
+    print(f"[{_now()}] publish: starting", flush=True)
     try:
-        source = _input(state)
-        workspace_state = _workspace(state)
+        current = _workspace(state)
         runtime = runtime or compose_execution_runtime(destination=destination)
-        published = runtime.publish(
-            PublishRequest(_context(state), workspace_state["path"], workspace_state["branch"], workspace_state["base_branch"])
-        )
-        result = published.publication
+        publication = runtime.publish(PublishRequest(
+            _work(state), current["path"], current["branch"], current["base_branch"], _context(state)
+        )).publication
     except Exception as exc:
-        print(f"[{_now()}] create_pr: ERROR {exc}", flush=True)
-        return _runtime_error(state, exc)
-    print(f"[{_now()}] create_pr: publication created", flush=True)
-    publication_state = validate_provider_state(result.provider_state)
-    output = dict(state.get("output") or {})
-    output.update({"provider": _provider_name(destination or getattr(runtime, "destination", None), ""),
-                    "provider_state": publication_state})
-    if result.external_id is not None:
-        output["external_id"] = result.external_id
-    if result.url is not None:
-        output["url"] = result.url
+        print(f"[{_now()}] publish: ERROR {exc}", flush=True)
+        return _runtime_error(exc)
+    output: dict[str, Any] = {
+        "provider": publication.provider or _provider_name(destination or getattr(runtime, "destination", None), ""),
+        "context": publication.context.to_dict(),
+    }
+    if publication.id is not None:
+        output["external_id"] = publication.id
+    if publication.url is not None:
+        output["url"] = publication.url
     return {"status": state_mod.COMPLETED, "output": output}
 
 
 def cleanup(state: TaskState, manager: WorkspaceManager | None = None, runtime=None) -> dict[str, Any]:
-    """Remove the task worktree and branch after the PR was created.
-
-    Runs only on success; failed tasks keep their worktree for debugging.
-    Cleanup problems are logged but never fail the task.
-    """
-    print(f"[{_now()}] cleanup: starting", flush=True)
     try:
-        workspace_state = _workspace(state)
+        current = _workspace(state)
         runtime = runtime or compose_execution_runtime(workspace_manager=manager)
-        runtime.cleanup(
-            CleanupRequest(
-                _input(state)["repository"],
-                WorkspaceResult(
-                    workspace_state["path"], workspace_state["branch"],
-                    workspace_state.get("provider_state") or {},
-                ),
-            )
-        )
+        runtime.cleanup(CleanupRequest(
+            _work(state).repository,
+            WorkspaceResult(
+                current["path"], current["branch"], {},
+                Context.from_dict(current["context"]), current["base_branch"],
+            ),
+        ))
     except Exception as exc:
         print(f"[{_now()}] cleanup: ERROR {exc}", flush=True)
-        return {"status": state_mod.COMPLETED}
-    print(f"[{_now()}] cleanup: removed {_workspace(state)['path']} (branch {_workspace(state)['branch']})", flush=True)
     return {"status": state_mod.COMPLETED}
 
 
-# ---------------------------------------------------------------- prompts
-
-
-def _extra_context(state: TaskState) -> str:
-    extra_context = _input(state)["extra_context"]
-    if not extra_context:
-        return ""
-    blocks = "\n\n".join(f"<comment>\n{text}\n</comment>" for text in extra_context)
-    return f"\n\nAdditional requirements from comments:\n{blocks}"
-
-
 def plan_prompt(state: TaskState) -> str:
-    return runtime_plan_prompt(_context(state))
+    return runtime_plan_prompt(_work(state))
 
 
 def implement_prompt(state: TaskState) -> str:
-    return runtime_implement_prompt(_context(state))
+    return runtime_implement_prompt(_work(state))
 
 
 def test_prompt(state: TaskState) -> str:
-    return runtime_test_prompt(_context(state))
-
-
-# ---------------------------------------------------------------- helpers
-
-
-def _pr_body(state: TaskState, current_body: str | None = None) -> str:
-    """Build the PR body with the issue-closing reference first.
-
-    The `Closes #n` line is always the first line; matching lines in
-    `current_body` are removed so it is never duplicated. Existing text is
-    preserved below the closing reference.
-    """
-    return runtime_pr_body(_context(state), current_body)
-
-
-# ---------------------------------------------------------------- graph
+    return runtime_test_prompt(_work(state))
 
 
 def _route(next_node: str) -> Callable[[TaskState], str]:
-    def route(state: TaskState) -> str:
-        return "end" if state.get("status") == state_mod.FAILED else next_node
-
-    return route
+    return lambda state: "end" if state.get("status") == state_mod.FAILED else next_node
 
 
 def build_graph(
@@ -350,46 +266,33 @@ def build_graph(
     destination: Destination | None = None,
     runtime=None,
 ):
-    """Build the workflow graph.
-
-    `on_node_start(node_name, state)` is invoked when each node starts (heartbeat).
-    Nodes are guarded: any unhandled exception becomes a FAILED state instead of
-    crashing the process.
-    """
-
-    def _guard(node_name: str, fn: Callable[[TaskState], dict[str, Any]]) -> Callable[[TaskState], dict[str, Any]]:
+    def guard(name: str, fn: Callable[[TaskState], dict[str, Any]]):
         def wrapped(state: TaskState) -> dict[str, Any]:
             if on_node_start is not None:
                 try:
-                    on_node_start(node_name, state)
+                    on_node_start(name, state)
                 except Exception:
                     pass
             try:
                 return fn(state)
             except Exception as exc:
-                print(
-                    f"[{_now()}] {node_name}: ERROR (unhandled) {type(exc).__name__}: {exc}",
-                    flush=True,
-                )
-                return {"status": state_mod.FAILED, "error": f"unhandled exception in {node_name}: {exc}"}
-
+                return _fail(f"unhandled exception in {name}: {exc}")
         return wrapped
 
-    builder = StateGraph(TaskState)
     workflow_runtime = runtime or compose_execution_runtime(
         executor=executor, workspace_manager=workspace_manager, destination=destination
     )
+    builder = StateGraph(TaskState)
     nodes = {
-        "prepare_workspace": lambda state: prepare_workspace(state, runtime=workflow_runtime),
-        "plan": lambda state: plan(state, runtime=workflow_runtime),
-        "implement": lambda state: implement(state, runtime=workflow_runtime),
-        "test": lambda state: test(state, runtime=workflow_runtime),
-        "create_pr": lambda state: create_pr(state, runtime=workflow_runtime),
-        "cleanup": lambda state: cleanup(state, runtime=workflow_runtime),
+        "prepare_workspace": lambda value: prepare_workspace(value, runtime=workflow_runtime),
+        "plan": lambda value: plan(value, runtime=workflow_runtime),
+        "implement": lambda value: implement(value, runtime=workflow_runtime),
+        "test": lambda value: test(value, runtime=workflow_runtime),
+        "create_pr": lambda value: create_pr(value, runtime=workflow_runtime),
+        "cleanup": lambda value: cleanup(value, runtime=workflow_runtime),
     }
     for name, fn in nodes.items():
-        builder.add_node(name, _guard(name, fn))
-
+        builder.add_node(name, guard(name, fn))
     builder.add_edge(START, "prepare_workspace")
     builder.add_conditional_edges("prepare_workspace", _route("plan"), {"plan": "plan", "end": END})
     builder.add_conditional_edges("plan", _route("implement"), {"implement": "implement", "end": END})
@@ -397,5 +300,4 @@ def build_graph(
     builder.add_conditional_edges("test", _route("create_pr"), {"create_pr": "create_pr", "end": END})
     builder.add_conditional_edges("create_pr", _route("cleanup"), {"cleanup": "cleanup", "end": END})
     builder.add_edge("cleanup", END)
-
     return builder.compile(checkpointer=checkpointer)

@@ -39,7 +39,7 @@ class InputState(TypedDict, total=False):
 
     provider: str
     data: dict[str, Any]
-    provider_state: dict[str, Any]
+    context: dict[str, dict[str, Any]]
 
 
 class ProcessingState(TypedDict, total=False):
@@ -52,7 +52,7 @@ class ProcessingState(TypedDict, total=False):
     # Deprecated legacy fields retained for checkpoint deserialization.
     review_result: str | None
     review_verdict: str | None
-    provider_state: dict[str, Any]
+    context: dict[str, dict[str, Any]]
 
 
 class WorkspaceState(TypedDict, total=False):
@@ -62,7 +62,7 @@ class WorkspaceState(TypedDict, total=False):
     path: str
     branch: str
     base_branch: str
-    provider_state: dict[str, Any]
+    context: dict[str, dict[str, Any]]
 
 
 class OutputState(TypedDict, total=False):
@@ -71,7 +71,7 @@ class OutputState(TypedDict, total=False):
     provider: str
     external_id: str
     url: str
-    provider_state: dict[str, Any]
+    context: dict[str, dict[str, Any]]
 
 
 class TaskState(TypedDict, total=False):

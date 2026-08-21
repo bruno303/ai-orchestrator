@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from orchestrator import git, github
+from orchestrator.domain import ChangeRequest, Context, PublishedChange
 from orchestrator.providers import PublicationRequest, PublicationResult
 
 
@@ -36,28 +37,53 @@ class GitHubDestination:
         self.options = dict(options or {})
         self.provider_type = "github"
 
-    def publish(self, request: PublicationRequest) -> PublicationResult:
-        provider_state = {**self.options, **request.provider_state}
-        issue_number = provider_state.get("issue_number", provider_state.get("source_number"))
+    def publish(self, request: ChangeRequest | PublicationRequest) -> PublishedChange | PublicationResult:
+        legacy = isinstance(request, PublicationRequest)
+        if legacy:
+            provider_state = {**self.options, **request.provider_state}
+            issue_number = provider_state.get("issue_number", provider_state.get("source_number"))
+            repository = request.repository
+            title = request.title
+            description = request.body
+            source_ref = request.head
+            target_ref = request.base
+            workspace = provider_state.get("workspace")
+            context = Context({"github": {"issue_number": issue_number}})
+        else:
+            github_context = request.context.namespace("github")
+            git_context = request.context.namespace("git")
+            issue_number = github_context.get("issue_number")
+            repository = request.repository
+            title = request.title
+            description = request.description
+            source_ref = request.source_ref
+            target_ref = request.target_ref
+            workspace = git_context.get("workspace")
+            context = request.context
         if issue_number is None:
             raise ValueError("GitHub publication requires source issue metadata")
-        workspace = provider_state["workspace"]
-        if not git.has_changes(workspace) and not git.commits_ahead(workspace, request.base):
+        if not workspace:
+            raise ValueError("GitHub publication requires git workspace metadata")
+        if not git.has_changes(workspace) and not git.commits_ahead(workspace, target_ref):
             raise git.GitError("no changes to commit")
         if git.has_changes(workspace):
-            git.commit_all(workspace, f"{request.title}\n\nCloses #{issue_number}")
-        git.push_branch(workspace, request.head)
+            git.commit_all(workspace, f"{title}\n\nCloses #{issue_number}")
+        git.push_branch(workspace, source_ref)
 
-        existing_pr = github.find_open_pr(request.repository, request.head)
+        existing_pr = github.find_open_pr(repository, source_ref)
         if existing_pr is not None:
-            current = github.get_pull_request(request.repository, existing_pr).body
-            body = _body(issue_number, provider_state, current)
+            current = github.get_pull_request(repository, existing_pr).body
+            body = _body(issue_number, {}, current)
             if body != current:
-                github.update_pull_request_body(request.repository, existing_pr, body)
-            return PublicationResult(number=existing_pr, url=None)
+                github.update_pull_request_body(repository, existing_pr, body)
+            if legacy:
+                return PublicationResult(number=existing_pr, url=None)
+            return PublishedChange(str(existing_pr), None, self.provider_type, context)
 
         number = github.create_pull_request(
-            request.repository, request.title, _body(issue_number, provider_state, request.body),
-            head=request.head, base=request.base,
+            repository, title, _body(issue_number, {}, description),
+            head=source_ref, base=target_ref,
         )
-        return PublicationResult(number=number)
+        if legacy:
+            return PublicationResult(number=number)
+        return PublishedChange(str(number), provider=self.provider_type, context=context)

@@ -317,7 +317,7 @@ def test_list_shows_ids(allowlist, tmp_path, monkeypatch, capsys):
     main.cmd_list(type("A", (), {}))
     out = capsys.readouterr().out
     assert "company/backend#7" in out
-    assert "id (owner/repo#issue)" in out
+    assert "published" in out
 
 
 def test_poll_once_label_filter(allowlist, tmp_path, monkeypatch, capsys):
@@ -481,7 +481,7 @@ def test_pr_comment_trigger_includes_pr_context(allowlist, tmp_path, monkeypatch
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
     assert not {"repository", "issue_number", "issue_title", "issue_body", "pr_number", "extra_context"} & set(seed)
-    assert seed["input"]["data"]["pr_number"] == 14
+    assert seed["input"]["data"]["context"]["github"]["pr_number"] == 14
     context = "\n".join(seed["input"]["data"]["extra_context"])
     assert "<pr>" in context
     assert "number: 14" in context
@@ -521,7 +521,7 @@ def test_issue_comment_trigger_with_open_pr(allowlist, tmp_path, monkeypatch, ca
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["input"]["data"]["pr_number"] == 14
+    assert seed["input"]["data"]["context"]["github"]["pr_number"] == 14
     assert "<pr>" in "\n".join(seed["input"]["data"]["extra_context"])
 
 
@@ -549,7 +549,7 @@ def test_issue_comment_trigger_without_pr(allowlist, tmp_path, monkeypatch, caps
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["input"]["data"]["pr_number"] is None
+    assert "pr_number" not in seed["input"]["data"]["context"]["github"]
     assert "<pr>" not in "\n".join(seed["input"]["data"]["extra_context"])
 
 
@@ -581,7 +581,7 @@ def test_pr_fetch_failure_tolerated(allowlist, tmp_path, monkeypatch, capsys):
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["input"]["data"]["pr_number"] == 14
+    assert seed["input"]["data"]["context"]["github"]["pr_number"] == 14
     assert "<pr>" not in "\n".join(seed["input"]["data"]["extra_context"])
 
 
@@ -653,7 +653,7 @@ def test_persist_namespace_only_completed_result(allowlist, tmp_path, monkeypatc
 
     assert store.get_task("company/backend#2")["pr_number"] == 43
     assert workspace.read_events("company/backend#2")[-1]["pr_number"] == 43
-    assert "COMPLETED: PR #43 for company/backend#2" in capsys.readouterr().out
+    assert "COMPLETED: 43 for company/backend#2" in capsys.readouterr().out
 
 
 def test_persist_url_only_completed_result(allowlist, tmp_path, capsys):

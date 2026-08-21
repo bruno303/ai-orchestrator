@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator import config
+from orchestrator.domain import Context, ReviewCheck, ReviewFinding, ReviewOutcome
 from orchestrator.providers import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, ReviewResult
 
 
@@ -38,7 +39,7 @@ class OpenCodeExecutor:
         self.options = dict(options or {})
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
-        options = {**self.options, **request.provider_state}
+        options = {**self.options, **dict(request.context.namespace("opencode")), **request.provider_state}
         try:
             result = run_opencode(
                 workspace=request.workspace,
@@ -60,6 +61,7 @@ class OpenCodeExecutor:
             stdout=result.stdout,
             stderr=result.stderr,
             duration_seconds=result.duration_seconds,
+            context=request.context,
         )
 
 
@@ -70,20 +72,20 @@ class OpenCodeReviewExecutor:
         self.options = dict(options or {})
         self.provider_type = "opencode"
 
-    def execute(self, request: ReviewRequest) -> ReviewResult:
-        options = {**self.options, **request.provider_state}
+    def execute(self, request: ReviewRequest) -> ReviewOutcome:
+        options = {**self.options, **dict(request.context.namespace("opencode")), **request.provider_state}
         model_config = config.MODEL_PRIMARY
         result = run_opencode(
             request.workspace, None, request.prompt,
-            log_file=Path(options["log_file"]) if options.get("log_file") else None,
+            log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
             timeout=options.get("timeout"),
             detect_degenerate=options.get("detect_degenerate", config.MODEL_FALLBACK_ENABLED),
         )
         if result.exit_code != 0:
-            return ReviewResult(False, summary=result.stdout or result.stderr,
-                                provider_state={"exit_code": result.exit_code})
+            return ReviewOutcome(False, summary=result.stdout or result.stderr,
+                                 context=request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
         try:
             value = _extract_review_json(result.stdout)
             verdict = str(value.get("verdict", "")).lower()
@@ -111,10 +113,12 @@ class OpenCodeReviewExecutor:
             for check in checks:
                 if not isinstance(check, dict) or not isinstance(check.get("name"), str) or check.get("status") not in {"pass", "fail", "skip"}:
                     raise ValueError("each check must have a name and valid status")
-            return ReviewResult(True, verdict=verdict, summary=str(value.get("summary", "")),
-                                comments=findings, checks=checks)
+            typed_findings = tuple(ReviewFinding(**finding) for finding in findings)
+            typed_checks = tuple(ReviewCheck(**check) for check in checks)
+            return ReviewOutcome(True, verdict=verdict, summary=str(value.get("summary", "")),
+                                 findings=typed_findings, checks=typed_checks, context=request.context)
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            return ReviewResult(False, summary=f"invalid structured review output: {exc}")
+            return ReviewOutcome(False, summary=f"invalid structured review output: {exc}", context=request.context)
 
 
 def _extract_review_json(output: str) -> dict[str, Any]:

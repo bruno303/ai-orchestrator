@@ -74,7 +74,7 @@ if [[ -n "$FAKE_OPCODE_SLEEP" ]]; then sleep "$FAKE_OPCODE_SLEEP"; fi
 if [[ -n "$FAKE_OPCODE_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
 cd "$DIR"
 case "$PROMPT" in
-  *"planning the implementation"*)
+  *"planning the implementation"*|*"planning work item"*)
     mkdir -p .agents/plans
     cat > .agents/plans/plan.md <<'EOF'
 # Plan: test feature
@@ -87,7 +87,7 @@ Append a line to work.txt.
 EOF
     echo "Plan written to .agents/plans/plan.md"
     ;;
-  *"implementing GitHub issue"*)
+  *"implementing GitHub issue"*|*"Implement work item"*)
     echo "implemented" >> work.txt
     echo "Implementation done."
     ;;

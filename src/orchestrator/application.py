@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from orchestrator import config, state as state_mod
+from orchestrator.domain import Context, ContextPresenter, NoopContextPresenter
 from orchestrator.providers import (
     Destination, Executor, InputEvent, InputSource, SourceFeedback, WorkspaceManager,
-    validate_provider_state,
 )
 from orchestrator.runtime import compose_execution_runtime
 from orchestrator.runtime.execution import ExecutionRuntime
@@ -23,6 +23,7 @@ class Runtime:
     feedback: SourceFeedback | None = None
     input_provider: str | None = None
     execution_runtime: ExecutionRuntime | None = None
+    context_presenter: ContextPresenter = NoopContextPresenter()
 
 
 def compose_runtime(store: Any) -> Runtime:
@@ -50,6 +51,7 @@ def compose_runtime(store: Any) -> Runtime:
         execution_runtime=compose_execution_runtime(
             executor=executor, workspace_manager=workspace_manager, destination=destination
         ),
+        context_presenter=getattr(input_source, "context_presenter", NoopContextPresenter()),
     )
 
 
@@ -60,26 +62,25 @@ def _input_seed(
     provider: str | None = None,
     extra_context: list[str] | None = None,
 ) -> dict:
-    provider_state = validate_provider_state(event.provider_state)
+    item = event.work_item
+    context = item.context.merged(event.context)
     data = {
-        "repository": event.repository,
-        "number": event.number,
-        "work_item_id": event.work_item_id or task_id,
-        "title": event.title,
-        "body": event.body,
+        "id": item.id,
+        "work_item_id": item.id,
+        "repository": item.repository,
+        "title": item.title,
+        "description": item.description,
+        "extra_context": list(item.extra_context),
+        "input_provider": provider or item.input_provider,
+        "context": context.to_dict(),
     }
-    data.update(event.metadata.get("compatibility_data", {}))
-    if extra_context or event.extra_context:
-        data["extra_context"] = extra_context or event.extra_context
+    if extra_context:
+        data["extra_context"] = extra_context
     return {
         "task_id": task_id,
-        "input": {"provider": provider or event.provider or "github", "data": data, "provider_state": provider_state},
+        "input": {"provider": provider or item.input_provider, "data": data, "context": context.to_dict()},
         "processing": {"phase_attempts": 1},
-        "workspace": {
-            "branch": provider_state.get("branch", ""),
-            "path": provider_state.get("workspace", ""),
-            "base_branch": provider_state.get("base_branch", ""),
-        },
+        "workspace": {},
         "output": {},
         "status": state_mod.RECEIVED,
         "iteration": 1,
@@ -124,9 +125,7 @@ class PollingApplication:
                 return
 
     def _run_issue(self, event: InputEvent) -> None:
-        task_id = event.work_item_id or (
-            f"{event.repository}#{event.number}" if event.number is not None else event.event_id
-        )
+        task_id = event.work_item.id
         # A command comment for the same issue may have been processed earlier
         # in this polling snapshot.
         existing = (
@@ -137,12 +136,12 @@ class PollingApplication:
         if existing:
             return
         seed = _input_seed(event, task_id, provider=self.input_provider or _input_provider(self.input_source))
-        print(f"[{self.now()}] new issue: {task_id} - {event.title}")
-        self.store.create_task(task_id, event.repository, event.number)
+        print(f"[{self.now()}] new issue: {task_id} - {event.work_item.title}")
+        self.store.create_task(task_id, event.work_item.repository)
         self.persist_result(self.store, self.run_graph(self.store, seed, task_id))
 
     def _run_comment(self, event: InputEvent) -> None:
-        task_id = event.work_item_id or event.event_id
+        task_id = event.work_item.id
         task = self.store.get_task(task_id)
         if task and task["status"] in self._active_statuses():
             return
@@ -156,10 +155,10 @@ class PollingApplication:
         event_reference = event.event_id.rsplit(":", 1)[-1]
         print(
             f"[{self.now()}] command comment {event_reference} "
-            f"on {event.repository} ({task_id})",
+            f"on {event.work_item.repository} ({task_id})",
             flush=True,
         )
-        self.store.create_task(task_id, event.repository, event.number)
+        self.store.create_task(task_id, event.work_item.repository)
         try:
             result = self.run_graph(self.store, seed, task_id)
             self.persist_result(self.store, result)

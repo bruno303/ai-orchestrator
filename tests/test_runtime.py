@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from orchestrator import config, opencode
+from orchestrator.domain import Context, PublishedChange, PublishedReview, ReviewOutcome, ReviewTarget, WorkItem
 from orchestrator.providers import ExecutionResult, PublicationResult, ReviewEvent, ReviewResult, WorkspaceResult
 from orchestrator.runtime import compose_execution_runtime
 from orchestrator.runtime.errors import ReviewExecutionError
@@ -21,6 +22,7 @@ from orchestrator.runtime.models import (
     PublishRequest,
     PublishReviewRequest,
     TestRequest as RuntimeTestRequest,
+    WorkContext,
 )
 from orchestrator.runtime.review import REVIEW_PROMPT, ReviewRuntime
 
@@ -195,3 +197,94 @@ def test_review_runtime_turns_executor_failure_into_typed_error(tmp_path):
     prepared = runtime.prepare(PrepareReviewRequest(event, "review:company/backend#3"))
     with pytest.raises(ReviewExecutionError, match="invalid structured"):
         runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
+
+
+def test_provider_neutral_execution_preserves_all_context_namespaces(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "is_repository_allowed", lambda repository: True)
+    captured = {}
+    work = WorkContext(WorkItem(
+        "ABC-42", "company/backend", "Add feature", "Details",
+        context=Context({
+            "fake_source": {"ticket": "ABC-42"},
+            "git": {"repository_url": "fake://repository", "branch": "task-ABC-42"},
+        }),
+    ))
+
+    class Workspace:
+        def prepare(self, request):
+            return WorkspaceResult(
+                str(tmp_path), request.branch, context=request.context.merge_namespace(
+                    "git", {"workspace": str(tmp_path), "base_branch": "main"}
+                ), base_branch="main",
+            )
+
+        def cleanup(self, result):
+            pass
+
+    class Executor:
+        def execute(self, request):
+            stdout = "# Plan\n\nDo it." if request.agent == "plan" else "complete"
+            return ExecutionResult(
+                True, 0, stdout=stdout,
+                context=request.context.merge_namespace("opencode", {"session_id": "session-1"}),
+            )
+
+    class Destination:
+        def publish(self, request):
+            captured["request"] = request
+            return PublishedChange("change-42", provider="fake", context=request.context)
+
+    runtime = compose_execution_runtime(
+        executor=Executor(), workspace_manager=Workspace(), destination=Destination()
+    )
+    prepared = runtime.prepare(PrepareExecutionRequest(work))
+    planned = runtime.plan(PlanRequest(work, prepared.workspace.workspace, prepared.context))
+    implemented = runtime.implement(ImplementationRequest(
+        work, prepared.workspace.workspace, context=planned.phase.context
+    ))
+    tested = runtime.test(RuntimeTestRequest(
+        work, prepared.workspace.workspace, implemented.phase.context
+    ))
+    published = runtime.publish(PublishRequest(
+        work, prepared.workspace.workspace, "task-ABC-42", "main", tested.phase.context
+    ))
+
+    assert published.publication.id == "change-42"
+    assert set(captured["request"].context) == {"fake_source", "git", "opencode"}
+    assert captured["request"].task_id == "ABC-42"
+
+
+def test_provider_neutral_review_uses_opaque_id_without_github_context(tmp_path):
+    captured = {}
+    target = ReviewTarget(
+        "MR-abc", "company/backend", source_ref="feature", target_ref="main", revision="rev",
+        context=Context({"fake_review": {"merge_request": "abc"}, "git": {"repository_url": "fake"}}),
+    )
+
+    class Workspace:
+        def prepare(self, request):
+            return WorkspaceResult(str(tmp_path), "", context=request.context)
+
+        def cleanup(self, result):
+            captured["cleaned"] = True
+
+    class Executor:
+        def execute(self, request):
+            assert request.task_id == "MR-abc"
+            return ReviewOutcome(True, "approve", "ok", context=request.context)
+
+    class Destination:
+        def publish(self, current_target, outcome):
+            captured["target"] = current_target
+            return PublishedReview("published-1", provider="fake", context=current_target.context)
+
+    runtime = ReviewRuntime(Executor(), Workspace(), Destination())
+    prepared = runtime.prepare(PrepareReviewRequest(target))
+    execution = runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
+    published = runtime.publish_review(PublishReviewRequest(prepared, execution))
+    runtime.cleanup_review(CleanupReviewRequest(prepared))
+
+    assert published.publication.id == "published-1"
+    assert captured["target"].id == "MR-abc"
+    assert "github" not in captured["target"].context
+    assert captured["cleaned"]
