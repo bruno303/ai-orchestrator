@@ -71,7 +71,7 @@ def test_get_issue(fake_gh):
 
 
 def test_get_authenticated_user_login_uses_app_bot_identity():
-    assert github.get_authenticated_user_login() == "app/bruno303-ai-agent-bot"
+    assert github.get_authenticated_user_login() == "bruno303-ai-agent-bot[bot]"
 
 
 def test_get_issue_rejects_pr(monkeypatch):

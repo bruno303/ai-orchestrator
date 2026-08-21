@@ -72,7 +72,7 @@ def test_github_destination_comments_on_self_authored_pr():
 
     class GitHub:
         def get_authenticated_user_login(self):
-            return "app/bruno303-ai-agent-bot"
+            return "bruno303-ai-agent-bot[bot]"
 
         def publish_pull_request_review(self, *args, **kwargs):
             published.append((args, kwargs))
@@ -82,7 +82,7 @@ def test_github_destination_comments_on_self_authored_pr():
 
     request = ReviewRequest(
         "review:r#1", "r", "/tmp", "p",
-        {"number": 1, "author_login": "app/bruno303-ai-agent-bot", "head_sha": "sha"},
+        {"number": 1, "author_login": "bruno303-ai-agent-bot[bot]", "head_sha": "sha"},
     )
     GitHubReviewDestination(github_client=GitHub()).publish(
         request, ReviewResult(True, verdict="request_changes", summary="needs work")

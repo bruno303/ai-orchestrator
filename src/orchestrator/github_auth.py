@@ -22,7 +22,7 @@ PRIVATE_KEY_FILE = Path(os.environ.get(
     "ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE",
     Path(__file__).resolve().parents[2] / "config" / "key.pem",
 ))
-BOT_LOGIN = f"app/{APP_SLUG}"
+BOT_LOGIN = f"{APP_SLUG}[bot]"
 BOT_NAME = f"{APP_SLUG}[bot]"
 BOT_EMAIL = f"{APP_ID}+{APP_SLUG}[bot]@users.noreply.github.com"
 
