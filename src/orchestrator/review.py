@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from orchestrator import config
+from orchestrator import config, workspace
 from orchestrator.providers import ReviewDestination, ReviewEvent, ReviewExecutor, ReviewInputSource, WorkspaceManager
 from orchestrator.runtime.models import (
     CleanupReviewRequest,
@@ -39,6 +39,21 @@ class ReviewApplication:
         for event in self.input_source.poll():
             task_id = event.event_id
             prepared = None
+            provider_state = event.provider_state
+            title = " ".join(event.title.split()) or "<untitled>"
+            workspace.write_task_log(
+                task_id,
+                "review",
+                f"[review] starting: repository={event.repository} "
+                f"pr={provider_state.get('number', '<unknown>')} title={title!r} "
+                f"author={provider_state.get('author_login') or '<unknown>'} "
+                f"head_sha={provider_state.get('head_sha') or '<unknown>'}",
+            )
+            print(
+                f"[review] starting: repository={event.repository} "
+                f"pr={provider_state.get('number', '<unknown>')} title={title!r}",
+                flush=True,
+            )
             try:
                 prepared = self.runtime.prepare(PrepareReviewRequest(event, task_id))
                 execution = self.runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
