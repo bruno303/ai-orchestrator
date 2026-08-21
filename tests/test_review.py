@@ -72,7 +72,7 @@ def test_github_destination_comments_on_self_authored_pr():
 
     class GitHub:
         def get_authenticated_user_login(self):
-            return "bruno303"
+            return "app/bruno303-ai-agent-bot"
 
         def publish_pull_request_review(self, *args, **kwargs):
             published.append((args, kwargs))
@@ -82,7 +82,7 @@ def test_github_destination_comments_on_self_authored_pr():
 
     request = ReviewRequest(
         "review:r#1", "r", "/tmp", "p",
-        {"number": 1, "author_login": "bruno303", "head_sha": "sha"},
+        {"number": 1, "author_login": "app/bruno303-ai-agent-bot", "head_sha": "sha"},
     )
     GitHubReviewDestination(github_client=GitHub()).publish(
         request, ReviewResult(True, verdict="request_changes", summary="needs work")
@@ -168,6 +168,24 @@ def test_github_input_skips_broken_pr_metadata_and_continues():
     source = GitHubReviewInputSource(Client(), SimpleNamespace(allowed_repositories=lambda: ["r"]))
     events = source.poll()
     assert [event.provider_state["number"] for event in events] == [2]
+
+
+def test_github_review_input_uses_https_repository_url():
+    class Client:
+        def get_repository(self, repository):
+            return {"ssh_url": "git@github.com:company/backend.git"}
+
+        def https_clone_url(self, metadata, repository):
+            return github.https_clone_url(metadata, repository)
+
+        def list_open_pull_requests(self, repository):
+            return []
+
+    source = GitHubReviewInputSource(Client(), SimpleNamespace(allowed_repositories=lambda: ["company/backend"]))
+
+    assert source._repository_state("company/backend") == {
+        "repository_url": "https://github.com/company/backend.git"
+    }
 
 
 def test_github_destination_demotes_invalid_locations_and_validates_start_side():

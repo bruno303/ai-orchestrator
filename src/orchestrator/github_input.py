@@ -226,6 +226,6 @@ class GitHubPollingInputSource:
         except (AttributeError, self.github_client.GitHubError):
             return {}
         return {
-            "repository_url": metadata.get("ssh_url", ""),
+            "repository_url": self.github_client.https_clone_url(metadata, repository),
             "base_branch": metadata.get("default_branch", ""),
         }

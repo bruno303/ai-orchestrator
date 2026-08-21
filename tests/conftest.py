@@ -23,7 +23,13 @@ os.environ["ORCHESTRATOR_WORKSPACES_DIR"] = str(_TMP / "workspaces")
 os.environ["ORCHESTRATOR_CONFIG_FILE"] = str(_TMP / "repositories.yaml")
 os.environ["ORCHESTRATOR_OPENCODE_BIN"] = str(_TMP / "bin" / "fake-opencode")
 
-from orchestrator import config  # noqa: E402
+from orchestrator import config, github_auth  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def disable_github_app_auth(monkeypatch):
+    """Keep unit tests independent of the developer's private key and network."""
+    monkeypatch.setattr(github_auth, "installation_token", lambda: "test-installation-token")
 
 FAKE_OPENCODE = r"""#!/usr/bin/env bash
 # Fake opencode: dispatches on prompt content. Env overrides:

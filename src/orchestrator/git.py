@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from orchestrator import config
+from orchestrator import config, github_auth
 
 
 class GitError(Exception):
@@ -48,18 +48,21 @@ def ensure_base_clone(repository: str, clone_url: str) -> Path:
     repo_dir = base_repo_dir(repository)
     if not (repo_dir / ".git").exists():
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
-        _run(["git", "clone", clone_url, str(repo_dir)], cwd=repo_dir.parent)
+        _run(["git", "clone", clone_url, str(repo_dir)], cwd=repo_dir.parent,
+             env=_github_env_for_url(clone_url))
     fetch(repo_dir)
     return repo_dir
 
 
 def fetch(repo_dir: Path) -> None:
-    _run(["git", "fetch", "origin", "--prune"], cwd=repo_dir)
+    _run(["git", "fetch", "origin", "--prune"], cwd=repo_dir,
+         env=_github_env_for_remote(repo_dir, "origin"))
 
 
 def fetch_commit(repo_dir: Path, commit: str, remote: str = "origin") -> None:
     """Fetch an immutable commit, including one advertised by a fork remote."""
-    _run(["git", "fetch", remote, commit], cwd=repo_dir)
+    _run(["git", "fetch", remote, commit], cwd=repo_dir,
+         env=_github_env_for_url(remote))
 
 
 def detect_default_branch(repo_dir: Path) -> str:
@@ -154,7 +157,8 @@ def commit_all(workspace: Path, message: str) -> None:
     )
     if proc.returncode != 0:
         _run(["git", "add", "-A", "--", "."], cwd=workspace)
-    proc = _run(["git", "commit", "-m", message], cwd=workspace, check=False)
+    proc = _run(["git", "commit", "-m", message], cwd=workspace, check=False,
+                env=_github_env_for_remote(workspace, "origin"))
     if proc.returncode != 0:
         raise NoChangesError(f"nothing to commit: {proc.stderr.strip()}")
 
@@ -165,15 +169,28 @@ def push_branch(workspace: Path, branch: str) -> None:
     The ai/issue-* branch is orchestrator-owned, so a stale remote copy from a
     previous run of the same issue is safely overwritten.
     """
-    proc = _run(["git", "push", "-u", "origin", branch], cwd=workspace, check=False)
+    environment = _github_env_for_remote(workspace, "origin")
+    proc = _run(["git", "push", "-u", "origin", branch], cwd=workspace, check=False,
+                env=environment)
     if proc.returncode != 0:
         proc = _run(
             ["git", "push", "--force-with-lease", "-u", "origin", branch],
             cwd=workspace,
-            check=False,
+            check=False, env=environment,
         )
     if proc.returncode != 0:
         raise GitError(f"git push failed in {workspace}: {proc.stderr.strip()}")
+
+
+def _github_env_for_remote(cwd: Path, remote: str) -> dict[str, str] | None:
+    proc = _run(["git", "remote", "get-url", remote], cwd=cwd, check=False)
+    return _github_env_for_url(proc.stdout.strip())
+
+
+def _github_env_for_url(url: str) -> dict[str, str] | None:
+    if "github.com" not in url:
+        return None
+    return github_auth.git_environment()
 
 
 def diff_stat(workspace: Path, base_branch: str) -> str:

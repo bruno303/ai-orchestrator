@@ -44,7 +44,7 @@ def _seed_state(store: TaskStore, repository: str, issue_number: int) -> dict:
         "task_id": task_id,
         "input": {"provider": "github", "data": {"repository": repository, "number": issue_number,
             "work_item_id": task_id, "title": issue.title, "body": issue.body}, "provider_state": {
-                "repository_url": repository_metadata.get("ssh_url", ""),
+                "repository_url": github.https_clone_url(repository_metadata, repository),
                 "base_branch": repository_metadata.get("default_branch", ""),
                 "branch": f"ai/issue-{issue_number}",
                 "workspace": str(workspace.task_workspace(repository, issue_number)),

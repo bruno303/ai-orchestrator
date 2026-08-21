@@ -58,7 +58,7 @@ class GitHubReviewInputSource:
             metadata = self.github_client.get_repository(repository)
         except Exception:
             return {}
-        return {"repository_url": metadata.get("ssh_url", "")}
+        return {"repository_url": self.github_client.https_clone_url(metadata, repository)}
 
 
 def _summary(result: ReviewResult) -> str:
@@ -113,9 +113,18 @@ class GitHubReviewDestination:
             comments.append(comment)
         verdict = result.verdict.lower()
         event = "APPROVE" if verdict in {"approve", "approved"} else "REQUEST_CHANGES" if verdict in {"request_changes", "changes_requested"} else "COMMENT"
+        authenticated_login = ""
         if event != "COMMENT" and request.provider_state.get("author_login"):
-            if self.github_client.get_authenticated_user_login() == request.provider_state["author_login"]:
+            authenticated_login = self.github_client.get_authenticated_user_login()
+            if authenticated_login == request.provider_state["author_login"]:
                 event = "COMMENT"
+        print(
+            f"[review] publishing: repository={request.repository} pr={number} "
+            f"verdict={verdict} event={event} author={request.provider_state.get('author_login') or '<missing>'} "
+            f"authenticated={authenticated_login or '<not checked>'} "
+            f"head_sha={request.provider_state.get('head_sha') or '<missing>'} comments={len(comments)}",
+            flush=True,
+        )
         self.github_client.publish_pull_request_review(
             request.repository,
             number,

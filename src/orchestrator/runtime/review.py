@@ -95,10 +95,31 @@ class ReviewRuntime:
         return ExecuteReviewResult(review_request, result)
 
     def publish_review(self, request: PublishReviewRequest) -> PublishReviewResult:
+        review_request = request.execution.request
+        review = request.execution.review
+        workspace.write_task_log(
+            review_request.task_id,
+            "review",
+            f"[review] publication starting: repository={review_request.repository} "
+            f"verdict={review.verdict or '<missing>'} "
+            f"author={review_request.provider_state.get('author_login') or '<missing>'} "
+            f"head_sha={review_request.provider_state.get('head_sha') or '<missing>'} "
+            f"comments={len(review.comments)}",
+        )
         try:
-            self.destination.publish(request.execution.request, request.execution.review)
+            self.destination.publish(review_request, review)
         except Exception as exc:
+            workspace.write_task_log(
+                review_request.task_id,
+                "review",
+                f"[review] publication failed: {type(exc).__name__}: {exc}",
+            )
             raise ReviewPublicationError(str(exc)) from exc
+        workspace.write_task_log(
+            review_request.task_id,
+            "review",
+            "[review] publication succeeded",
+        )
         return PublishReviewResult(request.execution.request)
 
     def cleanup_review(self, request: CleanupReviewRequest) -> CleanupReviewResult:

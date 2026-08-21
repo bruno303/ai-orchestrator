@@ -6,6 +6,8 @@ import json
 import subprocess
 from dataclasses import dataclass, field
 
+from orchestrator import github_auth
+
 
 class GitHubError(Exception):
     pass
@@ -18,9 +20,16 @@ def _run_gh(args: list[str], *, input_text: str | None = None) -> str:
         capture_output=True,
         text=True,
         check=False,
+        env=github_auth.gh_environment(),
     )
     if proc.returncode != 0:
-        raise GitHubError(f"gh {' '.join(args)} failed: {proc.stderr.strip()}")
+        stderr = proc.stderr.strip()
+        print(
+            f"[github] command failed: exit={proc.returncode} args={' '.join(args)} "
+            f"stderr={stderr or '<empty>'}",
+            flush=True,
+        )
+        raise GitHubError(f"gh {' '.join(args)} failed: {stderr}")
     return proc.stdout
 
 
@@ -35,7 +44,7 @@ def _api(endpoint: str, jq_expr: str | None = None, *, paginate: bool = False) -
 
 def get_repository(repository: str) -> dict:
     """Validate the repository exists; return metadata (ssh_url, default_branch)."""
-    out = _api(f"repos/{repository}", "{ssh_url, default_branch, html_url}")
+    out = _api(f"repos/{repository}", "{ssh_url, clone_url, default_branch, html_url}")
     return json.loads(out)
 
 
@@ -93,7 +102,17 @@ def get_default_branch(repository: str) -> str:
 
 
 def get_clone_url(repository: str) -> str:
-    return get_repository(repository)["ssh_url"]
+    return https_clone_url(get_repository(repository), repository)
+
+
+def https_clone_url(metadata: dict, repository: str) -> str:
+    clone_url = metadata.get("clone_url")
+    if clone_url:
+        return clone_url
+    ssh_url = metadata.get("ssh_url", "")
+    if ssh_url.startswith("git@github.com:"):
+        return f"https://github.com/{ssh_url.removeprefix('git@github.com:')}"
+    return f"https://github.com/{repository}.git"
 
 
 def create_pull_request(repository: str, title: str, body: str, head: str, base: str) -> int:
@@ -242,15 +261,19 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
         ],
         labels=[label.get("name", "") for label in data.get("labels") or [] if isinstance(label, dict)],
         head_sha=data.get("headRefOid") or "",
-        head_clone_url=((data.get("headRepository") or {}).get("sshUrl") or ""),
+        head_clone_url=((data.get("headRepository") or {}).get("cloneUrl") or ""),
         changed_lines=_changed_lines(data.get("files") or []),
         author_login=(data.get("author") or {}).get("login") or "",
     )
 
 
 def get_authenticated_user_login() -> str:
-    """Return the login for the GitHub account used by the gh CLI."""
-    return _api("user", ".login").strip()
+    """Return the configured GitHub App bot login.
+
+    Installation tokens do not support the user-authentication ``/user``
+    endpoint, so the bot identity must come from the App configuration.
+    """
+    return github_auth.BOT_LOGIN
 
 
 def _changed_lines(files: list[dict]) -> dict[str, dict[str, list[int]]]:
@@ -330,6 +353,11 @@ def publish_pull_request_review(
     payload = {"body": body, "event": event, "comments": comments or []}
     if commit_id:
         payload["commit_id"] = commit_id
+    print(
+        f"[github] publishing review: repository={repository} pr={number} "
+        f"event={event} commit_id={commit_id or '<none>'} comments={len(payload['comments'])}",
+        flush=True,
+    )
     _run_gh(
         ["api", "--method", "POST", f"repos/{repository}/pulls/{number}/reviews", "--input", "-"],
         input_text=json.dumps(payload),
