@@ -23,7 +23,13 @@ def _run_gh(args: list[str], *, input_text: str | None = None) -> str:
         env=github_auth.gh_environment(),
     )
     if proc.returncode != 0:
-        raise GitHubError(f"gh {' '.join(args)} failed: {proc.stderr.strip()}")
+        stderr = proc.stderr.strip()
+        print(
+            f"[github] command failed: exit={proc.returncode} args={' '.join(args)} "
+            f"stderr={stderr or '<empty>'}",
+            flush=True,
+        )
+        raise GitHubError(f"gh {' '.join(args)} failed: {stderr}")
     return proc.stdout
 
 
@@ -347,6 +353,11 @@ def publish_pull_request_review(
     payload = {"body": body, "event": event, "comments": comments or []}
     if commit_id:
         payload["commit_id"] = commit_id
+    print(
+        f"[github] publishing review: repository={repository} pr={number} "
+        f"event={event} commit_id={commit_id or '<none>'} comments={len(payload['comments'])}",
+        flush=True,
+    )
     _run_gh(
         ["api", "--method", "POST", f"repos/{repository}/pulls/{number}/reviews", "--input", "-"],
         input_text=json.dumps(payload),
