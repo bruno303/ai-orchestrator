@@ -58,7 +58,7 @@ class GitHubReviewInputSource:
             metadata = self.github_client.get_repository(repository)
         except Exception:
             return {}
-        return {"repository_url": metadata.get("ssh_url", "")}
+        return {"repository_url": self.github_client.https_clone_url(metadata, repository)}
 
 
 def _summary(result: ReviewResult) -> str:
