@@ -70,17 +70,8 @@ def test_get_issue(fake_gh):
     assert issue.html_url == "u"
 
 
-def test_get_authenticated_user_login_uses_jq_field(monkeypatch):
-    calls = []
-
-    def run(args, input_text=None):
-        calls.append(args)
-        return "bruno303\n"
-
-    monkeypatch.setattr(github, "_run_gh", run)
-
-    assert github.get_authenticated_user_login() == "bruno303"
-    assert calls == [["api", "user", "--jq", ".login"]]
+def test_get_authenticated_user_login_uses_app_bot_identity():
+    assert github.get_authenticated_user_login() == "bruno303-ai-agent-bot[bot]"
 
 
 def test_get_issue_rejects_pr(monkeypatch):

@@ -27,6 +27,7 @@ override them for another deployment with environment variables:
 |---|---|
 | `ORCHESTRATOR_GITHUB_APP_ID` | `4666139` |
 | `ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID` | `155320111` |
+| `ORCHESTRATOR_GITHUB_APP_SLUG` | `bruno303-ai-agent-bot` |
 | `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE` | `config/key.pem` |
 
 The private key is used only in memory to create short-lived installation tokens.

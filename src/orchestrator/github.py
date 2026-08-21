@@ -262,8 +262,12 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
 
 
 def get_authenticated_user_login() -> str:
-    """Return the login for the GitHub account used by the gh CLI."""
-    return _api("user", ".login").strip()
+    """Return the configured GitHub App bot login.
+
+    Installation tokens do not support the user-authentication ``/user``
+    endpoint, so the bot identity must come from the App configuration.
+    """
+    return github_auth.BOT_LOGIN
 
 
 def _changed_lines(files: list[dict]) -> dict[str, dict[str, list[int]]]:

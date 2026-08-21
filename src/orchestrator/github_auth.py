@@ -17,12 +17,14 @@ import jwt
 
 APP_ID = os.environ.get("ORCHESTRATOR_GITHUB_APP_ID", "4666139")
 INSTALLATION_ID = os.environ.get("ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID", "155320111")
+APP_SLUG = os.environ.get("ORCHESTRATOR_GITHUB_APP_SLUG", "bruno303-ai-agent-bot")
 PRIVATE_KEY_FILE = Path(os.environ.get(
     "ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE",
     Path(__file__).resolve().parents[2] / "config" / "key.pem",
 ))
-BOT_NAME = "bruno303-ai-agent-bot[bot]"
-BOT_EMAIL = f"{APP_ID}+bruno303-ai-agent-bot[bot]@users.noreply.github.com"
+BOT_LOGIN = f"{APP_SLUG}[bot]"
+BOT_NAME = BOT_LOGIN
+BOT_EMAIL = f"{APP_ID}+{APP_SLUG}[bot]@users.noreply.github.com"
 
 _cached_token: str | None = None
 _cached_expires_at = 0.0
