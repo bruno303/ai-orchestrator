@@ -264,7 +264,7 @@ def test_review_executor_accepts_transcript_before_json(monkeypatch):
     assert result.verdict == "approve"
 
 
-def test_review_executor_disables_degenerate_detection_without_fallback(monkeypatch):
+def test_review_executor_uses_configured_model(monkeypatch):
     captured = {}
 
     def run(*args, **kwargs):
@@ -274,9 +274,10 @@ def test_review_executor_disables_degenerate_detection_without_fallback(monkeypa
         }), "", 0.1)
 
     monkeypatch.setattr("orchestrator.infra.opencode.executor.run_opencode", run)
-    result = OpenCodeReviewExecutor({"fallback_enabled": False}).execute(
+    result = OpenCodeReviewExecutor({"model_config": config.ModelConfig("provider/model", "fast")}).execute(
         ReviewRequest("review:r#1", "r", "/tmp", "p", Context())
     )
 
     assert result.success
-    assert captured["detect_degenerate"] is False
+    assert captured["model"] == "provider/model"
+    assert captured["variant"] == "fast"

@@ -81,26 +81,7 @@ def test_run_opencode_streams_to_log_file(tmp_path, clean_env, monkeypatch):
     assert result_holder["result"].exit_code == 0
 
 
-def test_run_opencode_detects_repeat_loop(tmp_path, clean_env, monkeypatch):
-    """Degenerate repeated output must raise DegenerateOutputError."""
-    monkeypatch.setenv("FAKE_OPCODE_LOOP", "1")
-    with pytest.raises(opencode.DegenerateOutputError):
-        opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
-
-
-def test_run_opencode_skips_loop_detection_when_disabled(tmp_path, clean_env, monkeypatch):
-    monkeypatch.setenv("FAKE_OPCODE_LOOP", "1")
-    result = opencode.run_opencode(
-        tmp_path,
-        "plan",
-        "planning the implementation of issue",
-        detect_degenerate=False,
-    )
-    assert result.exit_code == 0
-
-
 def test_run_opencode_no_false_positive(tmp_path, clean_env):
-    """Normal output must not trip the loop detector."""
     result = opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
     assert result.exit_code == 0
     assert "Plan written" in result.stdout
@@ -132,18 +113,3 @@ def test_run_opencode_logs_model_header(tmp_path, clean_env, monkeypatch):
     )
     content = log_file.read_text()
     assert content.startswith("[orchestrator] opencode run --agent plan --model verboo/deepseek-v4-flash --variant high")
-
-
-def test_detect_loop_unit():
-    loop_line = "PERMIT ME NOW to emit exactly one invocation card"
-    identical = [loop_line] * 100
-    assert opencode.detect_loop(identical, 100, 20, 0.1)
-
-    healthy = [f"progress line {i}" for i in range(100)]
-    assert not opencode.detect_loop(healthy, 100, 20, 0.1)
-
-    # 50 lines alternating between 3 unique values: distinct/window = 3/50 = 0.06 <= 0.1.
-    alternating = [f"step {i % 3}" for i in range(50)]
-    assert opencode.detect_loop(alternating, 100, 20, 0.1)
-
-    assert not opencode.detect_loop([], 100, 20, 0.1)

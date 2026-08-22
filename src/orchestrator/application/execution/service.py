@@ -143,18 +143,18 @@ class ExecutionRuntime:
             if not plan_path.is_file():
                 raise PlanValidationError(
                     f"planning completed without creating {PLAN_FILE}",
-                    context=phase.context, attempts=phase.attempts,
+                    context=phase.context,
                 )
             if not plan_path.read_text().strip():
                 raise PlanValidationError(
                     f"planning completed with an empty {PLAN_FILE}",
-                    context=phase.context, attempts=phase.attempts,
+                    context=phase.context,
                 )
         except PlanValidationError:
             raise
         except OSError as exc:
             raise PlanValidationError(
-                str(exc), context=phase.context, attempts=phase.attempts
+                str(exc), context=phase.context
             ) from exc
         return PlanResult(phase.execution.stdout[:4000], PLAN_FILE, phase)
 
@@ -172,7 +172,7 @@ class ExecutionRuntime:
             ))
         except AgentExecutionError as exc:
             raise QualityGateError(
-                str(exc), context=exc.context, attempts=exc.attempts
+                str(exc), context=exc.context
             ) from exc
         return TestResult(phase.execution.stdout[:4000], phase)
 

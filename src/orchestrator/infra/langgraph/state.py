@@ -72,4 +72,3 @@ class TaskState(TypedDict, total=False):
     question: str | None
     error: str | None
     iteration: int
-    phase_attempts: int

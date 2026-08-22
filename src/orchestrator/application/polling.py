@@ -53,12 +53,11 @@ def _input_seed(
     return {
         "task_id": task_id,
         "input": {"provider": provider or item.input_provider, "data": data, "context": context.to_dict()},
-        "processing": {"phase_attempts": 1},
+        "processing": {},
         "workspace": {},
         "output": {},
         "status": RECEIVED,
         "iteration": 1,
-        "phase_attempts": 1,
     }
 
 

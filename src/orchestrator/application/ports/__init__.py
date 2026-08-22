@@ -33,10 +33,6 @@ def _json_dict(value: object) -> dict[str, Any]:
 class ExecutorError(RuntimeError):
     """Adapter-neutral execution failure."""
 
-    def __init__(self, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.retryable = retryable
-
 
 @dataclass(frozen=True)
 class InputEvent:

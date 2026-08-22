@@ -100,8 +100,6 @@ def _provider_name(component: Any, default: str) -> str:
 def _runtime_error(exc: Exception) -> dict[str, Any]:
     updates = _fail(str(exc))
     if isinstance(exc, RuntimeOperationError):
-        if exc.attempts is not None:
-            updates["phase_attempts"] = exc.attempts
         if exc.context:
             try:
                 updates["processing"] = {"context": exc.context.to_dict()}
@@ -148,7 +146,6 @@ def plan(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
             "context": result.phase.context.to_dict(), "plan_path": result.plan_path,
             "plan_summary": result.summary,
         }),
-        "phase_attempts": result.phase.attempts,
     }
 
 
@@ -164,7 +161,6 @@ def implement(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
         "processing": _processing(state, {
             "context": result.phase.context.to_dict(), "implementation_result": result.summary,
         }),
-        "phase_attempts": result.phase.attempts,
     }
 
 
@@ -178,7 +174,6 @@ def test(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
         "processing": _processing(state, {
             "context": result.phase.context.to_dict(), "test_result": result.summary,
         }),
-        "phase_attempts": result.phase.attempts,
     }
 
 
