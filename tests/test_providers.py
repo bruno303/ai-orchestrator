@@ -34,6 +34,7 @@ from orchestrator.infra.github.client import GitHubClient
 from orchestrator.infra.github.input import GitHubPollingInputSource
 from orchestrator.infra.git.workspace import GitWorkspaceManager
 from orchestrator.infra.opencode.executor import OpenCodeExecutor
+from orchestrator.infra.codex.executor import CodexExecutor, CodexReviewExecutor
 
 
 def test_provider_models_are_json_serializable():
@@ -91,17 +92,18 @@ def test_context_is_a_json_serializable_mapping():
 
 def test_provider_registries_reserve_current_provider_names():
     assert INPUT_PROVIDERS.names() == ("github_polling",)
-    assert EXECUTOR_PROVIDERS.names() == ("opencode",)
+    assert EXECUTOR_PROVIDERS.names() == ("codex", "opencode")
     assert WORKSPACE_PROVIDERS.names() == ("git",)
     assert DESTINATION_PROVIDERS.names() == ("github",)
     assert REVIEW_INPUT_PROVIDERS.names() == ("github_polling",)
-    assert REVIEW_EXECUTOR_PROVIDERS.names() == ("opencode",)
+    assert REVIEW_EXECUTOR_PROVIDERS.names() == ("codex", "opencode")
     assert REVIEW_DESTINATION_PROVIDERS.names() == ("github",)
 
 
 def test_review_registries_return_protocol_implementations():
     assert isinstance(REVIEW_INPUT_PROVIDERS.create("github_polling"), ReviewInputSource)
     assert isinstance(REVIEW_EXECUTOR_PROVIDERS.create("opencode"), ReviewExecutor)
+    assert isinstance(REVIEW_EXECUTOR_PROVIDERS.create("codex"), ReviewExecutor)
     assert isinstance(REVIEW_DESTINATION_PROVIDERS.create("github"), ReviewDestination)
 
 
@@ -153,11 +155,13 @@ def test_runtime_github_providers_receive_independent_selected_clients(allowlist
 def test_registered_factories_return_protocol_implementations():
     input_source = INPUT_PROVIDERS.create("github_polling", {"interval": 30})
     executor = EXECUTOR_PROVIDERS.create("opencode")
+    codex = EXECUTOR_PROVIDERS.create("codex")
     workspace = WORKSPACE_PROVIDERS.create("git")
     destination = DESTINATION_PROVIDERS.create("github")
 
     assert isinstance(input_source, InputSource)
     assert isinstance(executor, Executor)
+    assert isinstance(codex, Executor)
     assert isinstance(workspace, WorkspaceManager)
     assert isinstance(destination, Destination)
     assert input_source.poll() == []
@@ -189,6 +193,31 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
     assert runtime.executor.options == {"timeout": 10}
     assert runtime.workspace_manager.options == {"root": "/tmp/workspaces"}
     assert runtime.destination.options == {"draft": True}
+
+
+def test_compose_runtime_builds_codex_executor(allowlist):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "pipeline:\n  execution:\n    executor:\n      type: codex\n      timeout: 10\n"
+    )
+    config.load_pipeline_config.cache_clear()
+
+    runtime = compose_runtime()
+
+    assert isinstance(runtime.executor, CodexExecutor)
+    assert runtime.executor.options == {"timeout": 10}
+
+
+def test_compose_review_builds_codex_executor(allowlist):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "pipeline:\n  review:\n    executor:\n      type: codex\n"
+    )
+    config.load_pipeline_config.cache_clear()
+
+    runtime = compose_review_runtime()
+
+    assert isinstance(runtime.runtime.executor, CodexReviewExecutor)
 
 
 def test_composition_uses_independent_execution_and_review_models(allowlist):

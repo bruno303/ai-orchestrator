@@ -221,7 +221,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="orchestrator", description="GitHub Issue -> OpenCode -> PR")
+    parser = argparse.ArgumentParser(prog="orchestrator", description="GitHub Issue -> agent -> PR")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run a task for an issue (owner/repo#number)")
     run.add_argument("issue_ref"); run.add_argument("--force", action="store_true", help="run even if ai-developed is present"); run.set_defaults(func=cmd_run)

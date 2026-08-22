@@ -47,7 +47,7 @@ class InputEvent:
 @dataclass
 class ExecutionRequest:
     task_id: str; workspace: str; prompt: str; agent: str
-    model: str | None = None; variant: str | None = None; context: Context = field(default_factory=Context)
+    model: str | None = None; variant: str | None = None; context: Context = field(default_factory=Context); log_file: str = ""
     def to_dict(self) -> dict[str, Any]: return _json_dict(self)
 
 

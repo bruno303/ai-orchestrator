@@ -86,6 +86,8 @@ def test_execution_runtime_exposes_independent_steps(tmp_path, monkeypatch):
     assert workspace_manager.requests[0].purpose == "execution"
     assert len(workspace_manager.cleaned) == 1
     assert executor.requests[1].context.namespace("opencode")["session"] == "s1"
+    assert executor.requests[0].log_file.endswith("plan.log")
+    assert "log_file" not in executor.requests[0].context.namespace("opencode")
 
 
 def test_execution_runtime_does_not_retry_executor_failures(tmp_path):

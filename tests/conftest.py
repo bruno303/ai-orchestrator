@@ -1,4 +1,4 @@
-"""Test fixtures: isolated dirs, allowlist config, fake opencode binary."""
+"""Test fixtures: isolated dirs, allowlist config, fake agent binaries."""
 
 from __future__ import annotations
 
@@ -26,6 +26,8 @@ _ORCHESTRATOR_ENVIRONMENT = (
     "ORCHESTRATOR_MODEL_REVIEW_VARIANT",
     "ORCHESTRATOR_OPENCODE_BIN",
     "ORCHESTRATOR_OPENCODE_TIMEOUT",
+    "ORCHESTRATOR_CODEX_BIN",
+    "ORCHESTRATOR_CODEX_TIMEOUT",
     "ORCHESTRATOR_POLL_INTERVAL",
     "ORCHESTRATOR_REPOS_DIR",
     "ORCHESTRATOR_SKILL_SUBAGENT_PLAN_EXECUTION",
@@ -50,6 +52,7 @@ os.environ["ORCHESTRATOR_REPOS_DIR"] = str(_TMP / "repos")
 os.environ["ORCHESTRATOR_WORKSPACES_DIR"] = str(_TMP / "workspaces")
 os.environ["ORCHESTRATOR_CONFIG_FILE"] = str(_TMP / "config.yaml")
 os.environ["ORCHESTRATOR_OPENCODE_BIN"] = str(_TMP / "bin" / "fake-opencode")
+os.environ["ORCHESTRATOR_CODEX_BIN"] = str(_TMP / "bin" / "fake-codex")
 os.environ["ORCHESTRATOR_LOAD_DOTENV"] = "0"
 
 from orchestrator.main import config  # noqa: E402
@@ -122,12 +125,94 @@ exit 0
 """
 
 
+FAKE_CODEX = r"""#!/usr/bin/env bash
+# Fake codex: records exec options and dispatches on prompt content.
+set -e
+DIR="."
+MODEL=""
+REASONING=""
+SANDBOX=""
+APPROVAL=""
+PROMPT=""
+ARGS_FILE="${FAKE_CODEX_ARGS_FILE:-}"
+MODEL_FILE="${FAKE_CODEX_MODEL_FILE:-}"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    exec) shift ;;
+    --cd|-C) DIR="$2"; shift 2 ;;
+    --sandbox) SANDBOX="$2"; shift 2 ;;
+    -m|--model) MODEL="$2"; shift 2 ;;
+    -c|--config)
+      VALUE="$2"
+      KEY="${VALUE%%=*}"
+      VALUE="${VALUE#*=}"
+      VALUE="${VALUE#\"}"
+      VALUE="${VALUE%\"}"
+      if [[ "$KEY" == "model_reasoning_effort" ]]; then REASONING="$VALUE"; fi
+      if [[ "$KEY" == "approval_policy" ]]; then APPROVAL="$VALUE"; fi
+      shift 2
+      ;;
+    *) PROMPT="$1"; shift ;;
+  esac
+done
+if [[ -n "$ARGS_FILE" ]]; then
+  echo "dir=$DIR sandbox=$SANDBOX approval=$APPROVAL" >> "$ARGS_FILE"
+fi
+if [[ -n "$MODEL_FILE" ]]; then
+  echo "model=$MODEL reasoning=$REASONING" >> "$MODEL_FILE"
+fi
+if [[ -n "$FAKE_CODEX_SLEEP" ]]; then sleep "$FAKE_CODEX_SLEEP"; fi
+if [[ -n "$FAKE_CODEX_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
+cd "$DIR"
+case "$PROMPT" in
+  *"ONLY valid JSON"*)
+    echo '{"verdict":"comment","summary":"ok","findings":[],"checks":[]}'
+    ;;
+  *"planning the implementation"*|*"planning work item"*)
+    mkdir -p .agents/plans
+    cat > .agents/plans/plan.md <<'EOF'
+# Plan: test feature
+
+## Task 1: implement
+**Files:** work.txt
+**Dependencies:** none
+
+Append a line to work.txt.
+EOF
+    echo "Plan written to .agents/plans/plan.md"
+    ;;
+  *"implementing GitHub issue"*|*"Implement work item"*)
+    echo "implemented" >> work.txt
+    echo "Implementation done."
+    ;;
+  *"test suite"*)
+    echo "Tests pass."
+    ;;
+  *)
+    echo "unknown prompt: $PROMPT"
+    exit 1
+    ;;
+esac
+exit 0
+"""
+
+
 @pytest.fixture(scope="session", autouse=True)
 def fake_opencode_bin() -> Path:
     bin_dir = Path(os.environ["ORCHESTRATOR_OPENCODE_BIN"]).parent
     bin_dir.mkdir(parents=True, exist_ok=True)
     script = bin_dir / "fake-opencode"
     script.write_text(FAKE_OPENCODE)
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fake_codex_bin() -> Path:
+    bin_dir = Path(os.environ["ORCHESTRATOR_CODEX_BIN"]).parent
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "fake-codex"
+    script.write_text(FAKE_CODEX)
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     return script
 
@@ -205,5 +290,9 @@ def clean_env(monkeypatch):
         "FAKE_OPCODE_SLEEP",
         "FAKE_OPCODE_ARGS_FILE",
         "FAKE_OPCODE_MODEL_FILE",
+        "FAKE_CODEX_FAIL",
+        "FAKE_CODEX_SLEEP",
+        "FAKE_CODEX_ARGS_FILE",
+        "FAKE_CODEX_MODEL_FILE",
     ):
         monkeypatch.delenv(var, raising=False)

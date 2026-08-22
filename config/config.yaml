@@ -1,5 +1,6 @@
-# OpenCode model selection is independent for issue execution and pull-request
-# review. Omit either section to use OpenCode's default model for that workflow.
+# Model selection is independent for issue execution and pull-request review.
+# Omit either section to use the selected provider's default model for that
+# workflow. Codex maps variant to model_reasoning_effort.
 model:
   execution:
     name: openai/gpt-5.6-luna
@@ -8,10 +9,11 @@ model:
     name: openai/gpt-5.6-luna
     variant: medium
 
-# Providers for the current GitHub -> OpenCode -> Git -> GitHub workflow.
+# Providers for the current GitHub -> agent -> Git -> GitHub workflow.
 # GitHub-facing and Git providers accept auth: bot (the default) or user.
 # This sample uses a local user for execution and the GitHub App bot for review.
 # Register new adapter types in main/providers.py before selecting them here.
+# Change either executor type to codex to use the Codex CLI provider.
 pipeline:
   execution:
     input_source: {type: github_polling, auth: user}

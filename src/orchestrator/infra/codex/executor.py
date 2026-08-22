@@ -1,67 +1,76 @@
-"""Wrapper around `opencode run` (PLAN.md section 9)."""
+"""Wrappers around the Codex CLI provider."""
 
 from __future__ import annotations
 
+import json
+import os
 import select
+import shutil
 import subprocess
 import time
-import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orchestrator.domain import ReviewOutcome
 from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest
-from orchestrator.infra.review.parser import extract_review_json, parse_review_output
+from orchestrator.domain import ReviewOutcome
+from orchestrator.infra.review.parser import parse_review_output
 
 
-_extract_review_json = extract_review_json
-
-
-class OpenCodeError(ExecutorError):
+class CodexError(ExecutorError):
     pass
 
 
 @dataclass
-class OpenCodeResult:
+class CodexResult:
     exit_code: int
     stdout: str
     stderr: str
     duration_seconds: float
 
 
-def _find_opencode() -> str:
-    found = shutil.which("opencode")
+def _find_codex() -> str:
+    """Resolve the Codex binary from PATH and common local install locations."""
+    found = shutil.which("codex")
     if found:
         return found
-    for candidate in (Path.home() / ".opencode" / "bin" / "opencode", Path.home() / ".local" / "bin" / "opencode"):
+    for candidate in (
+        Path.home() / ".codex" / "bin" / "codex",
+        Path.home() / ".local" / "bin" / "codex",
+    ):
         if candidate.is_file():
             return str(candidate)
-    return "opencode"
+    return "codex"
 
 
-class OpenCodeExecutor:
-    """Executor implementation backed by the existing OpenCode wrapper."""
+def _config_override(name: str, value: str) -> str:
+    return f"{name}={json.dumps(value)}"
 
-    provider_type = "opencode"
+
+class CodexExecutor:
+    """Execute issue phases through ``codex exec``."""
+
+    provider_type = "codex"
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
-        options = {**self.options, **dict(request.context.namespace("opencode"))}
+        options = {**self.options, **dict(request.context.namespace("codex"))}
+        log_value = request.log_file or options.get("log_file")
         try:
-            result = run_opencode(
+            result = run_codex(
                 workspace=request.workspace,
                 agent=request.agent,
                 prompt=request.prompt,
-                log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
+                log_file=Path(log_value) if log_value else None,
                 model=request.model,
                 variant=request.variant,
                 timeout=options.get("timeout"),
+                sandbox=options.get("sandbox", "workspace-write"),
+                approval_policy=options.get("approval_policy", "never"),
             )
-        except OpenCodeError as exc:
+        except CodexError as exc:
             raise ExecutorError(str(exc)) from exc
         return ExecutionResult(
             success=result.exit_code == 0,
@@ -73,31 +82,39 @@ class OpenCodeExecutor:
         )
 
 
-class OpenCodeReviewExecutor:
-    """Run the default agent and admit only the documented JSON result."""
+class CodexReviewExecutor:
+    """Run a read-only Codex review and validate its structured response."""
 
-    provider_type = "opencode"
+    provider_type = "codex"
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
 
     def execute(self, request: ReviewRequest) -> ReviewOutcome:
-        options = {**self.options, **dict(request.context.namespace("opencode"))}
+        options = {**self.options, **dict(request.context.namespace("codex"))}
         model_config = options.get("model_config")
-        result = run_opencode(
-            request.workspace, None, request.prompt,
-            log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
+        log_value = request.log_file or options.get("log_file")
+        result = run_codex(
+            request.workspace,
+            None,
+            request.prompt,
+            log_file=Path(log_value) if log_value else None,
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
             timeout=options.get("timeout"),
+            sandbox=options.get("sandbox", "read-only"),
+            approval_policy=options.get("approval_policy", "never"),
         )
         if result.exit_code != 0:
-            return ReviewOutcome(False, summary=result.stdout or result.stderr,
-                                 context=request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
+            return ReviewOutcome(
+                False,
+                summary=result.stdout or result.stderr,
+                context=request.context.merge_namespace("codex", {"exit_code": result.exit_code}),
+            )
         return parse_review_output(result.stdout, request.context)
 
 
-def run_opencode(
+def run_codex(
     workspace: str | Path,
     agent: str | None,
     prompt: str,
@@ -106,30 +123,31 @@ def run_opencode(
     log_file: Path | None = None,
     model: str | None = None,
     variant: str | None = None,
-) -> OpenCodeResult:
-    """Run `opencode run [--agent <agent>] --auto` in the given workspace.
-
-    Output is streamed live to `log_file` (if given) while also captured for the
-    returned result. `model`/`variant` are passed through as `-m`/`--variant`.
-    """
+    sandbox: str = "workspace-write",
+    approval_policy: str = "never",
+) -> CodexResult:
+    """Run ``codex exec`` in a workspace while streaming its output."""
     workspace = Path(workspace)
     if not workspace.exists():
-        raise OpenCodeError(f"workspace does not exist: {workspace}")
+        raise CodexError(f"workspace does not exist: {workspace}")
+
     cmd = [
-        os.environ.get("ORCHESTRATOR_OPENCODE_BIN") or _find_opencode(),
-        "run",
-        "--auto",
-        "--dir",
+        os.environ.get("ORCHESTRATOR_CODEX_BIN") or _find_codex(),
+        "exec",
+        "--cd",
         str(workspace),
+        "--sandbox",
+        sandbox,
+        "-c",
+        _config_override("approval_policy", approval_policy),
     ]
-    if agent is not None:
-        cmd[2:2] = ["--agent", agent]
     if model is not None:
         cmd += ["-m", model]
     if variant is not None:
-        cmd += ["--variant", variant]
+        cmd += ["-c", _config_override("model_reasoning_effort", variant)]
     cmd.append(prompt)
-    timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
+
+    timeout = int(timeout or os.environ.get("ORCHESTRATOR_CODEX_TIMEOUT", str(60 * 60)))
     start = time.monotonic()
     try:
         proc = subprocess.Popen(
@@ -141,22 +159,24 @@ def run_opencode(
             bufsize=1,
         )
     except FileNotFoundError as exc:
-        raise OpenCodeError(f"opencode binary not found: {cmd[0]}") from exc
+        raise CodexError(f"codex binary not found: {cmd[0]}") from exc
 
     lines: list[str] = []
     fh = None
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         fh = log_file.open("a")
-        header = "[orchestrator] opencode run"
+        header = f"[orchestrator] codex exec --cd {workspace} --sandbox {sandbox}"
+        header += f" -c approval_policy={approval_policy}"
         if agent is not None:
-            header += f" --agent {agent}"
+            header += f" agent={agent}"
         if model is not None:
             header += f" --model {model}"
         if variant is not None:
-            header += f" --variant {variant}"
+            header += f" -c model_reasoning_effort={variant}"
         fh.write(header + "\n")
         fh.flush()
+
     deadline = time.monotonic() + timeout
     try:
         assert proc.stdout is not None
@@ -165,12 +185,12 @@ def run_opencode(
             if remaining <= 0:
                 proc.kill()
                 proc.wait()
-                raise OpenCodeError(f"opencode run timed out after {timeout}s")
+                raise CodexError(f"codex exec timed out after {timeout}s")
             readable, _, _ = select.select([proc.stdout], [], [], remaining)
             if not readable:
                 proc.kill()
                 proc.wait()
-                raise OpenCodeError(f"opencode run timed out after {timeout}s")
+                raise CodexError(f"codex exec timed out after {timeout}s")
             line = proc.stdout.readline()
             if not line:
                 break
@@ -182,7 +202,7 @@ def run_opencode(
     except subprocess.TimeoutExpired as exc:
         proc.kill()
         proc.wait()
-        raise OpenCodeError(f"opencode run timed out after {timeout}s") from exc
+        raise CodexError(f"codex exec timed out after {timeout}s") from exc
     except KeyboardInterrupt:
         proc.kill()
         proc.wait()
@@ -190,7 +210,8 @@ def run_opencode(
     finally:
         if fh is not None:
             fh.close()
-    return OpenCodeResult(
+
+    return CodexResult(
         exit_code=proc.returncode,
         stdout="".join(lines),
         stderr="",

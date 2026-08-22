@@ -89,12 +89,20 @@ def _input_factory(options):
     return source
 
 
-def _executor_factory(options):
+def _opencode_executor_factory(options):
     if not options.pop("_runtime", False):
         return _PlaceholderExecutor(options)
     from orchestrator.infra.opencode.executor import OpenCodeExecutor
 
     return OpenCodeExecutor(options=options)
+
+
+def _codex_executor_factory(options):
+    if not options.pop("_runtime", False):
+        return _PlaceholderExecutor(options)
+    from orchestrator.infra.codex.executor import CodexExecutor
+
+    return CodexExecutor(options=options)
 
 
 def _workspace_factory(options):
@@ -124,7 +132,10 @@ def _destination_factory(options):
 
 
 INPUT_PROVIDERS = ProviderRegistry({"github_polling": _input_factory}, InputSource)
-EXECUTOR_PROVIDERS = ProviderRegistry({"opencode": _executor_factory}, Executor)
+EXECUTOR_PROVIDERS = ProviderRegistry({
+    "codex": _codex_executor_factory,
+    "opencode": _opencode_executor_factory,
+}, Executor)
 WORKSPACE_PROVIDERS = ProviderRegistry({"git": _workspace_factory}, WorkspaceManager)
 DESTINATION_PROVIDERS = ProviderRegistry({"github": _destination_factory}, Destination)
 
@@ -170,12 +181,20 @@ def _review_input_factory(options):
     )
 
 
-def _review_executor_factory(options):
+def _opencode_review_executor_factory(options):
     if not options.pop("_runtime", False):
         return _PlaceholderReviewExecutor(options)
     from orchestrator.infra.opencode.executor import OpenCodeReviewExecutor
 
     return OpenCodeReviewExecutor(options=options)
+
+
+def _codex_review_executor_factory(options):
+    if not options.pop("_runtime", False):
+        return _PlaceholderReviewExecutor(options)
+    from orchestrator.infra.codex.executor import CodexReviewExecutor
+
+    return CodexReviewExecutor(options=options)
 
 
 def _review_destination_factory(options):
@@ -192,6 +211,9 @@ def _review_destination_factory(options):
 
 
 REVIEW_INPUT_PROVIDERS = ProviderRegistry({"github_polling": _review_input_factory}, ReviewInputSource)
-REVIEW_EXECUTOR_PROVIDERS = ProviderRegistry({"opencode": _review_executor_factory}, ReviewExecutor)
+REVIEW_EXECUTOR_PROVIDERS = ProviderRegistry({
+    "codex": _codex_review_executor_factory,
+    "opencode": _opencode_review_executor_factory,
+}, ReviewExecutor)
 REVIEW_WORKSPACE_PROVIDERS = ProviderRegistry({"git": _workspace_factory}, WorkspaceManager)
 REVIEW_DESTINATION_PROVIDERS = ProviderRegistry({"github": _review_destination_factory}, ReviewDestination)
