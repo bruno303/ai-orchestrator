@@ -67,6 +67,13 @@ Set `ORCHESTRATOR_MODEL_EXECUTION_NAME` / `ORCHESTRATOR_MODEL_EXECUTION_VARIANT`
 or `ORCHESTRATOR_MODEL_REVIEW_NAME` / `ORCHESTRATOR_MODEL_REVIEW_VARIANT` to
 override the corresponding `config.yaml` values through the environment.
 
+Select the executor independently for issue execution and pull-request review
+with `ORCHESTRATOR_EXECUTOR_EXECUTION` and `ORCHESTRATOR_EXECUTOR_REVIEW`.
+Each accepts `opencode` or `codex` and overrides only the matching
+`pipeline.*.executor.type` value; any executor options in `config.yaml` remain
+in effect. For example, use `ORCHESTRATOR_EXECUTOR_EXECUTION=codex` while
+keeping the review executor configured in YAML.
+
 OpenCode receives `name` and `variant` as its model flags. Codex receives
 `name` as `codex exec -m` and maps `variant` to the Codex
 `model_reasoning_effort` setting.
@@ -88,6 +95,8 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
 | `ORCHESTRATOR_CODEX_BIN` | `codex` |
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
+| `ORCHESTRATOR_EXECUTOR_EXECUTION` | `pipeline.execution.executor.type` |
+| `ORCHESTRATOR_EXECUTOR_REVIEW` | `pipeline.review.executor.type` |
 | `ORCHESTRATOR_MODEL_EXECUTION_NAME` | `model.execution.name` |
 | `ORCHESTRATOR_MODEL_EXECUTION_VARIANT` | `model.execution.variant` |
 | `ORCHESTRATOR_MODEL_REVIEW_NAME` | `model.review.name` |

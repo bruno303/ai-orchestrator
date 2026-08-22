@@ -116,7 +116,10 @@ _PROVIDER_DEFAULTS = {
 
 
 def _provider_config(
-    key: str, pipeline: dict[str, Any], registry: ProviderRegistry
+    key: str,
+    pipeline: dict[str, Any],
+    registry: ProviderRegistry,
+    environment_variable: str | None = None,
 ) -> ProviderConfig:
     raw = pipeline.get(key) or {}
     if isinstance(raw, str):
@@ -124,6 +127,8 @@ def _provider_config(
     else:
         provider_type = raw.get("type", _PROVIDER_DEFAULTS[key])
         options = {k: v for k, v in raw.items() if k != "type"}
+    if environment_variable is not None:
+        provider_type = os.environ.get(environment_variable, provider_type)
     registry.get(provider_type)
     return ProviderConfig(type=provider_type, options=options)
 
@@ -131,7 +136,12 @@ def _provider_config(
 def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineConfig:
     return ExecutionPipelineConfig(
         input_source=_provider_config("input_source", pipeline, INPUT_PROVIDERS),
-        executor=_provider_config("executor", pipeline, EXECUTOR_PROVIDERS),
+        executor=_provider_config(
+            "executor",
+            pipeline,
+            EXECUTOR_PROVIDERS,
+            "ORCHESTRATOR_EXECUTOR_EXECUTION",
+        ),
         workspace_manager=_provider_config("workspace_manager", pipeline, WORKSPACE_PROVIDERS),
         destination=_provider_config("destination", pipeline, DESTINATION_PROVIDERS),
     )
@@ -140,7 +150,12 @@ def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineCon
 def _review_pipeline_config(pipeline: dict[str, Any]) -> ReviewPipelineConfig:
     return ReviewPipelineConfig(
         input_source=_provider_config("input_source", pipeline, REVIEW_INPUT_PROVIDERS),
-        executor=_provider_config("executor", pipeline, REVIEW_EXECUTOR_PROVIDERS),
+        executor=_provider_config(
+            "executor",
+            pipeline,
+            REVIEW_EXECUTOR_PROVIDERS,
+            "ORCHESTRATOR_EXECUTOR_REVIEW",
+        ),
         workspace_manager=_provider_config("workspace_manager", pipeline, REVIEW_WORKSPACE_PROVIDERS),
         destination=_provider_config("destination", pipeline, REVIEW_DESTINATION_PROVIDERS),
     )

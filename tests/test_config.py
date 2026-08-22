@@ -195,3 +195,45 @@ def test_pipeline_config_accepts_codex_for_execution_and_review(allowlist):
     assert pipeline.execution.executor.options == {"sandbox": "workspace-write"}
     assert pipeline.review.executor.type == "codex"
     assert pipeline.review.executor.options == {"sandbox": "read-only"}
+
+
+def test_pipeline_executor_environment_overrides_are_scoped_and_preserve_options(allowlist, monkeypatch):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    executor: {type: opencode, sandbox: workspace-write}\n"
+        "  review:\n"
+        "    executor: {type: codex, sandbox: read-only}\n"
+    )
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_EXECUTION", "codex")
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+
+    assert pipeline.execution.executor.type == "codex"
+    assert pipeline.execution.executor.options == {"sandbox": "workspace-write"}
+    assert pipeline.review.executor.type == "codex"
+    assert pipeline.review.executor.options == {"sandbox": "read-only"}
+
+
+def test_pipeline_executor_environment_overrides_can_select_each_workflow(allowlist, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_EXECUTION", "codex")
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_REVIEW", "opencode")
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+
+    assert pipeline.execution.executor.type == "codex"
+    assert pipeline.review.executor.type == "opencode"
+
+
+def test_pipeline_executor_environment_override_rejects_unknown_provider(allowlist, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_EXECUTION", "unknown")
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "unknown provider type: unknown" in str(exc)
+    else:
+        raise AssertionError("expected unknown provider error")
