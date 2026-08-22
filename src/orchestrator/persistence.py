@@ -62,53 +62,23 @@ class TaskStore:
         """
 
     def _ensure_tasks_schema(self) -> None:
-        """Create or transactionally migrate tasks to opaque string identity."""
+        """Create the current task schema; old databases must be recreated."""
         exists = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
         ).fetchone()
-        if not exists:
-            self.conn.execute(self._create_tasks_sql())
-            return
-        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(tasks)")}
         desired = {
             "task_id", "repository", "status", "workspace", "branch", "input_provider",
             "output_provider", "external_id", "publication_url", "error", "current_node",
             "node_started_at", "created_at", "updated_at",
         }
-        if columns == desired:
+        if not exists:
+            self.conn.execute(self._create_tasks_sql())
             return
-
-        def value(name: str, fallback: str = "NULL") -> str:
-            return name if name in columns else fallback
-
-        external_id = value("external_id")
-        if "pr_number" in columns:
-            external_id = f"COALESCE({external_id}, CAST(pr_number AS TEXT))"
-        try:
-            self.conn.execute("BEGIN")
-            self.conn.execute("DROP TABLE IF EXISTS tasks_v2")
-            self.conn.execute(self._create_tasks_sql("tasks_v2"))
-            self.conn.execute(
-                f"""
-                INSERT INTO tasks_v2 (
-                    task_id, repository, status, workspace, branch, input_provider,
-                    output_provider, external_id, publication_url, error, current_node,
-                    node_started_at, created_at, updated_at
-                )
-                SELECT task_id, repository, status, {value('workspace')}, {value('branch')},
-                       {value('input_provider')}, {value('output_provider')}, {external_id},
-                       {value('publication_url')}, {value('error')}, {value('current_node')},
-                       {value('node_started_at')}, {value('created_at', "datetime('now')")},
-                       {value('updated_at', "datetime('now')")}
-                FROM tasks
-                """
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(tasks)")}
+        if columns != desired:
+            raise PersistenceError(
+                "existing database uses an unsupported schema; remove it and start fresh"
             )
-            self.conn.execute("DROP TABLE tasks")
-            self.conn.execute("ALTER TABLE tasks_v2 RENAME TO tasks")
-            self.conn.commit()
-        except sqlite3.Error:
-            self.conn.rollback()
-            raise
 
     def _safe_commit(self) -> None:
         """Commit, converting transaction conflicts into a clear PersistenceError."""
@@ -148,7 +118,6 @@ class TaskStore:
         workspace: str | None = None,
         branch: str | None = None,
         external_id: str | None = None,
-        pr_number: int | None = None,
         error: str | None = None,
         input_provider: str | None = None,
         output_provider: str | None = None,
@@ -165,8 +134,6 @@ class TaskStore:
         if branch is not None:
             fields.append("branch = ?")
             values.append(branch)
-        if external_id is None and pr_number is not None:
-            external_id = str(pr_number)
         if external_id is not None:
             fields.append("external_id = ?")
             values.append(external_id)
@@ -230,10 +197,6 @@ class TaskStore:
         if not row:
             return None
         result = dict(row)
-        result["pr_number"] = (
-            int(result["external_id"])
-            if result.get("external_id") and str(result["external_id"]).isdigit() else None
-        )
         return result
 
     def list_tasks(self) -> list[dict]:
@@ -241,10 +204,6 @@ class TaskStore:
         results = []
         for row in rows:
             value = dict(row)
-            value["pr_number"] = (
-                int(value["external_id"])
-                if value.get("external_id") and str(value["external_id"]).isdigit() else None
-            )
             results.append(value)
         return results
 

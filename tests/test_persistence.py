@@ -7,7 +7,10 @@ import sqlite3
 from orchestrator.persistence import TaskStore
 
 
-def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
+def test_existing_database_schema_must_be_fresh(tmp_path):
+    import pytest
+    from orchestrator.persistence import PersistenceError
+
     db = tmp_path / "old.sqlite"
     conn = sqlite3.connect(db)
     conn.execute(
@@ -19,17 +22,8 @@ def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
     conn.commit()
     conn.close()
 
-    store = TaskStore(db)
-    store.update_task("r#1", input_provider="legacy", output_provider="github")
-    row = store.get_task("r#1")
-    assert row["task_id"] == "r#1"
-    assert row["input_provider"] == "legacy"
-    assert row["output_provider"] == "github"
-    assert row["external_id"] == "19"
-    columns = {value[1] for value in store.conn.execute("PRAGMA table_info(tasks)")}
-    assert "issue_number" not in columns
-    assert "pr_number" not in columns
-    assert columns >= {"task_id", "repository", "external_id", "publication_url"}
+    with pytest.raises(PersistenceError, match="start fresh"):
+        TaskStore(db)
 
 
 def test_publication_url_is_persisted(tmp_path):

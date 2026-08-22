@@ -3,18 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
-
 from orchestrator.domain import Context, PublishedChange, PublishedReview, ReviewOutcome, ReviewTarget, WorkItem
 from orchestrator.providers import ExecutionResult, ReviewRequest, WorkspaceResult
-
-
-def _as_context(value: Context | dict[str, Any]) -> Context:
-    if isinstance(value, Context):
-        return value
-    if value and all(isinstance(item, dict) for item in value.values()):
-        return Context.from_dict(value)
-    return Context({"legacy": value}) if value else Context()
 
 
 @dataclass(frozen=True)
@@ -40,24 +30,6 @@ class WorkContext:
     @property
     def extra_context(self) -> tuple[str, ...]:
         return self.item.extra_context
-
-
-class IssueContext(WorkContext):
-    """Deprecated constructor adapter for pre-domain callers."""
-
-    def __init__(self, task_id: str, repository: str, legacy_number: int | None = None,
-                 title: str = "", body: str = "", extra_context: list[str] | None = None,
-                 provider_state: dict[str, Any] | None = None, work_item_id: str = "") -> None:
-        legacy = dict(provider_state or {})
-        data: dict[str, dict[str, Any]] = {}
-        if legacy_number is not None:
-            data["github"] = {"issue_number": legacy_number}
-        if legacy:
-            data["legacy"] = legacy
-        super().__init__(WorkItem(
-            work_item_id or task_id, repository, title, body, tuple(extra_context or ()),
-            context=Context(data),
-        ))
 
 
 @dataclass(frozen=True)
@@ -93,21 +65,11 @@ class PhaseResult:
     attempts: int
     context: Context
 
-    @property
-    def provider_state(self) -> dict[str, Any]:
-        data = self.context.to_dict()
-        return dict(next(iter(data.values()))) if len(data) == 1 else data
-
-
 @dataclass(frozen=True)
 class PlanRequest:
     work: WorkContext
     workspace: str
     context: Context = field(default_factory=Context)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "context", _as_context(self.context))
-
 
 @dataclass(frozen=True)
 class PlanResult:
@@ -122,13 +84,6 @@ class ImplementationRequest:
     workspace: str
     plan_path: str = ".agents/plans/plan.md"
     context: Context = field(default_factory=Context)
-    provider_state: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
-
-    def __post_init__(self) -> None:
-        value = self.context if self.context else self.provider_state
-        object.__setattr__(self, "context", _as_context(value))
-
-
 @dataclass(frozen=True)
 class ImplementationResult:
     summary: str
@@ -140,10 +95,6 @@ class TestRequest:
     work: WorkContext
     workspace: str
     context: Context = field(default_factory=Context)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "context", _as_context(self.context))
-
 
 @dataclass(frozen=True)
 class TestResult:

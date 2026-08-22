@@ -19,7 +19,7 @@ class GitWorkspaceManager:
         self.provider_type = "git"
 
     def prepare(self, request: WorkspaceRequest) -> WorkspaceResult:
-        git_context = {**self.options, **dict(request.context.namespace("git")), **request.provider_state}
+        git_context = {**self.options, **dict(request.context.namespace("git"))}
         repository_url = request.repository_url or git_context.get("repository_url")
         if not repository_url:
             raise git.GitError("workspace request requires a repository URL")
@@ -32,32 +32,24 @@ class GitWorkspaceManager:
             raise git.GitError(f"unknown workspace purpose: {request.purpose}")
         review = request.checkout_mode == "revision" or request.purpose == "review"
         branch = "" if review else request.branch or git_context.get("branch", "")
-        if not review and not branch:
-            legacy_checkout = workspace.legacy_task_checkout(request.task_id, request.repository)
-            if legacy_checkout is not None:
-                branch = legacy_checkout[0]
         workspace_value = request.workspace or git_context.get("workspace")
         if not workspace_value:
-            legacy_checkout = workspace.legacy_task_checkout(request.task_id, request.repository)
-            if request.purpose == "execution" and legacy_checkout is not None:
-                workspace_value = str(legacy_checkout[1])
-            else:
-                workspace_value = str(
-                    workspace.review_workspace(request.task_id)
-                    if review else workspace.task_workspace(request.task_id)
-                )
+            workspace_value = str(
+                workspace.review_workspace(request.task_id)
+                if review else workspace.task_workspace(request.task_id)
+            )
         if not review and not branch:
             branch = f"ai/{workspace.safe_task_token(request.task_id)[:80]}"
         workspace_path = Path(workspace_value)
         if review:
-            commit = request.revision or git_context.get("revision") or request.provider_state.get("head_sha")
+            commit = request.revision or git_context.get("revision")
             if not commit:
                 raise git.GitError("revision workspace requires a commit revision")
             git.fetch_commit(
                 repo_dir,
                 commit,
                 request.fetch_url or git_context.get("fetch_url")
-                or request.provider_state.get("head_clone_url") or "origin",
+                or "origin",
             )
             git.create_detached_worktree(repo_dir, workspace_path, commit)
         else:
@@ -75,14 +67,13 @@ class GitWorkspaceManager:
         return WorkspaceResult(
             workspace=str(workspace_path),
             branch=branch,
-            provider_state={},
             context=result_context,
             base_branch=base_branch,
         )
 
     def cleanup(self, result: WorkspaceResult) -> None:
-        provider_state = {**dict(result.context.namespace("git")), **result.provider_state}
-        repo_dir = Path(provider_state.get("repo_dir") or git.base_repo_dir(provider_state["repository"]))
+        git_context = dict(result.context.namespace("git"))
+        repo_dir = Path(git_context.get("repo_dir") or git.base_repo_dir(git_context["repository"]))
         git.remove_worktree(repo_dir, Path(result.workspace), result.branch)
         if Path(result.workspace).exists():
             shutil.rmtree(Path(result.workspace), ignore_errors=True)

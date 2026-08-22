@@ -159,7 +159,7 @@ def _reset_task(store: TaskStore, repository: str, issue_number: int, branch: st
         if table in tables:
             store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
     store.conn.commit()
-    ws = workspace.task_workspace(repository, issue_number)
+    ws = workspace.task_workspace(task_id)
     if ws.exists():
         git.remove_worktree(git.base_repo_dir(repository), ws, branch)
     store.conn.execute(
@@ -259,7 +259,7 @@ def cmd_reset(args: argparse.Namespace) -> None:
     if store.get_task(task_id) is None:
         sys.exit(_not_found_hint(task_id))
     branch = f"ai/issue-{issue_number}"
-    ws = workspace.task_workspace(repository, issue_number)
+    ws = workspace.task_workspace(task_id)
     if ws.exists():
         try:
             git.remove_worktree(git.base_repo_dir(repository), ws, branch)
@@ -286,12 +286,6 @@ def _result_external_id(result: dict) -> str | None:
     output = result.get("output")
     if isinstance(output, dict) and output.get("external_id") is not None:
         return str(output["external_id"])
-    if isinstance(output, dict):
-        legacy = output.get("provider_state") or {}
-        if legacy.get("pr_number") is not None:
-            return str(legacy["pr_number"])
-    if result.get("pr_number") is not None:
-        return str(result["pr_number"])
     return None
 
 
@@ -305,7 +299,6 @@ def _persist_result(store: TaskStore, result: dict) -> None:
         workspace=(result.get("workspace") or {}).get("path") if isinstance(result.get("workspace"), dict) else result.get("workspace"),
         branch=(result.get("workspace") or {}).get("branch") if isinstance(result.get("workspace"), dict) else result.get("branch"),
         external_id=external_id,
-        pr_number=int(external_id) if external_id and external_id.isdigit() else None,
         publication_url=publication_url,
         error=result.get("error") if status != state_mod.COMPLETED else None,
         input_provider=(result.get("input") or {}).get("provider"),
@@ -319,7 +312,6 @@ def _persist_result(store: TaskStore, result: dict) -> None:
         event="task_end",
         status=status,
         external_id=external_id,
-        pr_number=int(external_id) if external_id and external_id.isdigit() else None,
         publication_url=publication_url,
         error=(result.get("error") or "")[:200] if status != state_mod.COMPLETED else None,
     )

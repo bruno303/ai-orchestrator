@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from orchestrator import config, workspace
-from orchestrator.domain import Context
 from orchestrator.providers import ExecutorError, ExecutionRequest
 from orchestrator.runtime.errors import AgentExecutionError
 from orchestrator.runtime.models import AgentRequest, PhaseResult
@@ -46,11 +45,6 @@ class IssueAgentRunner:
                 agent=request.agent,
                 model=model,
                 variant=variant,
-                provider_state={
-                    key: value
-                    for namespace in previous_context.values()
-                    for key, value in namespace.items()
-                },
                 context=previous_context.merge_namespace("opencode", {
                     "log_file": str(log_path),
                     "detect_degenerate": config.MODEL_FALLBACK_ENABLED,
@@ -60,12 +54,12 @@ class IssueAgentRunner:
                 result = self.executor.execute(execution_request)
             except ExecutorError as exc:
                 if not exc.retryable:
-                    raise AgentExecutionError(str(exc), provider_state=previous_context.to_dict(), attempts=attempt) from exc
+                    raise AgentExecutionError(str(exc), context=previous_context, attempts=attempt) from exc
                 attempt += 1
                 if attempt > max_attempts:
                     raise AgentExecutionError(
                         f"{request.node} produced degenerate output after {max_attempts} attempts",
-                        provider_state=previous_context.to_dict(),
+                        context=previous_context,
                         attempts=max_attempts,
                     ) from exc
                 print(
@@ -75,10 +69,8 @@ class IssueAgentRunner:
                 )
                 continue
             except Exception as exc:
-                raise AgentExecutionError(str(exc), provider_state=previous_context.to_dict(), attempts=attempt) from exc
+                raise AgentExecutionError(str(exc), context=previous_context, attempts=attempt) from exc
             result_context = result.context
-            if not result_context and result.provider_state:
-                result_context = Context({"opencode": result.provider_state})
             context = previous_context.merged(result_context)
             print(
                 f"[{_now()}] {request.node}: finished in {result.duration_seconds:.0f}s "
@@ -92,7 +84,7 @@ class IssueAgentRunner:
                     if result.exit_code == 0
                     else f"opencode ({request.agent}) exited with {result.exit_code}"
                 )
-                raise AgentExecutionError(error, provider_state=context.to_dict(), attempts=attempt)
+                raise AgentExecutionError(error, context=context, attempts=attempt)
             return PhaseResult(result, attempt, context)
         raise AgentExecutionError(
             f"{request.node} produced degenerate output after {max_attempts} attempts",

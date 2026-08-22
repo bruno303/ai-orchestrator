@@ -35,3 +35,14 @@ class WorkItem:
         object.__setattr__(self, "extra_context", tuple(self.extra_context))
         if not isinstance(self.context, Context):
             object.__setattr__(self, "context", Context.from_dict(self.context))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "repository": self.repository,
+            "title": self.title,
+            "description": self.description,
+            "extra_context": list(self.extra_context),
+            "input_provider": self.input_provider,
+            "context": self.context.to_dict(),
+        }

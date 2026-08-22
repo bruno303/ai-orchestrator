@@ -14,6 +14,9 @@ class Artifact:
     kind: str = "file"
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {"path": self.path, "kind": self.kind, "metadata": self.metadata}
+
 
 @dataclass(frozen=True)
 class ChangeRequest:
@@ -26,6 +29,14 @@ class ChangeRequest:
     context: Context
     artifacts: tuple[Artifact, ...] = ()
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id, "repository": self.repository, "title": self.title,
+            "description": self.description, "source_ref": self.source_ref,
+            "target_ref": self.target_ref, "context": self.context.to_dict(),
+            "artifacts": [artifact.to_dict() for artifact in self.artifacts],
+        }
+
 
 @dataclass(frozen=True)
 class PublishedChange:
@@ -34,7 +45,8 @@ class PublishedChange:
     provider: str = ""
     context: Context = field(default_factory=Context)
 
-    @property
-    def number(self) -> int | None:
-        """Deprecated GitHub compatibility view; canonical identity is ``id``."""
-        return int(self.id) if self.id and self.id.isdigit() else None
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id, "url": self.url, "provider": self.provider,
+            "context": self.context.to_dict(),
+        }

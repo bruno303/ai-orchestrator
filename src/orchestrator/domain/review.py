@@ -29,35 +29,13 @@ class ReviewTarget:
         if not isinstance(self.context, Context):
             object.__setattr__(self, "context", Context.from_dict(self.context))
 
-    @property
-    def event_id(self) -> str:
-        """Deprecated event-wrapper alias."""
-        return self.id
-
-    @property
-    def task_id(self) -> str:
-        """Deprecated runtime request alias."""
-        return self.id
-
-    @property
-    def body(self) -> str:
-        return self.description
-
-    @property
-    def provider_state(self) -> dict[str, object]:
-        """Deprecated flat view for callers predating namespaced Context."""
-        github = dict(self.context.namespace("github"))
-        git = dict(self.context.namespace("git"))
-        if "pr_number" in github:
-            github["number"] = github["pr_number"]
-        if self.source_ref:
-            git.setdefault("head_ref", self.source_ref)
-        if self.target_ref:
-            git.setdefault("base_ref", self.target_ref)
-        if self.revision:
-            git.setdefault("head_sha", self.revision)
-        return {**git, **github}
-
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id, "repository": self.repository, "title": self.title,
+            "description": self.description, "source_ref": self.source_ref,
+            "target_ref": self.target_ref, "revision": self.revision,
+            "input_provider": self.input_provider, "context": self.context.to_dict(),
+        }
 
 @dataclass(frozen=True)
 class ReviewFinding:
@@ -76,6 +54,13 @@ class ReviewFinding:
             if side is not None and side not in {"LEFT", "RIGHT"}:
                 raise ValueError(f"invalid review finding side: {side}")
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "message": self.message, "severity": self.severity, "path": self.path,
+            "line": self.line, "side": self.side, "start_line": self.start_line,
+            "start_side": self.start_side,
+        }
+
 
 @dataclass(frozen=True)
 class ReviewCheck:
@@ -85,6 +70,9 @@ class ReviewCheck:
     def __post_init__(self) -> None:
         if self.status not in {"pass", "fail", "skip"}:
             raise ValueError(f"invalid review check status: {self.status}")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"name": self.name, "status": self.status}
 
 
 @dataclass(frozen=True)
@@ -104,6 +92,14 @@ class ReviewOutcome:
         if not isinstance(self.context, Context):
             object.__setattr__(self, "context", Context.from_dict(self.context))
 
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "success": self.success, "verdict": self.verdict, "summary": self.summary,
+            "findings": [finding.to_dict() for finding in self.findings],
+            "checks": [check.to_dict() for check in self.checks],
+            "context": self.context.to_dict(),
+        }
+
 
 @dataclass(frozen=True)
 class PublishedReview:
@@ -111,3 +107,9 @@ class PublishedReview:
     url: str | None = None
     provider: str = ""
     context: Context = field(default_factory=Context)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id, "url": self.url, "provider": self.provider,
+            "context": self.context.to_dict(),
+        }

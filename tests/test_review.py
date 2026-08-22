@@ -6,13 +6,14 @@ from types import SimpleNamespace
 from orchestrator import config, github
 from orchestrator.github_review import GitHubReviewDestination, GitHubReviewInputSource
 from orchestrator.opencode import OpenCodeResult, OpenCodeReviewExecutor
-from orchestrator.providers import ReviewEvent, ReviewRequest, ReviewResult
+from orchestrator.domain import Context, ReviewCheck, ReviewFinding, ReviewOutcome, ReviewTarget
+from orchestrator.providers import ReviewRequest
 from orchestrator.review import ReviewApplication, compose_review_runtime
 
 
 class FakeWorkspace:
     def prepare(self, request):
-        return type("Workspace", (), {"workspace": "/tmp/review", "branch": "", "provider_state": {}})()
+        return type("Workspace", (), {"workspace": "/tmp/review", "branch": "", "context": Context()})()
 
     def cleanup(self, result):
         self.cleaned = True
@@ -43,11 +44,14 @@ class FakeDestination:
 
 
 def test_review_application_cleans_up_and_publishes():
-    review_event = ReviewEvent("review:company/backend#4", "company/backend", provider_state={"number": 4, "head_ref": "feature", "base_ref": "main", "head_sha": "abc"})
+    review_event = ReviewTarget(
+        "review:company/backend#4", "company/backend", source_ref="feature",
+        target_ref="main", revision="abc", context=Context({"github": {"pr_number": 4}}),
+    )
     destination = FakeDestination()
-    app = ReviewApplication(FakeInput(review_event), FakeExecutor(ReviewResult(True, verdict="approve")), FakeWorkspace(), destination)
+    app = ReviewApplication(FakeInput(review_event), FakeExecutor(ReviewOutcome(True, verdict="approve")), FakeWorkspace(), destination)
     assert app.poll_once() == [review_event]
-    assert destination.published[0][0].task_id == "review:company/backend#4"
+    assert destination.published[0][0].id == "review:company/backend#4"
 
 
 def test_github_destination_labels_only_after_publication(monkeypatch):
@@ -60,9 +64,9 @@ def test_github_destination_labels_only_after_publication(monkeypatch):
         def add_pull_request_label(self, *args, **kwargs):
             calls.append("label")
 
-    request = ReviewRequest("review:company/backend#4", "company/backend", "/tmp", "p", {"number": 4, "changed_files": ["a.py"]})
+    target = ReviewTarget("review:company/backend#4", "company/backend", context=Context({"github": {"pr_number": 4, "changed_files": ["a.py"]}}))
     GitHubReviewDestination(github_client=GitHub()).publish(
-        request, ReviewResult(True, verdict="comment", summary="ok", provider_state={"findings": [{"path": "a.py", "line": 2, "message": "fix"}]})
+        target, ReviewOutcome(True, verdict="comment", summary="ok", findings=(ReviewFinding("fix", path="a.py", line=2),), context=target.context)
     )
     assert calls == ["review", "label"]
 
@@ -80,12 +84,12 @@ def test_github_destination_comments_on_self_authored_pr():
         def add_pull_request_label(self, *args, **kwargs):
             pass
 
-    request = ReviewRequest(
-        "review:r#1", "r", "/tmp", "p",
-        {"number": 1, "author_login": "app/bruno303-ai-agent-bot", "head_sha": "sha"},
+    target = ReviewTarget(
+        "review:r#1", "r", revision="sha",
+        context=Context({"github": {"pr_number": 1, "author_login": "app/bruno303-ai-agent-bot"}}),
     )
     GitHubReviewDestination(github_client=GitHub()).publish(
-        request, ReviewResult(True, verdict="request_changes", summary="needs work")
+        target, ReviewOutcome(True, verdict="request_changes", summary="needs work", context=target.context)
     )
 
     assert published[0][0][4] == "COMMENT"
@@ -99,9 +103,9 @@ def test_github_destination_does_not_label_on_publication_failure():
         def add_pull_request_label(self, *args, **kwargs):
             raise AssertionError("label must not be added")
 
-    request = ReviewRequest("review:r#1", "r", "/tmp", "p", {"number": 1})
+    target = ReviewTarget("review:r#1", "r", context=Context({"github": {"pr_number": 1}}))
     try:
-        GitHubReviewDestination(github_client=GitHub()).publish(request, ReviewResult(True, verdict="comment"))
+        GitHubReviewDestination(github_client=GitHub()).publish(target, ReviewOutcome(True, verdict="comment", context=target.context))
     except RuntimeError:
         pass
     else:
@@ -110,19 +114,19 @@ def test_github_destination_does_not_label_on_publication_failure():
 
 def test_review_poll_continues_after_cleanup_failure():
     events = [
-        ReviewEvent(f"review:r#{number}", "r", provider_state={"number": number})
+        ReviewTarget(f"review:r#{number}", "r", context=Context({"github": {"pr_number": number}}))
         for number in (1, 2)
     ]
 
     class Workspace(FakeWorkspace):
         def prepare(self, request):
-            return type("Workspace", (), {"workspace": "/tmp/review", "branch": "", "provider_state": {}})()
+            return type("Workspace", (), {"workspace": "/tmp/review", "branch": "", "context": Context()})()
 
         def cleanup(self, result):
             raise RuntimeError("cleanup failed")
 
     destination = FakeDestination()
-    app = ReviewApplication(type("Input", (), {"poll": lambda self: events})(), FakeExecutor(ReviewResult(True, verdict="comment")), Workspace(), destination)
+    app = ReviewApplication(type("Input", (), {"poll": lambda self: events})(), FakeExecutor(ReviewOutcome(True, verdict="comment")), Workspace(), destination)
     assert app.poll_once() == events
     assert len(destination.published) == 2
 
@@ -143,7 +147,7 @@ def test_review_runtime_uses_registries_and_store(monkeypatch):
             return {
                 "input": type("Input", (), {"poll": lambda self: []})(),
                 "executor": type("Executor", (), {"execute": lambda self, request: ReviewResult(False)})(),
-                "workspace": type("Workspace", (), {"prepare": lambda self, request: None, "cleanup": lambda self, result: None})(),
+                    "workspace": type("Workspace", (), {"prepare": lambda self, request: None, "cleanup": lambda self, result: None})(),
                 "destination": type("Destination", (), {"publish": lambda self, request, result: None})(),
             }[provider_type]
 
@@ -167,7 +171,7 @@ def test_github_input_skips_broken_pr_metadata_and_continues():
 
     source = GitHubReviewInputSource(Client(), SimpleNamespace(allowed_repositories=lambda: ["r"]))
     events = source.poll()
-    assert [event.provider_state["number"] for event in events] == [2]
+    assert [event.context.namespace("github")["pr_number"] for event in events] == [2]
 
 
 def test_github_review_input_uses_https_repository_url():
@@ -198,16 +202,14 @@ def test_github_destination_demotes_invalid_locations_and_validates_start_side()
         def add_pull_request_label(self, *args):
             pass
 
-    request = ReviewRequest(
-        "review:r#1", "r", "/tmp", "p",
-        {"number": 1, "changed_files": ["a.py"], "changed_lines": {"a.py": {"RIGHT": [2], "LEFT": []}}},
-    )
-    result = ReviewResult(True, verdict="comment", comments=[
-        {"message": "valid", "path": "a.py", "line": 2},
-        {"message": "invalid", "path": "a.py", "line": 3},
-        {"message": "bad range", "path": "a.py", "line": 2, "start_line": 2, "start_side": "LEFT"},
-    ])
-    GitHubReviewDestination(github_client=Client()).publish(request, result)
+    context = Context({"github": {"pr_number": 1, "changed_files": ["a.py"], "changed_lines": {"a.py": {"RIGHT": [2], "LEFT": []}}}})
+    target = ReviewTarget("review:r#1", "r", context=context)
+    result = ReviewOutcome(True, verdict="comment", findings=(
+        ReviewFinding("valid", path="a.py", line=2),
+        ReviewFinding("invalid", path="a.py", line=3),
+        ReviewFinding("bad range", path="a.py", line=2, start_line=2, start_side="LEFT"),
+    ), context=context)
+    GitHubReviewDestination(github_client=Client()).publish(target, result)
     assert [comment["line"] for comment in published[0][3]] == [2]
     assert "invalid" in published[0][2]
     assert "bad range" in published[0][2]
@@ -217,7 +219,7 @@ def test_review_executor_rejects_invalid_structured_result(monkeypatch):
     monkeypatch.setattr("orchestrator.opencode.run_opencode", lambda *args, **kwargs: OpenCodeResult(0, json.dumps({
         "verdict": "comment", "summary": "x", "findings": [{"message": "x", "side": "middle"}], "checks": [],
     }), "", 0.1))
-    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", {"number": 1}))
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", Context()))
     assert not result.success
     assert "invalid structured" in result.summary
 
@@ -234,7 +236,7 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
 
     monkeypatch.setattr("orchestrator.opencode.run_opencode", run)
     monkeypatch.setattr(config, "MODEL_PRIMARY", config.ModelConfig("provider/model", "fast"))
-    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", Context()))
 
     assert result.success
     assert captured["args"][1] is None
@@ -253,7 +255,7 @@ def test_review_executor_accepts_transcript_before_json(monkeypatch):
         lambda *args, **kwargs: OpenCodeResult(0, transcript, "", 0.1),
     )
 
-    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", Context()))
 
     assert result.success
     assert result.verdict == "approve"
@@ -271,7 +273,7 @@ def test_review_executor_disables_degenerate_detection_without_fallback(monkeypa
     monkeypatch.setattr("orchestrator.opencode.run_opencode", run)
     monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", False)
 
-    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p"))
+    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", Context()))
 
     assert result.success
     assert captured["detect_degenerate"] is False

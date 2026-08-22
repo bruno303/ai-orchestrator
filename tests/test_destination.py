@@ -3,33 +3,32 @@
 from orchestrator import git
 from orchestrator.domain import ChangeRequest, Context, PublishedChange
 from orchestrator.github_destination import GitHubDestination
-from orchestrator.providers import PublicationRequest
 
 
 def test_destination_preserves_body_and_removes_existing_exact_closing_line():
     from orchestrator.github_destination import _body
 
-    assert _body(12, {}, "Summary\n\nCloses #12\n\nDetails") == "Closes #12\n\nSummary\n\nDetails"
+    assert _body(12, "Summary\n\nCloses #12\n\nDetails") == "Closes #12\n\nSummary\n\nDetails"
 
 
 def test_destination_does_not_treat_prefixed_issue_number_as_a_closing_line():
     from orchestrator.github_destination import _body
 
-    assert _body(12, {}, "Closes #123\n\nDetails") == "Closes #12\n\nCloses #123\n\nDetails"
+    assert _body(12, "Closes #123\n\nDetails") == "Closes #12\n\nCloses #123\n\nDetails"
 
 
 def test_destination_replaces_duplicate_exact_closing_lines():
     from orchestrator.github_destination import _body
 
     body = "Summary\n\nCloses #12\n\nDetails\n\nCloses #12"
-    assert _body(12, {}, body) == "Closes #12\n\nSummary\n\nDetails"
+    assert _body(12, body) == "Closes #12\n\nSummary\n\nDetails"
 
 
 def test_github_body_matches_issue_number_exactly_and_removes_duplicates():
     from orchestrator.github_destination import _body
 
     body = "Summary\n\nCloses #12\n\nCloses #123\n\nCloses #12\n\nDetails"
-    assert _body(12, {}, body) == "Closes #12\n\nSummary\n\nCloses #123\n\nDetails"
+    assert _body(12, body) == "Closes #12\n\nSummary\n\nCloses #123\n\nDetails"
 
 
 def test_destination_reuses_existing_pr_without_changing_body(monkeypatch, tmp_path):
@@ -48,14 +47,14 @@ def test_destination_reuses_existing_pr_without_changing_body(monkeypatch, tmp_p
         lambda repository, number, body: calls.append(("update", number, body)),
     )
     result = GitHubDestination().publish(
-        PublicationRequest(
-            "company/backend", "feat: x", "Closes #1", "ai/issue-1", "main",
-            provider_state={
-                "workspace": str(tmp_path), "issue_number": 1,
-            },
+        ChangeRequest(
+            "company/backend#1", "company/backend", "feat: x", "Closes #1",
+            "ai/issue-1", "main", Context({
+                "github": {"issue_number": 1}, "git": {"workspace": str(tmp_path)},
+            }),
         )
     )
-    assert result.number == 7
+    assert result.id == "7"
     assert calls[0] == ("push", "ai/issue-1")
     assert calls == [("push", "ai/issue-1")]
 

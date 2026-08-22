@@ -9,7 +9,6 @@ from langgraph.graph import END, START, StateGraph
 
 from orchestrator import state as state_mod
 from orchestrator.domain import Context, WorkItem
-from orchestrator.domain.legacy import work_item_from_legacy_state
 from orchestrator.providers import Destination, ExecutionResult, Executor, WorkspaceManager, WorkspaceResult
 from orchestrator.runtime import compose_execution_runtime
 from orchestrator.runtime.errors import RuntimeOperationError
@@ -49,7 +48,7 @@ def _item(state: TaskState) -> WorkItem:
             data.get("input_provider", value.get("provider", "")),
             Context.from_dict(data.get("context") or value.get("context") or {}),
         )
-    return work_item_from_legacy_state(state)
+    raise ValueError("workflow input is missing canonical work item data")
 
 
 def _work(state: TaskState) -> WorkContext:
@@ -104,9 +103,9 @@ def _runtime_error(exc: Exception) -> dict[str, Any]:
     if isinstance(exc, RuntimeOperationError):
         if exc.attempts is not None:
             updates["phase_attempts"] = exc.attempts
-        if exc.provider_state:
+        if exc.context:
             try:
-                updates["processing"] = {"context": Context.from_dict(exc.provider_state).to_dict()}
+                updates["processing"] = {"context": exc.context.to_dict()}
             except (TypeError, ValueError):
                 pass
     return updates
@@ -233,7 +232,7 @@ def cleanup(state: TaskState, manager: WorkspaceManager | None = None, runtime=N
         runtime.cleanup(CleanupRequest(
             _work(state).repository,
             WorkspaceResult(
-                current["path"], current["branch"], {},
+                current["path"], current["branch"],
                 Context.from_dict(current["context"]), current["base_branch"],
             ),
         ))

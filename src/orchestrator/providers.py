@@ -4,19 +4,16 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 import json
-from typing import Any, Callable, Mapping, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from orchestrator.domain import (
-    Artifact,
     ChangeRequest,
     Context,
-    ContextPresenter,
     PublishedChange,
     PublishedReview,
     ReviewOutcome,
     ReviewTarget,
     WorkItem,
-    ensure_task_id,
 )
 
 
@@ -44,29 +41,6 @@ def _json_dict(value: object) -> dict[str, Any]:
     return result
 
 
-def validate_provider_state(value: dict[str, Any]) -> dict[str, Any]:
-    """Validate provider-owned state before it is admitted to a checkpoint."""
-    try:
-        json.dumps(value, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("provider_state contains values that are not JSON-serializable") from exc
-    return value
-
-
-ProviderContext = Context
-
-
-def _legacy_context(value: Context | Mapping[str, Any] | None, namespace: str) -> Context:
-    if isinstance(value, Context):
-        return value
-    data = dict(value or {})
-    if not data:
-        return Context()
-    if all(isinstance(item, Mapping) for item in data.values()):
-        return Context(data)  # type: ignore[arg-type]
-    return Context({namespace: data})
-
-
 class ExecutorError(RuntimeError):
     """Adapter-neutral execution failure.
 
@@ -79,85 +53,15 @@ class ExecutorError(RuntimeError):
         self.retryable = retryable
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True)
 class InputEvent:
     """Lifecycle event around the canonical execution work item."""
 
     event_id: str
     work_item: WorkItem
-    trigger: str
-    context: Context
-    metadata: dict[str, Any]
-
-    def __init__(
-        self,
-        event_id: str,
-        work_item: WorkItem | str,
-        title: str = "",
-        body: str = "",
-        number: int | None = None,
-        metadata: dict[str, Any] | None = None,
-        provider_state: Context | Mapping[str, Any] | None = None,
-        provider: str = "",
-        extra_context: list[str] | tuple[str, ...] | None = None,
-        work_item_id: str = "",
-        trigger: str = "new",
-        context: Context | Mapping[str, Any] | None = None,
-    ) -> None:
-        if isinstance(work_item, WorkItem):
-            item = work_item
-        else:
-            legacy = _legacy_context(provider_state, provider or "legacy")
-            source_id = work_item_id or (
-                f"{work_item}#{number}" if number is not None else ensure_task_id(event_id)
-            )
-            item = WorkItem(
-                source_id, work_item, title, body, tuple(extra_context or ()), provider, legacy
-            )
-        object.__setattr__(self, "event_id", event_id)
-        object.__setattr__(self, "work_item", item)
-        object.__setattr__(self, "trigger", trigger)
-        object.__setattr__(self, "context", _legacy_context(context, item.input_provider or "event"))
-        object.__setattr__(self, "metadata", dict(metadata or {}))
-
-    @property
-    def repository(self) -> str:
-        return self.work_item.repository
-
-    @property
-    def title(self) -> str:
-        return self.work_item.title
-
-    @property
-    def body(self) -> str:
-        return self.work_item.description
-
-    @property
-    def extra_context(self) -> list[str]:
-        return list(self.work_item.extra_context)
-
-    @property
-    def provider(self) -> str:
-        return self.work_item.input_provider
-
-    @property
-    def work_item_id(self) -> str:
-        return self.work_item.id
-
-    @property
-    def provider_state(self) -> dict[str, Any]:
-        """Deprecated flattened compatibility view."""
-        combined = self.work_item.context.merged(self.context).to_dict()
-        if len(combined) == 1:
-            return dict(next(iter(combined.values())))
-        return combined
-
-    @property
-    def number(self) -> int | None:
-        value = self.work_item.context.namespace("github").get("issue_number")
-        if value is None:
-            value = self.provider_state.get("source_number")
-        return value if isinstance(value, int) and not isinstance(value, bool) else None
+    trigger: str = "new"
+    context: Context = field(default_factory=Context)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -171,7 +75,6 @@ class ExecutionRequest:
     agent: str
     model: str | None = None
     variant: str | None = None
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
     context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
@@ -185,7 +88,6 @@ class ExecutionResult:
     stdout: str = ""
     stderr: str = ""
     duration_seconds: float = 0.0
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
     context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
@@ -198,7 +100,6 @@ class WorkspaceRequest:
     repository: str
     branch: str
     base_branch: str
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
     purpose: str = "execution"
     repository_url: str = ""
     fetch_url: str = ""
@@ -216,84 +117,8 @@ class WorkspaceRequest:
 class WorkspaceResult:
     workspace: str
     branch: str
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
     context: Context = field(default_factory=Context)
     base_branch: str = ""
-
-    def __post_init__(self) -> None:
-        if not self.base_branch and isinstance(self.provider_state, dict):
-            self.base_branch = str(self.provider_state.get("base_branch", ""))
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class PublicationRequest:
-    repository: str
-    title: str
-    body: str
-    head: str
-    base: str
-    artifacts: list[Artifact] = field(default_factory=list)
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class PublicationResult:
-    number: int | None = None
-    url: str | None = None
-    provider_state: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def external_id(self) -> str | None:
-        """Generic external reference; ``number`` remains checkpoint compatible."""
-        return str(self.number) if self.number is not None else None
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass(frozen=True, init=False)
-class ReviewEvent(ReviewTarget):
-    """Deprecated constructor-compatible alias for :class:`ReviewTarget`."""
-
-    metadata: dict[str, Any]
-
-    def __init__(self, event_id: str, repository: str, title: str = "", body: str = "",
-                 metadata: dict[str, Any] | None = None,
-                 provider_state: Context | Mapping[str, Any] | None = None, **kwargs: Any) -> None:
-        legacy = dict(provider_state or {}) if not isinstance(provider_state, Context) else {}
-        context = kwargs.pop("context", None)
-        if context is None and legacy:
-            context = Context({
-                "github": {
-                    **({"pr_number": legacy["number"]} if legacy.get("number") is not None else {}),
-                    **{key: legacy[key] for key in ("changed_files", "changed_lines", "author_login") if key in legacy},
-                },
-                "git": {
-                    **{key: legacy[key] for key in ("repository_url", "fetch_url", "workspace") if key in legacy},
-                    **({"revision": legacy["head_sha"]} if legacy.get("head_sha") else {}),
-                },
-            })
-        context = context or _legacy_context(provider_state, "legacy")
-        ReviewTarget.__init__(self, event_id, repository, title, body,
-                              kwargs.pop("source_ref", legacy.get("head_ref", "")),
-                              kwargs.pop("target_ref", legacy.get("base_ref", "")),
-                              kwargs.pop("revision", legacy.get("head_sha", "")),
-                              kwargs.pop("input_provider", ""), context)
-        object.__setattr__(self, "metadata", dict(metadata or {}))
-
-    @property
-    def event_id(self) -> str:
-        return self.id
-
-    @property
-    def body(self) -> str:
-        return self.description
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -305,22 +130,8 @@ class ReviewRequest:
     repository: str
     workspace: str
     prompt: str
-    provider_state: dict[str, Any] = field(default_factory=dict)
     context: Context = field(default_factory=Context)
     log_file: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class ReviewResult:
-    success: bool
-    verdict: str = ""
-    summary: str = ""
-    comments: list[dict[str, Any]] = field(default_factory=list)
-    checks: list[dict[str, Any]] = field(default_factory=list)
-    provider_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -356,7 +167,7 @@ class WorkspaceManager(Protocol):
 
 @runtime_checkable
 class Destination(Protocol):
-    def publish(self, request: PublicationRequest) -> PublicationResult: ...
+    def publish(self, request: ChangeRequest) -> PublishedChange: ...
 
 
 @runtime_checkable
@@ -421,7 +232,7 @@ class _PlaceholderExecutor:
             success=False,
             exit_code=1,
             stderr="executor provider is not wired",
-            provider_state={"options": self.options},
+            context=request.context.merge_namespace("placeholder", {"options": self.options}),
         )
 
 
@@ -433,7 +244,7 @@ class _PlaceholderWorkspaceManager:
         return WorkspaceResult(
             workspace="",
             branch=request.branch,
-            provider_state={"options": self.options},
+            context=request.context.merge_namespace("placeholder", {"options": self.options}),
         )
 
     def cleanup(self, result: WorkspaceResult) -> None:
@@ -445,8 +256,6 @@ class _PlaceholderDestination:
     options: dict[str, Any] = field(default_factory=dict)
 
     def publish(self, request: ChangeRequest) -> PublishedChange:
-        if isinstance(request, PublicationRequest):
-            return PublicationResult(provider_state={"options": self.options})
         return PublishedChange(provider="placeholder", context=request.context)
 
 

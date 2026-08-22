@@ -23,26 +23,16 @@ def safe_task_token(task_id: str) -> str:
     return token[:180]
 
 
-def task_name(task_id: str, legacy_id: int | str | None = None) -> str:
-    """Compatibility wrapper; new callers pass the canonical task ID only."""
-    return safe_task_token(f"{task_id}#{legacy_id}" if legacy_id is not None else task_id)
+def task_name(task_id: str) -> str:
+    return safe_task_token(task_id)
 
 
-def task_workspace(task_id: str, legacy_id: int | str | None = None) -> Path:
-    return config.WORKSPACES_DIR / task_name(task_id, legacy_id)
+def task_workspace(task_id: str) -> Path:
+    return config.WORKSPACES_DIR / task_name(task_id)
 
 
-def review_workspace(task_id: str, legacy_id: int | str | None = None) -> Path:
-    identity = f"review:{task_id}#{legacy_id}" if legacy_id is not None else task_id
-    return config.WORKSPACES_DIR / safe_task_token(identity)
-
-
-def legacy_task_checkout(task_id: str, repository: str) -> tuple[str, Path] | None:
-    """Resolve old task IDs for checkpoints created before explicit checkout data."""
-    reference = task_id.rsplit("#", 1)[-1]
-    if not reference.isdigit():
-        return None
-    return f"ai/issue-{reference}", task_workspace(repository, int(reference))
+def review_workspace(task_id: str) -> Path:
+    return config.WORKSPACES_DIR / safe_task_token(task_id)
 
 
 def task_logs_dir(task_id: str) -> Path:

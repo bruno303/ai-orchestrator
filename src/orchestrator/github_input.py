@@ -47,7 +47,7 @@ class GitHubSourceFeedback:
         if comment_id is None:
             return
         try:
-            self.github_client.add_reaction(event.repository, comment_id, content)
+            self.github_client.add_reaction(event.work_item.repository, comment_id, content)
         except self.github_client.GitHubError:
             pass
 
@@ -58,7 +58,7 @@ class GitHubSourceFeedback:
             self.store.mark_comment_handled(
                 comment_id,
                 event.work_item.id,
-                event.repository,
+                event.work_item.repository,
                 event.work_item.context.namespace("github")["issue_number"],
                 "STARTED",
             )
@@ -214,7 +214,6 @@ class GitHubPollingInputSource:
                     ),
                     metadata={
                         "kind": "comment",
-                        "compatibility_data": {"pr_number": pr_number},
                     },
                     trigger="rerun",
                     context=Context({"github": {

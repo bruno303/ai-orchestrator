@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator import config
-from orchestrator.domain import Context, ReviewCheck, ReviewFinding, ReviewOutcome
-from orchestrator.providers import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, ReviewResult
+from orchestrator.domain import ReviewCheck, ReviewFinding, ReviewOutcome
+from orchestrator.providers import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest
 
 
 class OpenCodeError(ExecutorError):
@@ -39,7 +39,7 @@ class OpenCodeExecutor:
         self.options = dict(options or {})
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
-        options = {**self.options, **dict(request.context.namespace("opencode")), **request.provider_state}
+        options = {**self.options, **dict(request.context.namespace("opencode"))}
         try:
             result = run_opencode(
                 workspace=request.workspace,
@@ -73,7 +73,7 @@ class OpenCodeReviewExecutor:
         self.provider_type = "opencode"
 
     def execute(self, request: ReviewRequest) -> ReviewOutcome:
-        options = {**self.options, **dict(request.context.namespace("opencode")), **request.provider_state}
+        options = {**self.options, **dict(request.context.namespace("opencode"))}
         model_config = config.MODEL_PRIMARY
         result = run_opencode(
             request.workspace, None, request.prompt,

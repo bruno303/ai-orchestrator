@@ -44,19 +44,19 @@ class ReviewRuntime:
                 checkout_mode="revision",
                 workspace=request.workspace,
                 context=target.context,
-                provider_state={},
             ))
         except WorkspacePreparationError:
             raise
         except Exception as exc:
             raise WorkspacePreparationError(str(exc)) from exc
         result_context = getattr(result, "context", Context())
-        if not result_context and result.provider_state:
-            result_context = Context({"workspace": result.provider_state})
         context = target.context.merged(result_context)
         return PrepareReviewResult(
             target,
-            WorkspaceResult(result.workspace, result.branch, {}, result_context, getattr(result, "base_branch", "")),
+            WorkspaceResult(
+                result.workspace, result.branch, result_context,
+                getattr(result, "base_branch", ""),
+            ),
             context,
         )
 
@@ -67,14 +67,13 @@ class ReviewRuntime:
             repository=prepared.target.repository,
             workspace=prepared.workspace.workspace,
             prompt=request.prompt,
-            provider_state={"log_file": str(workspace.task_log_path(prepared.target.id, "review"))},
             context=prepared.context,
             log_file=str(workspace.task_log_path(prepared.target.id, "review")),
         )
         try:
             result = self.executor.execute(review_request)
         except Exception as exc:
-            raise ReviewExecutionError(str(exc), provider_state=prepared.context.to_dict()) from exc
+            raise ReviewExecutionError(str(exc), context=prepared.context) from exc
         if isinstance(result, ReviewOutcome):
             outcome = result
         else:
@@ -89,7 +88,7 @@ class ReviewRuntime:
             )
         if not outcome.success:
             raise ReviewExecutionError(
-                outcome.summary or "review execution failed", provider_state=outcome.context.to_dict()
+                outcome.summary or "review execution failed", context=outcome.context
             )
         return ExecuteReviewResult(review_request, outcome)
 

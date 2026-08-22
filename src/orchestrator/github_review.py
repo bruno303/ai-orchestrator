@@ -9,7 +9,6 @@ from orchestrator import config, github, workspace
 from orchestrator.domain import (
     Context,
     PublishedReview,
-    ReviewFinding,
     ReviewOutcome,
     ReviewTarget,
 )
@@ -112,23 +111,6 @@ class GitHubReviewDestination:
         self.provider_type = "github"
 
     def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview:
-        if not isinstance(target, ReviewTarget):
-            legacy = dict(getattr(target, "provider_state", {}))
-            target = ReviewTarget(
-                getattr(target, "task_id"), getattr(target, "repository"),
-                revision=str(legacy.get("head_sha", "")),
-                context=Context({"github": {
-                    **({"pr_number": legacy["number"]} if legacy.get("number") is not None else {}),
-                    **{key: legacy[key] for key in ("changed_files", "changed_lines", "author_login") if key in legacy},
-                }}),
-            )
-        if not isinstance(outcome, ReviewOutcome):
-            legacy_findings = outcome.comments or outcome.provider_state.get("findings", [])
-            outcome = ReviewOutcome(
-                outcome.success, outcome.verdict, outcome.summary,
-                tuple(ReviewFinding(**finding) for finding in legacy_findings),
-                (), target.context,
-            )
         values = target.context.namespace("github")
         number = values.get("pr_number")
         if not isinstance(number, int) or isinstance(number, bool):

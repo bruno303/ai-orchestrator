@@ -213,10 +213,10 @@ The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the 
 destination. New seeds and graph updates write only the `input`, `processing`,
 `workspace`, and `output` state namespaces. This keeps LangGraph checkpoints
 serializable and lets a provider retain its own metadata without adding
-provider-specific fields to workflow logic. Legacy flat fields are read only
-when resuming old checkpoints or compatibility callers; they are never added to
-new state. SQLite uses `task_id TEXT PRIMARY KEY NOT NULL`; provider numeric IDs
-are not task columns, and legacy PR numbers migrate to generic `external_id`.
+provider-specific fields to workflow logic. SQLite uses `task_id TEXT PRIMARY KEY NOT NULL`;
+provider numeric IDs are stored only as generic `external_id` values. This
+version starts with a fresh SQLite database and does not migrate old schemas or
+checkpoints.
 
 Pipeline providers can be selected in `config/repositories.yaml`:
 

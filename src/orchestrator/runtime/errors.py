@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from orchestrator.domain import Context
 
 
 class RuntimeOperationError(Exception):
@@ -12,11 +12,11 @@ class RuntimeOperationError(Exception):
         self,
         message: str,
         *,
-        provider_state: dict[str, Any] | None = None,
+        context: Context | None = None,
         attempts: int | None = None,
     ) -> None:
         super().__init__(message)
-        self.provider_state = dict(provider_state or {})
+        self.context = context or Context()
         self.attempts = attempts
 
 

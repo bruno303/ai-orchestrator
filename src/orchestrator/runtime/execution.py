@@ -101,9 +101,6 @@ class ExecutionRuntime:
                 f"repository {request.work.repository} is not in the allowlist"
             )
         context = request.work.item.context.merged(request.context)
-        legacy_state = {
-            key: value for namespace in context.values() for key, value in namespace.items()
-        }
         try:
             result = self.workspace_manager.prepare(WorkspaceRequest(
                 task_id=request.work.task_id,
@@ -115,21 +112,17 @@ class ExecutionRuntime:
                 checkout_mode="branch",
                 workspace=request.workspace,
                 context=context,
-                provider_state=legacy_state,
             ))
         except WorkspacePreparationError:
             raise
         except Exception as exc:
             raise WorkspacePreparationError(str(exc)) from exc
         result_context = result.context
-        if not result_context and result.provider_state:
-            result_context = Context({"workspace": result.provider_state})
         accumulated = context.merged(result_context)
         return PrepareExecutionResult(
             request.work,
             WorkspaceResult(
-                result.workspace, result.branch, result.provider_state,
-                result_context, result.base_branch,
+                result.workspace, result.branch, result_context, result.base_branch,
             ),
             result.base_branch or request.base_branch,
             accumulated,
@@ -150,18 +143,18 @@ class ExecutionRuntime:
             if not plan_path.is_file():
                 raise PlanValidationError(
                     f"planning completed without creating {PLAN_FILE}",
-                    provider_state=phase.context.to_dict(), attempts=phase.attempts,
+                    context=phase.context, attempts=phase.attempts,
                 )
             if not plan_path.read_text().strip():
                 raise PlanValidationError(
                     f"planning completed with an empty {PLAN_FILE}",
-                    provider_state=phase.context.to_dict(), attempts=phase.attempts,
+                    context=phase.context, attempts=phase.attempts,
                 )
         except PlanValidationError:
             raise
         except OSError as exc:
             raise PlanValidationError(
-                str(exc), provider_state=phase.context.to_dict(), attempts=phase.attempts
+                str(exc), context=phase.context, attempts=phase.attempts
             ) from exc
         return PlanResult(phase.execution.stdout[:4000], PLAN_FILE, phase)
 
@@ -179,7 +172,7 @@ class ExecutionRuntime:
             ))
         except AgentExecutionError as exc:
             raise QualityGateError(
-                str(exc), provider_state=exc.provider_state, attempts=exc.attempts
+                str(exc), context=exc.context, attempts=exc.attempts
             ) from exc
         return TestResult(phase.execution.stdout[:4000], phase)
 
@@ -200,10 +193,6 @@ class ExecutionRuntime:
         if not isinstance(result, PublishedChange):
             external_id = getattr(result, "external_id", None)
             result_context = context
-            if getattr(result, "provider_state", None):
-                result_context = result_context.merge_namespace(
-                    "destination", getattr(result, "provider_state")
-                )
             result = PublishedChange(
                 external_id, getattr(result, "url", None),
                 getattr(self.destination, "provider_type", ""),
