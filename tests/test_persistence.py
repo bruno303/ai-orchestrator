@@ -7,7 +7,10 @@ import sqlite3
 from orchestrator.persistence import TaskStore
 
 
-def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
+def test_existing_database_schema_must_be_fresh(tmp_path):
+    import pytest
+    from orchestrator.persistence import PersistenceError
+
     db = tmp_path / "old.sqlite"
     conn = sqlite3.connect(db)
     conn.execute(
@@ -15,17 +18,12 @@ def test_existing_database_is_migrated_without_losing_tasks(tmp_path):
         "issue_number INTEGER NOT NULL, status TEXT NOT NULL, workspace TEXT, branch TEXT, "
         "pr_number INTEGER, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), "
         "updated_at TEXT NOT NULL DEFAULT (datetime('now')))")
-    conn.execute("INSERT INTO tasks (task_id, repository, issue_number, status) VALUES ('r#1', 'r', 1, 'RECEIVED')")
+    conn.execute("INSERT INTO tasks (task_id, repository, issue_number, status, pr_number) VALUES ('r#1', 'r', 1, 'RECEIVED', 19)")
     conn.commit()
     conn.close()
 
-    store = TaskStore(db)
-    store.update_task("r#1", input_provider="legacy", output_provider="github")
-    row = store.get_task("r#1")
-    assert row["task_id"] == "r#1"
-    assert row["input_provider"] == "legacy"
-    assert row["output_provider"] == "github"
-    assert "external_id" in row
+    with pytest.raises(PersistenceError, match="start fresh"):
+        TaskStore(db)
 
 
 def test_publication_url_is_persisted(tmp_path):

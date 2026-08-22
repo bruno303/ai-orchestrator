@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from orchestrator import config, workspace
-from orchestrator.providers import ReviewDestination, ReviewEvent, ReviewExecutor, ReviewInputSource, WorkspaceManager
+from orchestrator.domain import ContextPresenter, NoopContextPresenter, ReviewTarget
+from orchestrator.providers import ReviewDestination, ReviewExecutor, ReviewInputSource, WorkspaceManager
 from orchestrator.runtime.models import (
     CleanupReviewRequest,
     ExecuteReviewRequest,
@@ -22,6 +23,7 @@ class ReviewApplication:
 
     input_source: ReviewInputSource
     runtime: ReviewRuntime
+    context_presenter: ContextPresenter
 
     def __init__(
         self,
@@ -30,43 +32,46 @@ class ReviewApplication:
         workspace_manager: WorkspaceManager | None = None,
         destination: ReviewDestination | None = None,
         runtime: ReviewRuntime | None = None,
+        context_presenter: ContextPresenter | None = None,
     ) -> None:
         self.input_source = input_source
         self.runtime = runtime or ReviewRuntime(executor, workspace_manager, destination)
+        self.context_presenter = context_presenter or getattr(
+            input_source, "context_presenter", NoopContextPresenter()
+        )
 
-    def poll_once(self) -> list[ReviewEvent]:
-        processed: list[ReviewEvent] = []
-        for event in self.input_source.poll():
-            task_id = event.event_id
+    def poll_once(self) -> list[ReviewTarget]:
+        processed: list[ReviewTarget] = []
+        for target in self.input_source.poll():
+            task_id = target.id
             prepared = None
-            provider_state = event.provider_state
-            title = " ".join(event.title.split()) or "<untitled>"
+            fields = dict(self.context_presenter.logging_fields(target.context))
+            title = " ".join(target.title.split()) or "<untitled>"
             workspace.write_task_log(
                 task_id,
                 "review",
-                f"[review] starting: repository={event.repository} "
-                f"pr={provider_state.get('number', '<unknown>')} title={title!r} "
-                f"author={provider_state.get('author_login') or '<unknown>'} "
-                f"head_sha={provider_state.get('head_sha') or '<unknown>'}",
+                f"[review] starting: repository={target.repository} "
+                f"id={target.id} revision={target.revision or '<unknown>'} "
+                f"title={title!r} context={fields}",
             )
             print(
-                f"[review] starting: repository={event.repository} "
-                f"pr={provider_state.get('number', '<unknown>')} title={title!r}",
+                f"[review] starting: repository={target.repository} "
+                f"id={target.id} title={title!r}",
                 flush=True,
             )
             try:
-                prepared = self.runtime.prepare(PrepareReviewRequest(event, task_id))
+                prepared = self.runtime.prepare(PrepareReviewRequest(target))
                 execution = self.runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
                 self.runtime.publish_review(PublishReviewRequest(prepared, execution))
-                processed.append(event)
+                processed.append(target)
             except Exception as exc:
-                print(f"[review] {event.event_id}: {exc}", flush=True)
+                print(f"[review] {target.id}: {exc}", flush=True)
             finally:
                 if prepared is not None:
                     try:
                         self.runtime.cleanup_review(CleanupReviewRequest(prepared))
                     except Exception as exc:
-                        print(f"[review] cleanup {event.event_id}: {exc}", flush=True)
+                        print(f"[review] cleanup {target.id}: {exc}", flush=True)
         return processed
 
 

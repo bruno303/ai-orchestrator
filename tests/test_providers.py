@@ -12,29 +12,25 @@ from orchestrator.providers import (
     REVIEW_EXECUTOR_PROVIDERS,
     REVIEW_INPUT_PROVIDERS,
     WORKSPACE_PROVIDERS,
-    Artifact,
     Destination,
     ExecutionRequest,
     ExecutionResult,
     Executor,
     InputEvent,
     InputSource,
-    PublicationRequest,
-    PublicationResult,
-    ProviderContext,
     UnknownProviderError,
     WorkspaceManager,
     WorkspaceRequest,
     WorkspaceResult,
-    ReviewEvent,
     ReviewRequest,
-    ReviewResult,
     ReviewInputSource,
     ReviewExecutor,
     ReviewDestination,
 )
 from orchestrator.application import PollingApplication, compose_runtime
 from orchestrator import config
+from orchestrator.domain import Artifact, Context, ReviewOutcome, ReviewTarget, WorkItem
+from orchestrator.domain import ChangeRequest, PublishedChange
 from orchestrator.github_destination import GitHubDestination
 from orchestrator.github_input import GitHubPollingInputSource
 from orchestrator.git_workspace import GitWorkspaceManager
@@ -42,14 +38,15 @@ from orchestrator.opencode import OpenCodeExecutor
 
 
 def test_provider_models_are_json_serializable():
-    event = InputEvent("issue-1", "company/backend", "Fix bug", number=1)
+    event = InputEvent(
+        "issue-1", WorkItem("company/backend#1", "company/backend", "Fix bug",
+                             context=Context({"github": {"issue_number": 1}})),
+        "new", Context(), {},
+    )
     request = ExecutionRequest("task-1", "/tmp/workspace", "do the work", "build")
-    publication = PublicationRequest(
-        "company/backend",
-        "Fix bug",
-        "Closes #1",
-        "ai/issue-1",
-        "main",
+    publication = ChangeRequest(
+        "company/backend#1", "company/backend", "Fix bug", "Closes #1",
+        "ai/issue-1", "main", Context(),
         artifacts=[Artifact("work.txt")],
     )
 
@@ -59,35 +56,34 @@ def test_provider_models_are_json_serializable():
 
 def test_review_models_are_json_serializable():
     models = [
-        ReviewEvent("review-1", "company/backend", metadata={"label": "ready", "number": 14}),
-        ReviewRequest("task-1", "company/backend", "/tmp/review", "review it", {"number": 14}),
-        ReviewResult(True, verdict="approve", comments=[{"path": "src/app.py", "line": 3}]),
+        ReviewTarget("review-1", "company/backend", context=Context({"github": {"pr_number": 14}})),
+        ReviewRequest("task-1", "company/backend", "/tmp/review", "review it", Context({"github": {"pr_number": 14}})),
+        ReviewOutcome(True, verdict="approve", findings=(), context=Context()),
     ]
     assert all(json.loads(json.dumps(model.to_dict())) for model in models)
 
 
-def test_all_boundary_models_serialize_provider_state():
+def test_all_boundary_models_serialize_context():
     models = [
-        ExecutionResult(True, 0, provider_state={"attempt": 1}),
-        WorkspaceRequest("task-1", "company/backend", "ai/task-1", "main", {"id": "w1"}),
-        WorkspaceResult("/tmp/workspace", "ai/task-1", {"id": "w1"}),
-        PublicationResult(3, "https://example.test/3", {"id": "pr-3"}),
+        ExecutionResult(True, 0, context=Context({"opencode": {"attempt": 1}})),
+        WorkspaceRequest("task-1", "company/backend", "ai/task-1", "main", context=Context({"git": {"id": "w1"}})),
+        WorkspaceResult("/tmp/workspace", "ai/task-1", Context({"git": {"id": "w1"}})),
+        PublishedChange("pr-3", "https://example.test/3", "github", Context({"github": {"id": "pr-3"}})),
     ]
     assert all(json.loads(json.dumps(model.to_dict())) for model in models)
 
 
-def test_model_rejects_non_json_provider_state():
-    result = ExecutionResult(True, 0, provider_state={"bad": object()})
+def test_model_rejects_non_json_context():
     try:
-        result.to_dict()
+        Context({"opencode": {"bad": object()}})
     except TypeError as exc:
         assert "not JSON-serializable" in str(exc)
     else:
         raise AssertionError("expected serialization error")
 
 
-def test_provider_context_is_a_json_serializable_mapping():
-    context = ProviderContext({"git": {"checkout": "main"}})
+def test_context_is_a_json_serializable_mapping():
+    context = Context({"git": {"checkout": "main"}})
     assert context["git"]["checkout"] == "main"
     assert context.merged({"github": {"issue": 4}}) == {
         "git": {"checkout": "main"}, "github": {"issue": 4},
@@ -133,7 +129,7 @@ def test_registered_factories_return_protocol_implementations():
     assert isinstance(executor.execute(ExecutionRequest("t", "/tmp/w", "p", "a")), ExecutionResult)
     workspace_result = workspace.prepare(WorkspaceRequest("t", "r", "b", "main"))
     assert isinstance(workspace_result, WorkspaceResult)
-    assert isinstance(destination.publish(PublicationRequest("r", "t", "b", "h", "main")), PublicationResult)
+    assert isinstance(destination.publish(ChangeRequest("t", "r", "t", "b", "h", "main", Context())), PublishedChange)
 
 
 def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlist, tmp_path):

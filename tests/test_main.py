@@ -5,6 +5,9 @@ from __future__ import annotations
 import pytest
 
 from orchestrator import github
+from orchestrator.domain import WorkItem
+from orchestrator.providers import InputEvent
+from orchestrator.domain import Context
 from orchestrator.main import _parse_ref, cmd_execute as cmd_poll
 
 
@@ -20,10 +23,10 @@ class FakeGraph:
         task_id = (seed or {}).get("task_id")
         if task_id is not None:
             self.started.append(task_id)
-        yield {"create_pr": {"status": self.final_status, "task_id": task_id, "pr_number": 42}}
+        yield {"create_pr": {"status": self.final_status, "task_id": task_id, "output": {"external_id": "42"}}}
 
     def get_state(self, config):
-        values = {"status": self.final_status, "task_id": config["configurable"]["thread_id"], "pr_number": 42}
+        values = {"status": self.final_status, "task_id": config["configurable"]["thread_id"], "output": {"external_id": "42"}}
         return type("State", (), {"values": values})()
 
 
@@ -73,7 +76,7 @@ def test_poll_once_new_issue(allowlist, tmp_path, monkeypatch, capsys):
     assert started == ["company/backend#9"]
     task = store.get_task("company/backend#9")
     assert task["status"] == "COMPLETED"
-    assert task["pr_number"] == 42
+    assert task["external_id"] == "42"
 
 
 def test_poll_once_uses_configured_input_source_with_options(allowlist, tmp_path, monkeypatch):
@@ -95,7 +98,7 @@ def test_poll_once_uses_configured_input_source_with_options(allowlist, tmp_path
 
         def poll(self):
             seen.append(self.options)
-            return [InputEvent("issue:1", "company/backend", "title", number=1)]
+            return [InputEvent("issue:1", WorkItem("company/backend#1", "company/backend", "title", context=Context({"github": {"issue_number": 1}})))]
 
     runtime = Runtime(ConfiguredInputSource(), object(), object(), object())
     monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
@@ -311,13 +314,13 @@ def test_list_shows_ids(allowlist, tmp_path, monkeypatch, capsys):
 
     store = TaskStore(tmp_path / "db.sqlite")
     store.create_task("company/backend#7", "company/backend", 7)
-    store.update_task("company/backend#7", status="COMPLETED", pr_number=42)
+    store.update_task("company/backend#7", status="COMPLETED", external_id="42")
     monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
 
     main.cmd_list(type("A", (), {}))
     out = capsys.readouterr().out
     assert "company/backend#7" in out
-    assert "id (owner/repo#issue)" in out
+    assert "published" in out
 
 
 def test_poll_once_label_filter(allowlist, tmp_path, monkeypatch, capsys):
@@ -353,7 +356,7 @@ def test_poll_comment_trigger(allowlist, tmp_path, monkeypatch, capsys):
 
     store = TaskStore(tmp_path / "db.sqlite")
     store.create_task("company/backend#1", "company/backend", 1)
-    store.update_task("company/backend#1", status="COMPLETED", pr_number=12)
+    store.update_task("company/backend#1", status="COMPLETED", external_id="12")
 
     issue = github.Issue(number=1, title="t", body="b", html_url="u")
     comment = github.IssueComment(id=555, body="/ai-agent please change the color", user_login="bruno")
@@ -387,7 +390,7 @@ def test_poll_comment_already_handled(allowlist, tmp_path, monkeypatch, capsys):
 
     store = TaskStore(tmp_path / "db.sqlite")
     store.create_task("company/backend#1", "company/backend", 1)
-    store.update_task("company/backend#1", status="COMPLETED", pr_number=12)
+    store.update_task("company/backend#1", status="COMPLETED", external_id="12")
     store.mark_comment_handled(555, "company/backend#1", "company/backend", 1, "COMPLETED")
 
     issue = github.Issue(number=1, title="t", body="b", html_url="u")
@@ -412,7 +415,7 @@ def test_poll_comment_on_pr(allowlist, tmp_path, monkeypatch, capsys):
 
     store = TaskStore(tmp_path / "db.sqlite")
     store.create_task("company/backend#3", "company/backend", 3)
-    store.update_task("company/backend#3", status="COMPLETED", pr_number=20)
+    store.update_task("company/backend#3", status="COMPLETED", external_id="20")
 
     issue3 = github.Issue(number=3, title="t3", body="b", html_url="u")
     comment = github.IssueComment(id=777, body="/ai-agent fix the tests", user_login="bruno")
@@ -454,7 +457,7 @@ def test_pr_comment_trigger_includes_pr_context(allowlist, tmp_path, monkeypatch
 
     store = TaskStore(tmp_path / "db.sqlite")
     store.create_task("company/backend#3", "company/backend", 3)
-    store.update_task("company/backend#3", status="COMPLETED", pr_number=14)
+    store.update_task("company/backend#3", status="COMPLETED", external_id="14")
 
     issue3 = github.Issue(number=3, title="t3", body="b3", html_url="u")
     comment = github.IssueComment(id=777, body="/ai-agent fix the tests", user_login="bruno")
@@ -481,7 +484,7 @@ def test_pr_comment_trigger_includes_pr_context(allowlist, tmp_path, monkeypatch
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
     assert not {"repository", "issue_number", "issue_title", "issue_body", "pr_number", "extra_context"} & set(seed)
-    assert seed["input"]["data"]["pr_number"] == 14
+    assert seed["input"]["data"]["context"]["github"]["pr_number"] == 14
     context = "\n".join(seed["input"]["data"]["extra_context"])
     assert "<pr>" in context
     assert "number: 14" in context
@@ -496,7 +499,7 @@ def test_issue_comment_trigger_with_open_pr(allowlist, tmp_path, monkeypatch, ca
 
     store = TaskStore(tmp_path / "db.sqlite")
     store.create_task("company/backend#3", "company/backend", 3)
-    store.update_task("company/backend#3", status="COMPLETED", pr_number=14)
+    store.update_task("company/backend#3", status="COMPLETED", external_id="14")
 
     issue3 = github.Issue(number=3, title="t3", body="b3", html_url="u")
     comment = github.IssueComment(id=778, body="/ai-agent more", user_login="bruno")
@@ -521,7 +524,7 @@ def test_issue_comment_trigger_with_open_pr(allowlist, tmp_path, monkeypatch, ca
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["input"]["data"]["pr_number"] == 14
+    assert seed["input"]["data"]["context"]["github"]["pr_number"] == 14
     assert "<pr>" in "\n".join(seed["input"]["data"]["extra_context"])
 
 
@@ -549,7 +552,7 @@ def test_issue_comment_trigger_without_pr(allowlist, tmp_path, monkeypatch, caps
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["input"]["data"]["pr_number"] is None
+    assert "pr_number" not in seed["input"]["data"]["context"]["github"]
     assert "<pr>" not in "\n".join(seed["input"]["data"]["extra_context"])
 
 
@@ -560,7 +563,7 @@ def test_pr_fetch_failure_tolerated(allowlist, tmp_path, monkeypatch, capsys):
 
     store = TaskStore(tmp_path / "db.sqlite")
     store.create_task("company/backend#3", "company/backend", 3)
-    store.update_task("company/backend#3", status="COMPLETED", pr_number=14)
+    store.update_task("company/backend#3", status="COMPLETED", external_id="14")
 
     issue3 = github.Issue(number=3, title="t3", body="b3", html_url="u")
     comment = github.IssueComment(id=780, body="/ai-agent do it", user_login="bruno")
@@ -581,7 +584,7 @@ def test_pr_fetch_failure_tolerated(allowlist, tmp_path, monkeypatch, capsys):
 
     cmd_poll(type("A", (), {"once": True})())
     seed = seeds[0]
-    assert seed["input"]["data"]["pr_number"] == 14
+    assert seed["input"]["data"]["context"]["github"]["pr_number"] == 14
     assert "<pr>" not in "\n".join(seed["input"]["data"]["extra_context"])
 
 
@@ -630,11 +633,11 @@ def test_task_end_event_written(allowlist, tmp_path, monkeypatch):
 
     store = TaskStore(tmp_path / "db.sqlite")
     monkeypatch.setattr("orchestrator.main.TaskStore", lambda: store)
-    main._persist_result(store, {"task_id": "company/backend#1", "status": "COMPLETED", "pr_number": 42})
+    main._persist_result(store, {"task_id": "company/backend#1", "status": "COMPLETED", "output": {"external_id": "42"}})
     events = workspace.read_events("company/backend#1")
     assert events[-1]["event"] == "task_end"
     assert events[-1]["status"] == "COMPLETED"
-    assert events[-1]["pr_number"] == 42
+    assert events[-1]["external_id"] == "42"
 
 
 def test_persist_namespace_only_completed_result(allowlist, tmp_path, monkeypatch, capsys):
@@ -646,14 +649,14 @@ def test_persist_namespace_only_completed_result(allowlist, tmp_path, monkeypatc
     result = {
         "task_id": "company/backend#2",
         "status": "COMPLETED",
-        "output": {"provider_state": {"pr_number": 43}},
+        "output": {"external_id": "43"},
     }
 
     main._persist_result(store, result)
 
-    assert store.get_task("company/backend#2")["pr_number"] == 43
-    assert workspace.read_events("company/backend#2")[-1]["pr_number"] == 43
-    assert "COMPLETED: PR #43 for company/backend#2" in capsys.readouterr().out
+    assert store.get_task("company/backend#2")["external_id"] == "43"
+    assert workspace.read_events("company/backend#2")[-1]["external_id"] == "43"
+    assert "COMPLETED: 43 for company/backend#2" in capsys.readouterr().out
 
 
 def test_persist_url_only_completed_result(allowlist, tmp_path, capsys):
@@ -672,11 +675,12 @@ def test_persist_url_only_completed_result(allowlist, tmp_path, capsys):
     assert "COMPLETED: https://example.test/run/3 for company/backend#3" in capsys.readouterr().out
 
 
-def test_migration_and_touch(tmp_path):
-    """Existing old-schema DBs gain the new columns; touch tracks the node."""
+def test_existing_old_database_is_rejected(tmp_path):
+    """Old databases are not migrated in the fresh-start workflow."""
     import sqlite3
 
-    from orchestrator.persistence import TaskStore
+    import pytest
+    from orchestrator.persistence import PersistenceError, TaskStore
 
     db = tmp_path / "old.sqlite"
     conn = sqlite3.connect(str(db))
@@ -686,19 +690,11 @@ def test_migration_and_touch(tmp_path):
         "pr_number INTEGER, error TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), "
         "updated_at TEXT NOT NULL DEFAULT (datetime('now')))"
     )
-    conn.execute(
-        "INSERT INTO tasks (task_id, repository, issue_number, status) VALUES ('r#1', 'r', 1, 'RECEIVED')"
-    )
     conn.commit()
     conn.close()
 
-    store = TaskStore(db)
-    store.touch("r#1", node="plan")
-    row = store.get_task("r#1")
-    assert row["current_node"] == "plan"
-    assert row["node_started_at"] is not None
-    store.clear_node("r#1")
-    assert store.get_task("r#1")["current_node"] is None
+    with pytest.raises(PersistenceError, match="start fresh"):
+        TaskStore(db)
 
 
 def test_workspace_events(tmp_path, monkeypatch):

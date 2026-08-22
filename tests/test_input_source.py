@@ -1,6 +1,7 @@
 """Tests for input-source and application boundaries."""
 
 from orchestrator.application import PollingApplication
+from orchestrator.domain import Context, WorkItem
 from orchestrator.providers import InputEvent
 
 
@@ -12,13 +13,21 @@ class FakeSource:
         return self.events
 
 
+def issue_event(event_id: str, task_id: str, number: int | None, *, kind: str = "issue") -> InputEvent:
+    return InputEvent(
+        event_id,
+        WorkItem(task_id, task_id.split("#")[0], "Fix", context=Context({"github": {"issue_number": number}})),
+        metadata={"kind": kind},
+    )
+
+
 def test_polling_application_starts_issue_workflow(tmp_path):
     from orchestrator.persistence import TaskStore
 
     store = TaskStore(tmp_path / "db.sqlite")
     started = []
     persisted = []
-    event = InputEvent("issue:r#1", "r", "Fix", "details", number=1, metadata={"kind": "issue"})
+    event = issue_event("issue:r#1", "r#1", 1)
 
     app = PollingApplication(
         store,
@@ -42,7 +51,7 @@ def test_configured_input_provider_identity_is_persisted(tmp_path):
 
     store = TaskStore(tmp_path / "db.sqlite")
     seeds = []
-    event = InputEvent("issue:r#2", "r", "Fix", number=2, metadata={"kind": "issue"})
+    event = issue_event("issue:r#2", "r#2", 2)
     app = PollingApplication(
         store,
         CustomSource([event]),
@@ -63,7 +72,7 @@ def test_issue_event_is_skipped_if_task_was_created_by_an_earlier_event(tmp_path
     store = TaskStore(tmp_path / "db.sqlite")
     started = []
     store.create_task("r#3", "r", 3)
-    event = InputEvent("issue:r#3", "r", "Fix", number=3, metadata={"kind": "issue"})
+    event = issue_event("issue:r#3", "r#3", 3)
 
     app = PollingApplication(
         store,
@@ -98,8 +107,9 @@ def test_provider_neutral_comment_event_uses_its_work_item_id(tmp_path):
     started = []
     feedback = Feedback()
     event = InputEvent(
-        "comment:external-1", "r", "Follow up", metadata={"kind": "comment"},
-        work_item_id="external-work-42",
+        "comment:external-1",
+        WorkItem("external-work-42", "r", "Follow up"),
+        metadata={"kind": "comment"},
     )
     app = PollingApplication(
         store,
@@ -129,7 +139,7 @@ def test_provider_neutral_issue_without_number_is_accepted(tmp_path):
 
     store = TaskStore(tmp_path / "db.sqlite")
     started = []
-    event = InputEvent("issue:unknown", "r", "Fix", number=None, metadata={"kind": "issue"})
+    event = InputEvent("issue:unknown", WorkItem("issue:unknown", "r", "Fix"), metadata={"kind": "issue"})
     app = PollingApplication(
         store,
         FakeSource([event]),
@@ -162,4 +172,4 @@ def test_review_input_filters_processed_label():
             )
 
     source = GitHubReviewInputSource(Client(), SimpleNamespace(allowed_repositories=lambda: ["r"]))
-    assert [event.provider_state["number"] for event in source.poll()] == [2]
+    assert [event.context.namespace("github")["pr_number"] for event in source.poll()] == [2]

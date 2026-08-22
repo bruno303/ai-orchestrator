@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from orchestrator import config, github, state as state_mod, workspace
+from orchestrator.domain import Context, WorkItem
 from orchestrator.providers import InputEvent
 
 
@@ -42,34 +43,35 @@ class GitHubSourceFeedback:
         self.github_client = github_client
 
     def _reaction(self, event: InputEvent, content: str) -> None:
-        comment_id = event.provider_state.get("comment_id")
+        comment_id = event.context.namespace("github").get("comment_id")
         if comment_id is None:
             return
         try:
-            self.github_client.add_reaction(event.repository, comment_id, content)
+            self.github_client.add_reaction(event.work_item.repository, comment_id, content)
         except self.github_client.GitHubError:
             pass
 
     def mark_started(self, event: InputEvent) -> None:
-        comment_id = event.provider_state.get("comment_id")
+        github_context = event.context.namespace("github")
+        comment_id = github_context.get("comment_id")
         if comment_id is not None:
             self.store.mark_comment_handled(
                 comment_id,
-                event.provider_state["task_id"],
-                event.repository,
-                event.number,
+                event.work_item.id,
+                event.work_item.repository,
+                event.work_item.context.namespace("github")["issue_number"],
                 "STARTED",
             )
         self._reaction(event, "eyes")
 
     def mark_succeeded(self, event: InputEvent) -> None:
-        comment_id = event.provider_state.get("comment_id")
+        comment_id = event.context.namespace("github").get("comment_id")
         if comment_id is not None:
             self.store.update_comment_status(comment_id, state_mod.COMPLETED)
         self._reaction(event, "rocket")
 
     def mark_failed(self, event: InputEvent, error: str | None = None) -> None:
-        comment_id = event.provider_state.get("comment_id")
+        comment_id = event.context.namespace("github").get("comment_id")
         if comment_id is not None:
             self.store.update_comment_status(comment_id, state_mod.FAILED)
         self._reaction(event, "-1")
@@ -99,7 +101,7 @@ class GitHubPollingInputSource:
             for issue in issues:
                 events.extend(self._comment_events(
                     repository, issue.number, f"{repository}#{issue.number}",
-                    provider_state=repository_state,
+                    git_context=repository_state,
                 ))
 
             try:
@@ -115,7 +117,7 @@ class GitHubPollingInputSource:
                         self._comment_events(
                             repository, pr.number, f"{repository}#{issue_number}",
                             task_number=issue_number, pr_number=pr.number,
-                            provider_state=repository_state,
+                            git_context=repository_state,
                         )
                     )
 
@@ -123,24 +125,26 @@ class GitHubPollingInputSource:
             if label:
                 issues = [issue for issue in issues if label in issue.labels]
             for issue in issues:
-                if self.store.exists(repository, issue.number):
+                task_id = f"{repository}#{issue.number}"
+                if self.store.exists_task(task_id):
                     continue
+                context = Context({
+                    "github": {"issue_number": issue.number},
+                    "git": {
+                        **repository_state,
+                        "branch": f"ai/issue-{issue.number}",
+                        "workspace": str(workspace.task_workspace(task_id)),
+                    },
+                })
                 events.append(
                     InputEvent(
                         event_id=f"issue:{repository}#{issue.number}",
-                        repository=repository,
-                        number=issue.number,
-                        title=issue.title,
-                        body=issue.body,
+                        work_item=WorkItem(
+                            task_id, repository, issue.title, issue.body,
+                            input_provider=self.provider_type, context=context,
+                        ),
                         metadata={"kind": "issue"},
                         trigger="new",
-                        provider_state={
-                            **repository_state,
-                            "source_number": issue.number,
-                            "branch": f"ai/issue-{issue.number}",
-                            "workspace": str(workspace.task_workspace(repository, issue.number)),
-                        },
-                        work_item_id=f"{repository}#{issue.number}",
                     )
                 )
         return events
@@ -152,7 +156,7 @@ class GitHubPollingInputSource:
         task_id: str,
         pr_number: int | None = None,
         task_number: int | None = None,
-        provider_state: dict[str, Any] | None = None,
+        git_context: dict[str, Any] | None = None,
     ) -> list[InputEvent]:
         try:
             comments = self.github_client.list_issue_comments(repository, number)
@@ -196,26 +200,26 @@ class GitHubPollingInputSource:
             events.append(
                 InputEvent(
                     event_id=f"comment:{comment.id}",
-                    repository=repository,
-                    number=task_number,
-                    title=issue.title,
-                    body=comment.body,
-                    extra_context=[*context, comment.body],
+                    work_item=WorkItem(
+                        task_id, repository, issue.title, comment.body,
+                        tuple([*context, comment.body]), self.provider_type,
+                        Context({
+                            "github": {"issue_number": task_number},
+                            "git": {
+                                **(git_context or {}),
+                                "branch": f"ai/issue-{task_number}",
+                                "workspace": str(workspace.task_workspace(task_id)),
+                            },
+                        }),
+                    ),
                     metadata={
                         "kind": "comment",
-                        "compatibility_data": {"pr_number": pr_number},
                     },
                     trigger="rerun",
-                    provider_state={
-                        **(provider_state or {}),
+                    context=Context({"github": {
                         "comment_id": comment.id,
-                        "task_id": task_id,
-                        "pr_number": pr_number,
-                        "source_number": task_number,
-                        "branch": f"ai/issue-{task_number}",
-                        "workspace": str(workspace.task_workspace(repository, task_number)),
-                    },
-                    work_item_id=task_id,
+                        **({"pr_number": pr_number} if pr_number is not None else {}),
+                    }}),
                 )
             )
         return events

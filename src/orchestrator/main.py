@@ -12,9 +12,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orchestrator import config, git, github, state as state_mod, workspace
-from orchestrator.application import PollingApplication, compose_runtime
+from orchestrator.application import PollingApplication, _input_seed, compose_runtime
+from orchestrator.domain import Context, WorkItem
 from orchestrator.graph import build_graph
 from orchestrator.persistence import PersistenceError, TaskStore
+from orchestrator.providers import InputEvent
 from orchestrator.review import compose_review_runtime
 
 ISSUE_REF_RE = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
@@ -39,24 +41,21 @@ def _seed_state(store: TaskStore, repository: str, issue_number: int) -> dict:
             "default_branch": "",
         }
     task_id = f"{repository}#{issue_number}"
-    store.create_task(task_id, repository, issue_number)
-    return {
-        "task_id": task_id,
-        "input": {"provider": "github", "data": {"repository": repository, "number": issue_number,
-            "work_item_id": task_id, "title": issue.title, "body": issue.body}, "provider_state": {
+    store.create_task(task_id, repository)
+    context = Context({
+        "github": {"issue_number": issue_number},
+        "git": {
                 "repository_url": github.https_clone_url(repository_metadata, repository),
                 "base_branch": repository_metadata.get("default_branch", ""),
                 "branch": f"ai/issue-{issue_number}",
-                "workspace": str(workspace.task_workspace(repository, issue_number)),
-                "source_number": issue_number,
-            }},
-        "processing": {}, "workspace": {"branch": f"ai/issue-{issue_number}",
-            "path": str(workspace.task_workspace(repository, issue_number)),
-            "base_branch": repository_metadata.get("default_branch", "")}, "output": {},
-        "status": state_mod.RECEIVED,
-        "iteration": 1,
-        "phase_attempts": 1,
-    }
+                "workspace": str(workspace.task_workspace(task_id)),
+        },
+    })
+    event = InputEvent(
+        f"issue:{task_id}",
+        WorkItem(task_id, repository, issue.title, issue.body, input_provider="github", context=context),
+    )
+    return _input_seed(event, task_id, provider="github")
 
 
 def _now() -> str:
@@ -121,7 +120,7 @@ def _run_graph(
                         status=status,
                         workspace=(update.get("workspace") or {}).get("path") if isinstance(update.get("workspace"), dict) else update.get("workspace"),
                         branch=(update.get("workspace") or {}).get("branch") if isinstance(update.get("workspace"), dict) else update.get("branch"),
-                        pr_number=(update.get("output") or {}).get("provider_state", {}).get("pr_number") if isinstance(update.get("output"), dict) else update.get("pr_number"),
+                        external_id=(update.get("output") or {}).get("external_id") if isinstance(update.get("output"), dict) else None,
                         error=update.get("error"),
                         input_provider=(update.get("input") or {}).get("provider"),
                         output_provider=(update.get("output") or {}).get("provider"),
@@ -160,13 +159,14 @@ def _reset_task(store: TaskStore, repository: str, issue_number: int, branch: st
         if table in tables:
             store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
     store.conn.commit()
-    ws = workspace.task_workspace(repository, issue_number)
+    ws = workspace.task_workspace(task_id)
     if ws.exists():
         git.remove_worktree(git.base_repo_dir(repository), ws, branch)
     store.conn.execute(
         """
         UPDATE tasks SET status = ?, workspace = NULL, branch = NULL,
-                         pr_number = NULL, error = NULL, updated_at = datetime('now')
+                         external_id = NULL, publication_url = NULL,
+                         error = NULL, updated_at = datetime('now')
         WHERE task_id = ?
         """,
         (state_mod.RECEIVED, task_id),
@@ -175,16 +175,25 @@ def _reset_task(store: TaskStore, repository: str, issue_number: int, branch: st
 
 
 def _reset_event_task(store: TaskStore, event) -> None:
-    """Adapt the GitHub comment event to the legacy reset helper."""
-    issue_number = event.number
-    if issue_number is None:
-        raise ValueError("GitHub comment event is missing its issue number")
-    _reset_task(
-        store,
-        event.repository,
-        issue_number,
-        event.provider_state.get("branch", f"ai/issue-{issue_number}"),
+    """Reset a task using its opaque identity and provider-supplied checkout."""
+    task_id = event.work_item.id
+    git_context = event.work_item.context.namespace("git")
+    tables = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for table in ("checkpoints", "writes"):
+        if table in tables:
+            store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
+    workspace_path = git_context.get("workspace")
+    branch = str(git_context.get("branch", ""))
+    if workspace_path and Path(str(workspace_path)).exists():
+        git.remove_worktree(
+            git.base_repo_dir(event.work_item.repository), Path(str(workspace_path)), branch
+        )
+    store.conn.execute(
+        "UPDATE tasks SET status = ?, workspace = NULL, branch = NULL, external_id = NULL, "
+        "publication_url = NULL, error = NULL, updated_at = datetime('now') WHERE task_id = ?",
+        (state_mod.RECEIVED, task_id),
     )
+    store.conn.commit()
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -193,7 +202,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         sys.exit(f"repository {repository} is not in the allowlist ({config.CONFIG_FILE})")
     store = TaskStore()
     task_id = f"{repository}#{issue_number}"
-    if store.exists(repository, issue_number) and not args.force:
+    if store.exists_task(task_id) and not args.force:
         sys.exit(f"task {task_id} already exists; use 'resume {task_id}' or --force")
     if args.force:
         _reset_task(store, repository, issue_number, f"ai/issue-{issue_number}")
@@ -250,7 +259,7 @@ def cmd_reset(args: argparse.Namespace) -> None:
     if store.get_task(task_id) is None:
         sys.exit(_not_found_hint(task_id))
     branch = f"ai/issue-{issue_number}"
-    ws = workspace.task_workspace(repository, issue_number)
+    ws = workspace.task_workspace(task_id)
     if ws.exists():
         try:
             git.remove_worktree(git.base_repo_dir(repository), ws, branch)
@@ -263,24 +272,6 @@ def cmd_reset(args: argparse.Namespace) -> None:
     store.conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
     store.conn.commit()
     print(f"[{_now()}] reset {task_id}: deleted; will re-run on next execute", flush=True)
-
-
-def _result_pr_number(result: dict) -> int | None:
-    """Read the canonical PR number, with a fallback for pre-Task 5 results."""
-    output = result.get("output")
-    if isinstance(output, dict):
-        provider_state = output.get("provider_state")
-        if isinstance(provider_state, dict):
-            legacy_pr_number = provider_state.get("pr_number")
-            if legacy_pr_number is not None:
-                return legacy_pr_number
-        external_id = output.get("external_id")
-        if isinstance(external_id, str) and external_id.isdigit():
-            return int(external_id)
-        return None
-    if "output" not in result:
-        return result.get("pr_number")
-    return None
 
 
 def _result_url(result: dict) -> str | None:
@@ -300,7 +291,6 @@ def _result_external_id(result: dict) -> str | None:
 
 def _persist_result(store: TaskStore, result: dict) -> None:
     status = result.get("status", state_mod.FAILED)
-    pr_number = _result_pr_number(result)
     publication_url = _result_url(result)
     external_id = _result_external_id(result)
     store.update_task(
@@ -308,7 +298,6 @@ def _persist_result(store: TaskStore, result: dict) -> None:
         status=status,
         workspace=(result.get("workspace") or {}).get("path") if isinstance(result.get("workspace"), dict) else result.get("workspace"),
         branch=(result.get("workspace") or {}).get("branch") if isinstance(result.get("workspace"), dict) else result.get("branch"),
-        pr_number=pr_number,
         external_id=external_id,
         publication_url=publication_url,
         error=result.get("error") if status != state_mod.COMPLETED else None,
@@ -322,12 +311,12 @@ def _persist_result(store: TaskStore, result: dict) -> None:
         result["task_id"],
         event="task_end",
         status=status,
-        pr_number=pr_number,
+        external_id=external_id,
         publication_url=publication_url,
         error=(result.get("error") or "")[:200] if status != state_mod.COMPLETED else None,
     )
     if status == state_mod.COMPLETED:
-        reference = f"PR #{pr_number}" if pr_number is not None else publication_url or "published result"
+        reference = external_id or publication_url or "published result"
         print(f"[{_now()}] COMPLETED: {reference} for {result['task_id']}")
     else:
         print(f"[{_now()}] {status}: {result.get('error', 'no error')}")
@@ -339,11 +328,11 @@ def cmd_list(args: argparse.Namespace) -> None:
     if not tasks:
         print("no tasks")
         return
-    print(f"{'id (owner/repo#issue)':<28} {'status':<12} {'created_at'}{'pr':>8} error")
+    print(f"{'id':<28} {'status':<12} {'created_at'} {'published':<16} error")
     for t in tasks:
-        pr = f" #{t['pr_number']}" if t["pr_number"] else f" {t['publication_url']}" if t.get("publication_url") else ""
+        publication = t.get("external_id") or t.get("publication_url") or ""
         err = f" ({t['error']})" if t["error"] else ""
-        print(f"{t['task_id']:<28} {t['status']:<12} {t['created_at']}{pr}{err}")
+        print(f"{t['task_id']:<28} {t['status']:<12} {t['created_at']} {publication:<16}{err}")
 
 
 def cmd_status(args: argparse.Namespace) -> None:
@@ -389,10 +378,10 @@ def cmd_watch(args: argparse.Namespace) -> None:
                 log_path = workspace.task_log_path(task["task_id"], node)
                 if log_path.exists():
                     log_tail = " | ".join(log_path.read_text(errors="replace").splitlines()[-1:])[:100]
-            pr = f" PR#{task['pr_number']}" if task.get("pr_number") else ""
+            published = f" published={task['external_id']}" if task.get("external_id") else ""
             print(
                 f"{task['task_id']:<28} {task['status']:<12} "
-                f"node={node or '-':<16} {node_elapsed:<8} {task['updated_at']}{pr} {log_tail}"
+                f"node={node or '-':<16} {node_elapsed:<8} {task['updated_at']}{published} {log_tail}"
             )
         if args.once:
             return

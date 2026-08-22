@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from orchestrator import git, workspace
+from orchestrator.domain import Context
 from orchestrator.git_workspace import GitWorkspaceManager
 from orchestrator.providers import WorkspaceRequest
 
@@ -28,7 +29,7 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     result = GitWorkspaceManager().prepare(
         WorkspaceRequest(
             "company/backend#1", "company/backend", "ai/issue-1", "main",
-            {"repository_url": f"file://{remote_repo}", "workspace": str(workspace_path)},
+            context=Context({"git": {"repository_url": f"file://{remote_repo}", "workspace": str(workspace_path)}}),
         )
     )
     assert Path(result.workspace).exists()
@@ -37,15 +38,15 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     assert not workspace_path.exists()
 
 
-def test_prepare_derives_issue_number_from_task_id(remote_repo):
+def test_prepare_derives_branch_and_workspace_from_task_id(remote_repo):
     manager = GitWorkspaceManager()
     result = manager.prepare(WorkspaceRequest(
         "company/backend#7", "company/backend", "", "main",
-        {"repository_url": f"file://{remote_repo}"},
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
     ))
 
-    assert result.branch == "ai/issue-7"
-    assert Path(result.workspace) == workspace.task_workspace("company/backend", 7)
+    assert result.branch == "ai/company-backend-7"
+    assert Path(result.workspace) == workspace.task_workspace("company/backend#7")
     assert Path(result.workspace).exists()
     manager.cleanup(result)
 
@@ -62,7 +63,7 @@ def test_prepare_requires_explicit_repository_url(monkeypatch):
     with pytest.raises(git.GitError, match="requires a repository URL"):
         GitWorkspaceManager().prepare(WorkspaceRequest(
             "company/backend#1", "company/backend", "ai/issue-1", "main",
-            {"workspace": "/tmp/workspace"},
+            context=Context({"git": {"workspace": "/tmp/workspace"}}),
         ))
 
     assert not cloned
@@ -76,11 +77,8 @@ def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch
     manager = GitWorkspaceManager()
     result = manager.prepare(WorkspaceRequest(
         "review:company/backend#4", "company/backend", "", "main",
-        {
-            "repository_url": "origin-url", "head_sha": "fork-sha",
-            "head_clone_url": "", "workspace": str(tmp_path / "ws"),
-        },
-        purpose="review",
+        purpose="review", revision="fork-sha", workspace=str(tmp_path / "ws"),
+        context=Context({"git": {"repository_url": "origin-url"}}),
     ))
     assert fetched == [("fork-sha", "origin")]
     assert result.branch == ""
@@ -92,6 +90,6 @@ def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
     with pytest.raises(git.GitError, match="unknown commit"):
         GitWorkspaceManager().prepare(WorkspaceRequest(
             "review:company/backend#4", "company/backend", "", "main",
-            {"repository_url": "origin-url", "head_sha": "missing", "workspace": str(tmp_path / "ws")},
-            purpose="review",
+            purpose="review", revision="missing", workspace=str(tmp_path / "ws"),
+            context=Context({"git": {"repository_url": "origin-url"}}),
         ))

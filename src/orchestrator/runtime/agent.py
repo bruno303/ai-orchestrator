@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from orchestrator import config, workspace
-from orchestrator.providers import ExecutorError, ExecutionRequest, validate_provider_state
+from orchestrator.providers import ExecutorError, ExecutionRequest
 from orchestrator.runtime.errors import AgentExecutionError
 from orchestrator.runtime.models import AgentRequest, PhaseResult
 
@@ -21,7 +21,7 @@ class IssueAgentRunner:
         self.executor = executor
 
     def execute(self, request: AgentRequest) -> PhaseResult:
-        log_path = workspace.task_log_path(request.context.task_id, request.node)
+        log_path = workspace.task_log_path(request.work.task_id, request.node)
         attempt = 1
         max_attempts = config.PHASE_MAX_ATTEMPTS if config.MODEL_FALLBACK_ENABLED else 1
         while attempt <= max_attempts:
@@ -35,32 +35,31 @@ class IssueAgentRunner:
                 flush=True,
             )
             try:
-                previous_state = validate_provider_state(request.provider_state)
+                previous_context = request.context
             except TypeError as exc:
                 raise AgentExecutionError(str(exc), attempts=attempt) from exc
             execution_request = ExecutionRequest(
-                task_id=request.context.task_id,
+                task_id=request.work.task_id,
                 workspace=request.workspace,
                 prompt=request.prompt,
                 agent=request.agent,
                 model=model,
                 variant=variant,
-                provider_state={
-                    **previous_state,
+                context=previous_context.merge_namespace("opencode", {
                     "log_file": str(log_path),
                     "detect_degenerate": config.MODEL_FALLBACK_ENABLED,
-                },
+                }),
             )
             try:
                 result = self.executor.execute(execution_request)
             except ExecutorError as exc:
                 if not exc.retryable:
-                    raise AgentExecutionError(str(exc), provider_state=previous_state, attempts=attempt) from exc
+                    raise AgentExecutionError(str(exc), context=previous_context, attempts=attempt) from exc
                 attempt += 1
                 if attempt > max_attempts:
                     raise AgentExecutionError(
                         f"{request.node} produced degenerate output after {max_attempts} attempts",
-                        provider_state=previous_state,
+                        context=previous_context,
                         attempts=max_attempts,
                     ) from exc
                 print(
@@ -70,11 +69,9 @@ class IssueAgentRunner:
                 )
                 continue
             except Exception as exc:
-                raise AgentExecutionError(str(exc), provider_state=previous_state, attempts=attempt) from exc
-            try:
-                provider_state = validate_provider_state({**previous_state, **result.provider_state})
-            except TypeError as exc:
-                raise AgentExecutionError(str(exc), provider_state=previous_state, attempts=attempt) from exc
+                raise AgentExecutionError(str(exc), context=previous_context, attempts=attempt) from exc
+            result_context = result.context
+            context = previous_context.merged(result_context)
             print(
                 f"[{_now()}] {request.node}: finished in {result.duration_seconds:.0f}s "
                 f"(exit={result.exit_code}, attempt={attempt}, model={model or 'default'}, "
@@ -87,8 +84,8 @@ class IssueAgentRunner:
                     if result.exit_code == 0
                     else f"opencode ({request.agent}) exited with {result.exit_code}"
                 )
-                raise AgentExecutionError(error, provider_state=provider_state, attempts=attempt)
-            return PhaseResult(result, attempt, provider_state)
+                raise AgentExecutionError(error, context=context, attempts=attempt)
+            return PhaseResult(result, attempt, context)
         raise AgentExecutionError(
             f"{request.node} produced degenerate output after {max_attempts} attempts",
             attempts=max_attempts,

@@ -6,10 +6,32 @@ from dataclasses import asdict, dataclass, field
 import json
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from orchestrator.domain import (
+    ChangeRequest,
+    Context,
+    PublishedChange,
+    PublishedReview,
+    ReviewOutcome,
+    ReviewTarget,
+    WorkItem,
+)
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Context):
+        return value.to_dict()
+    if hasattr(value, "to_dict") and not hasattr(value, "__dataclass_fields__"):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {key: _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_value(item) for item in value]
+    return value
+
 
 def _json_dict(value: object) -> dict[str, Any]:
     """Return the plain, checkpoint- and JSON-serializable form of a model."""
-    result = asdict(value)  # type: ignore[arg-type]
+    result = _json_value(asdict(value))  # type: ignore[arg-type]
     try:
         json.dumps(result, allow_nan=False)
     except (TypeError, ValueError) as exc:
@@ -17,30 +39,6 @@ def _json_dict(value: object) -> dict[str, Any]:
             f"{type(value).__name__} contains values that are not JSON-serializable"
         ) from exc
     return result
-
-
-def validate_provider_state(value: dict[str, Any]) -> dict[str, Any]:
-    """Validate provider-owned state before it is admitted to a checkpoint."""
-    try:
-        json.dumps(value, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise TypeError("provider_state contains values that are not JSON-serializable") from exc
-    return value
-
-
-class ProviderContext(dict[str, Any]):
-    """JSON-serializable data owned by an adapter, not the workflow core.
-
-    Providers may use namespaced keys (for example ``git`` or ``github``) to
-    exchange capabilities with compatible adapters. Workflow code may preserve
-    and merge this context but must not depend on individual keys.
-    """
-
-    def __init__(self, value: dict[str, Any] | None = None) -> None:
-        super().__init__(validate_provider_state(dict(value or {})))
-
-    def merged(self, value: dict[str, Any] | None = None) -> "ProviderContext":
-        return ProviderContext({**self, **dict(value or {})})
 
 
 class ExecutorError(RuntimeError):
@@ -55,19 +53,15 @@ class ExecutorError(RuntimeError):
         self.retryable = retryable
 
 
-@dataclass
+@dataclass(frozen=True)
 class InputEvent:
+    """Lifecycle event around the canonical execution work item."""
+
     event_id: str
-    repository: str
-    title: str
-    body: str = ""
-    number: int | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
-    provider: str = ""
-    extra_context: list[str] = field(default_factory=list)
-    work_item_id: str = ""
+    work_item: WorkItem
     trigger: str = "new"
+    context: Context = field(default_factory=Context)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -81,7 +75,7 @@ class ExecutionRequest:
     agent: str
     model: str | None = None
     variant: str | None = None
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
+    context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -94,7 +88,7 @@ class ExecutionResult:
     stdout: str = ""
     stderr: str = ""
     duration_seconds: float = 0.0
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
+    context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -106,7 +100,6 @@ class WorkspaceRequest:
     repository: str
     branch: str
     base_branch: str
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
     purpose: str = "execution"
     repository_url: str = ""
     fetch_url: str = ""
@@ -114,6 +107,7 @@ class WorkspaceRequest:
     revision: str = ""
     checkout_mode: str = "branch"
     workspace: str = ""
+    context: Context = field(default_factory=Context)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -123,61 +117,8 @@ class WorkspaceRequest:
 class WorkspaceResult:
     workspace: str
     branch: str
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class Artifact:
-    path: str
-    kind: str = "file"
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class PublicationRequest:
-    repository: str
-    title: str
-    body: str
-    head: str
-    base: str
-    artifacts: list[Artifact] = field(default_factory=list)
-    provider_state: dict[str, Any] = field(default_factory=ProviderContext)
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class PublicationResult:
-    number: int | None = None
-    url: str | None = None
-    provider_state: dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def external_id(self) -> str | None:
-        """Generic external reference; ``number`` remains checkpoint compatible."""
-        return str(self.number) if self.number is not None else None
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class ReviewEvent:
-    """Provider-neutral notification that a pull request should be reviewed."""
-
-    event_id: str
-    repository: str
-    title: str = ""
-    body: str = ""
-    metadata: dict[str, Any] = field(default_factory=dict)
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    context: Context = field(default_factory=Context)
+    base_branch: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -189,20 +130,8 @@ class ReviewRequest:
     repository: str
     workspace: str
     prompt: str
-    provider_state: dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, Any]:
-        return _json_dict(self)
-
-
-@dataclass
-class ReviewResult:
-    success: bool
-    verdict: str = ""
-    summary: str = ""
-    comments: list[dict[str, Any]] = field(default_factory=list)
-    checks: list[dict[str, Any]] = field(default_factory=list)
-    provider_state: dict[str, Any] = field(default_factory=dict)
+    context: Context = field(default_factory=Context)
+    log_file: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return _json_dict(self)
@@ -238,22 +167,22 @@ class WorkspaceManager(Protocol):
 
 @runtime_checkable
 class Destination(Protocol):
-    def publish(self, request: PublicationRequest) -> PublicationResult: ...
+    def publish(self, request: ChangeRequest) -> PublishedChange: ...
 
 
 @runtime_checkable
 class ReviewInputSource(Protocol):
-    def poll(self) -> list[ReviewEvent]: ...
+    def poll(self) -> list[ReviewTarget]: ...
 
 
 @runtime_checkable
 class ReviewExecutor(Protocol):
-    def execute(self, request: ReviewRequest) -> ReviewResult: ...
+    def execute(self, request: ReviewRequest) -> ReviewOutcome: ...
 
 
 @runtime_checkable
 class ReviewDestination(Protocol):
-    def publish(self, request: ReviewRequest, result: ReviewResult) -> None: ...
+    def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview: ...
 
 
 class UnknownProviderError(ValueError):
@@ -303,7 +232,7 @@ class _PlaceholderExecutor:
             success=False,
             exit_code=1,
             stderr="executor provider is not wired",
-            provider_state={"options": self.options},
+            context=request.context.merge_namespace("placeholder", {"options": self.options}),
         )
 
 
@@ -315,7 +244,7 @@ class _PlaceholderWorkspaceManager:
         return WorkspaceResult(
             workspace="",
             branch=request.branch,
-            provider_state={"options": self.options},
+            context=request.context.merge_namespace("placeholder", {"options": self.options}),
         )
 
     def cleanup(self, result: WorkspaceResult) -> None:
@@ -326,8 +255,8 @@ class _PlaceholderWorkspaceManager:
 class _PlaceholderDestination:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def publish(self, request: PublicationRequest) -> PublicationResult:
-        return PublicationResult(provider_state={"options": self.options})
+    def publish(self, request: ChangeRequest) -> PublishedChange:
+        return PublishedChange(provider="placeholder", context=request.context)
 
 
 def _input_factory(options: dict[str, Any]) -> object:
@@ -376,7 +305,7 @@ DESTINATION_PROVIDERS = ProviderRegistry({"github": _destination_factory}, Desti
 class _PlaceholderReviewInputSource:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def poll(self) -> list[ReviewEvent]:
+    def poll(self) -> list[ReviewTarget]:
         return []
 
 
@@ -384,16 +313,16 @@ class _PlaceholderReviewInputSource:
 class _PlaceholderReviewExecutor:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def execute(self, request: ReviewRequest) -> ReviewResult:
-        return ReviewResult(False, summary="review executor provider is not wired", provider_state={"options": self.options})
+    def execute(self, request: ReviewRequest) -> ReviewOutcome:
+        return ReviewOutcome(False, summary="review executor provider is not wired", context=request.context)
 
 
 @dataclass
 class _PlaceholderReviewDestination:
     options: dict[str, Any] = field(default_factory=dict)
 
-    def publish(self, request: ReviewRequest, result: ReviewResult) -> None:
-        return None
+    def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview:
+        return PublishedReview(provider="placeholder", context=target.context)
 
 
 def _review_input_factory(options: dict[str, Any]) -> object:
