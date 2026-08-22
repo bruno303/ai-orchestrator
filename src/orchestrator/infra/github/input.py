@@ -69,7 +69,15 @@ class GitHubPollingInputSource:
 
     @property
     def bot_login(self) -> str:
-        return str(self.options.get("bot_login", github_auth.BOT_LOGIN))
+        configured = self.options.get("bot_login")
+        if configured:
+            return str(configured)
+        try:
+            return str(self.github_client.get_authenticated_user_login())
+        except AttributeError:
+            # Keep lightweight direct-test clients compatible with the former
+            # module-level default.
+            return github_auth.BOT_LOGIN
 
     def poll(self) -> list[InputEvent]:
         if self.config_module is None:

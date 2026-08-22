@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextvars import ContextVar
+from functools import wraps
 from urllib.parse import quote
 from dataclasses import dataclass, field
 
@@ -14,6 +16,46 @@ class GitHubError(Exception):
     pass
 
 
+_identity: ContextVar[github_auth.GitHubIdentity | None] = ContextVar("github_identity", default=None)
+
+
+class GitHubClient:
+    """An identity-bound view of the GitHub CLI adapter.
+
+    Module-level functions remain bot-authenticated compatibility helpers.
+    Runtime adapters use this object so their selected identity cannot leak to
+    another provider.
+    """
+
+    GitHubError = GitHubError
+
+    def __init__(self, identity: github_auth.GitHubIdentity | None = None) -> None:
+        self.identity = identity or github_auth.GitHubIdentity()
+
+    def get_authenticated_user_login(self) -> str:
+        if self.identity.mode == "bot":
+            return self.identity.login
+        return self._call(_api, "user", ".login").strip()
+
+    def _call(self, function, *args, **kwargs):
+        token = _identity.set(self.identity)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _identity.reset(token)
+
+    def __getattr__(self, name: str):
+        function = globals().get(name)
+        if not callable(function):
+            raise AttributeError(name)
+
+        @wraps(function)
+        def call(*args, **kwargs):
+            return self._call(function, *args, **kwargs)
+
+        return call
+
+
 def _run_gh(args: list[str], *, input_text: str | None = None) -> str:
     proc = subprocess.run(
         ["gh", *args],
@@ -21,7 +63,7 @@ def _run_gh(args: list[str], *, input_text: str | None = None) -> str:
         capture_output=True,
         text=True,
         check=False,
-        env=github_auth.gh_environment(),
+        env=(_identity.get().gh_environment() if _identity.get() else github_auth.gh_environment()),
     )
     if proc.returncode != 0:
         stderr = proc.stderr.strip()

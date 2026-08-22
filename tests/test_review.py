@@ -98,6 +98,23 @@ def test_github_destination_comments_on_self_authored_pr():
     assert published[0][0][4] == "COMMENT"
 
 
+def test_github_destination_keeps_verdict_for_another_authenticated_user():
+    published = []
+
+    class GitHub:
+        def get_authenticated_user_login(self):
+            return "local-user"
+        def publish_pull_request_review(self, *args, **kwargs):
+            published.append(args)
+        def add_pull_request_label(self, *args, **kwargs):
+            pass
+
+    target = ReviewTarget("review:r#1", "r", context=Context({"github": {"pr_number": 1, "author_login": "other-user"}}))
+    GitHubReviewDestination(github_client=GitHub()).publish(target, ReviewOutcome(True, verdict="approve", context=target.context))
+
+    assert published[0][4] == "APPROVE"
+
+
 def test_github_destination_does_not_label_on_publication_failure():
     class GitHub:
         def publish_pull_request_review(self, *args, **kwargs):

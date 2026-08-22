@@ -72,12 +72,19 @@ class _PlaceholderDestination:
 
 
 def _input_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+
+    identity = github_auth.identity_from_options(options)
     if not options.pop("_runtime", False):
         return _PlaceholderInputSource(options)
+    from orchestrator.infra.github.client import GitHubClient
     from orchestrator.infra.github.input import GitHubPollingInputSource, GitHubSourceFeedback
 
     config_module = options.pop("_config_module")
-    source = GitHubPollingInputSource(options=options, config_module=config_module)
+    options.pop("auth", None)
+    source = GitHubPollingInputSource(
+        github_client=GitHubClient(identity), options=options, config_module=config_module,
+    )
     source.feedback = GitHubSourceFeedback(source.github_client)
     return source
 
@@ -91,19 +98,29 @@ def _executor_factory(options):
 
 
 def _workspace_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+
+    identity = github_auth.identity_from_options(options)
     if not options.pop("_runtime", False):
         return _PlaceholderWorkspaceManager(options)
+    from orchestrator.infra.git.client import GitClient
     from orchestrator.infra.git.workspace import GitWorkspaceManager
 
-    return GitWorkspaceManager(options=options)
+    options.pop("auth", None)
+    return GitWorkspaceManager(options=options, git_client=GitClient(identity))
 
 
 def _destination_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+
+    identity = github_auth.identity_from_options(options)
     if not options.pop("_runtime", False):
         return _PlaceholderDestination(options)
+    from orchestrator.infra.github.client import GitHubClient
     from orchestrator.infra.github.destination import GitHubDestination
 
-    return GitHubDestination(options=options)
+    options.pop("auth", None)
+    return GitHubDestination(options=options, github_client=GitHubClient(identity))
 
 
 INPUT_PROVIDERS = ProviderRegistry({"github_polling": _input_factory}, InputSource)
@@ -137,13 +154,20 @@ class _PlaceholderReviewDestination:
 
 
 def _review_input_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+
+    identity = github_auth.identity_from_options(options)
     if not options.pop("_runtime", False):
         return _PlaceholderReviewInputSource(options)
+    from orchestrator.infra.github.client import GitHubClient
     from orchestrator.infra.github.review import GitHubReviewInputSource
 
     options.pop("store", None)
     config_module = options.pop("_config_module")
-    return GitHubReviewInputSource(options=options, config_module=config_module)
+    options.pop("auth", None)
+    return GitHubReviewInputSource(
+        github_client=GitHubClient(identity), options=options, config_module=config_module,
+    )
 
 
 def _review_executor_factory(options):
@@ -155,11 +179,16 @@ def _review_executor_factory(options):
 
 
 def _review_destination_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+
+    identity = github_auth.identity_from_options(options)
     if not options.pop("_runtime", False):
         return _PlaceholderReviewDestination(options)
+    from orchestrator.infra.github.client import GitHubClient
     from orchestrator.infra.github.review import GitHubReviewDestination
 
-    return GitHubReviewDestination(options=options)
+    options.pop("auth", None)
+    return GitHubReviewDestination(options=options, github_client=GitHubClient(identity))
 
 
 REVIEW_INPUT_PROVIDERS = ProviderRegistry({"github_polling": _review_input_factory}, ReviewInputSource)

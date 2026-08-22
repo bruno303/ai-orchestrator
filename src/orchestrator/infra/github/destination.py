@@ -33,8 +33,15 @@ def _body(issue_number: int, current_body: str | None = None) -> str:
 class GitHubDestination:
     """Commit, push, and create or update the branch's open pull request."""
 
-    def __init__(self, options: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        options: dict[str, Any] | None = None,
+        github_client: Any = github,
+        git_client: Any = git,
+    ) -> None:
         self.options = dict(options or {})
+        self.github_client = github_client
+        self.git_client = git_client
         self.provider_type = "github"
 
     @property
@@ -56,24 +63,24 @@ class GitHubDestination:
             raise ValueError("GitHub publication requires source issue metadata")
         if not workspace:
             raise ValueError("GitHub publication requires git workspace metadata")
-        if not git.has_changes(workspace) and not git.commits_ahead(workspace, target_ref):
+        if not self.git_client.has_changes(workspace) and not self.git_client.commits_ahead(workspace, target_ref):
             raise git.GitError("no changes to commit")
-        if git.has_changes(workspace):
-            git.commit_all(workspace, f"{title}\n\nCloses #{issue_number}")
-        git.push_branch(workspace, source_ref)
+        if self.git_client.has_changes(workspace):
+            self.git_client.commit_all(workspace, f"{title}\n\nCloses #{issue_number}")
+        self.git_client.push_branch(workspace, source_ref)
 
-        existing_pr = github.find_open_pr(repository, source_ref)
+        existing_pr = self.github_client.find_open_pr(repository, source_ref)
         if existing_pr is not None:
-            current = github.get_pull_request(repository, existing_pr).body
+            current = self.github_client.get_pull_request(repository, existing_pr).body
             body = _body(issue_number, current)
             if body != current:
-                github.update_pull_request_body(repository, existing_pr, body)
-            github.add_issue_label(repository, issue_number, self.developed_label)
+                self.github_client.update_pull_request_body(repository, existing_pr, body)
+            self.github_client.add_issue_label(repository, issue_number, self.developed_label)
             return PublishedChange(str(existing_pr), None, self.provider_type, context)
 
-        number = github.create_pull_request(
+        number = self.github_client.create_pull_request(
             repository, title, _body(issue_number, description),
             head=source_ref, base=target_ref,
         )
-        github.add_issue_label(repository, issue_number, self.developed_label)
+        self.github_client.add_issue_label(repository, issue_number, self.developed_label)
         return PublishedChange(str(number), provider=self.provider_type, context=context)

@@ -237,19 +237,27 @@ Pipeline providers can be selected in `config/config.yaml`:
 ```yaml
 pipeline:
   execution:
-    input_source: {type: github_polling}
+    input_source: {type: github_polling, auth: user}
     executor: {type: opencode}
-    workspace_manager: {type: git}
-    destination: {type: github}
+    workspace_manager: {type: git, auth: user}
+    destination: {type: github, auth: user}
   review:
-    input_source: {type: github_polling}
+    input_source: {type: github_polling, auth: bot}
     executor: {type: opencode}
-    workspace_manager: {type: git}
-    destination: {type: github}
+    workspace_manager: {type: git, auth: bot}
+    destination: {type: github, auth: bot}
 ```
 
 The execution and review sections are independent; omitted provider settings use
 their workflow's built-in defaults and never inherit values from the other section.
+
+Each GitHub-facing provider (`github_polling` and `github`) and the `git`
+workspace provider accepts `auth: bot | user`; omitted `auth` defaults to `bot`.
+`bot` uses the configured GitHub App installation token and its commit identity.
+`user` leaves authentication and Git author settings to the account configured on
+the host. The recommended layout above runs issue execution as the local user and
+reviews as the bot. Before using `user`, run `gh auth login`, `gh auth setup-git`,
+and configure `git config user.name` plus `git config user.email`.
 
 To add a provider, implement the relevant protocol in `application/ports`, add
 its concrete adapter under `infra`, register its factory in `main/providers.py`,

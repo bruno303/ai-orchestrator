@@ -35,15 +35,15 @@ def _now() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _seed_state(repository: str, issue_number: int) -> dict:
-    issue = github.get_issue(repository, issue_number)
+def _seed_state(repository: str, issue_number: int, *, github_client=github) -> dict:
+    issue = github_client.get_issue(repository, issue_number)
     try:
-        metadata = github.get_repository(repository)
-    except github.GitHubError:
+        metadata = github_client.get_repository(repository)
+    except github_client.GitHubError:
         metadata = {"ssh_url": f"https://github.com/{repository}.git", "default_branch": ""}
     task_id = f"{repository}#{issue_number}"
     context = Context({"github": {"issue_number": issue_number}, "git": {
-        "repository_url": github.https_clone_url(metadata, repository),
+        "repository_url": github_client.https_clone_url(metadata, repository),
         "base_branch": metadata.get("default_branch", ""), "branch": f"ai/issue-{issue_number}",
         "workspace": str(workspace.task_workspace(task_id)),
     }})
@@ -124,11 +124,17 @@ def cmd_run(args: argparse.Namespace) -> None:
     repository, number = _parse_ref(args.issue_ref)
     if not config.is_repository_allowed(repository):
         sys.exit(f"repository {repository} is not in the allowlist ({config.CONFIG_FILE})")
-    issue = github.get_issue(repository, number)
+    runtime = compose_runtime()
+    github_client = runtime.input_source.github_client
+    issue = github_client.get_issue(repository, number)
     developed_label = _developed_label()
     if developed_label in issue.labels and not args.force:
         sys.exit(f"issue {repository}#{number} is already labeled {developed_label}; use --force to run again")
-    _report_result(_run_graph(_seed_state(repository, number), f"{repository}#{number}"))
+    _report_result(_run_graph(
+        _seed_state(repository, number, github_client=github_client), f"{repository}#{number}",
+        executor=runtime.executor, workspace_manager=runtime.workspace_manager,
+        destination=runtime.destination, runtime=runtime.execution_runtime,
+    ))
 
 
 def cmd_reset(args: argparse.Namespace) -> None:
@@ -140,7 +146,8 @@ def cmd_reset(args: argparse.Namespace) -> None:
             git.remove_worktree(git.base_repo_dir(repository), path, branch)
         except git.GitError as exc:
             print(f"[{_now()}] reset: warning: could not remove worktree: {exc}", flush=True)
-    github.remove_issue_label(repository, number, _developed_label())
+    runtime = compose_execution_runtime()
+    runtime.destination.github_client.remove_issue_label(repository, number, _developed_label())
     print(f"[{_now()}] reset {task_id}: marker removed; issue is eligible on the next poll", flush=True)
 
 

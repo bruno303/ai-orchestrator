@@ -30,6 +30,7 @@ from orchestrator.main.composition import compose_review_runtime, compose_runtim
 from orchestrator.domain import Artifact, Context, ReviewOutcome, ReviewTarget, WorkItem
 from orchestrator.domain import ChangeRequest, PublishedChange
 from orchestrator.infra.github.destination import GitHubDestination
+from orchestrator.infra.github.client import GitHubClient
 from orchestrator.infra.github.input import GitHubPollingInputSource
 from orchestrator.infra.git.workspace import GitWorkspaceManager
 from orchestrator.infra.opencode.executor import OpenCodeExecutor
@@ -111,6 +112,42 @@ def test_unknown_provider_fails_clearly():
         assert "unknown provider type: not-a-provider" in str(exc)
     else:
         raise AssertionError("expected UnknownProviderError")
+
+
+def test_github_provider_auth_is_validated_for_each_provider():
+    import pytest
+
+    for registry, provider in (
+        (INPUT_PROVIDERS, "github_polling"),
+        (DESTINATION_PROVIDERS, "github"),
+        (REVIEW_INPUT_PROVIDERS, "github_polling"),
+        (REVIEW_DESTINATION_PROVIDERS, "github"),
+    ):
+        with pytest.raises(ValueError, match="'bot' or 'user'"):
+            registry.create(provider, {"auth": "invalid"})
+
+
+def test_runtime_github_providers_receive_independent_selected_clients(allowlist):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "pipeline:\n  execution:\n"
+        "    input_source: {type: github_polling, auth: user}\n"
+        "    destination: {type: github, auth: bot}\n"
+        "  review:\n"
+        "    input_source: {type: github_polling, auth: bot}\n"
+        "    destination: {type: github, auth: user}\n"
+    )
+    config.load_pipeline_config.cache_clear()
+    config.load_review_pipeline_config.cache_clear()
+
+    execution = compose_runtime()
+    reviews = compose_review_runtime()
+
+    assert isinstance(execution.input_source.github_client, GitHubClient)
+    assert execution.input_source.github_client.identity.mode == "user"
+    assert execution.destination.github_client.identity.mode == "bot"
+    assert reviews.input_source.github_client.identity.mode == "bot"
+    assert reviews.runtime.destination.github_client.identity.mode == "user"
 
 
 def test_registered_factories_return_protocol_implementations():

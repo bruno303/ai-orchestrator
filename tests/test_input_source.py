@@ -66,3 +66,11 @@ def test_comment_terminal_reactions_are_filtered_only_for_bot():
                                           config_module=config_module(), options={"bot_login": "app/bot"})
         comments = [item for item in source.poll() if item.metadata["kind"] == "comment"]
         assert bool(comments) is expected
+
+
+def test_comment_reaction_filter_uses_authenticated_client_actor():
+    client = Client([SimpleNamespace(content="rocket", user_login="local-user")])
+    client.get_authenticated_user_login = lambda: "local-user"
+    source = GitHubPollingInputSource(client, config_module=config_module())
+
+    assert not [item for item in source.poll() if item.metadata["kind"] == "comment"]
