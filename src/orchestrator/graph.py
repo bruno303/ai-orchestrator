@@ -258,7 +258,6 @@ def _route(next_node: str) -> Callable[[TaskState], str]:
 
 
 def build_graph(
-    checkpointer: Any | None = None,
     on_node_start: Callable[[str, TaskState], None] | None = None,
     executor: Executor | None = None,
     workspace_manager: WorkspaceManager | None = None,
@@ -299,4 +298,6 @@ def build_graph(
     builder.add_conditional_edges("test", _route("create_pr"), {"create_pr": "create_pr", "end": END})
     builder.add_conditional_edges("create_pr", _route("cleanup"), {"cleanup": "cleanup", "end": END})
     builder.add_edge("cleanup", END)
-    return builder.compile(checkpointer=checkpointer)
+    # Execution is deliberately process-local. GitHub publication markers are
+    # the durable source of truth, not LangGraph checkpoints.
+    return builder.compile()

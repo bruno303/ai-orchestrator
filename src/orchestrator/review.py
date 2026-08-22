@@ -75,7 +75,7 @@ class ReviewApplication:
         return processed
 
 
-def compose_review_runtime(store: Any | None = None) -> ReviewApplication:
+def compose_review_runtime() -> ReviewApplication:
     pipeline = config.load_review_pipeline_config()
     from orchestrator.providers import (
         REVIEW_DESTINATION_PROVIDERS,
@@ -86,8 +86,6 @@ def compose_review_runtime(store: Any | None = None) -> ReviewApplication:
 
     def create(registry, provider):
         options = {**provider.options, "_runtime": True}
-        if store is not None:
-            options["store"] = store
         return registry.create(provider.type, options)
 
     return ReviewApplication(

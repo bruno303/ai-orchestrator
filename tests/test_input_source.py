@@ -1,175 +1,68 @@
-"""Tests for input-source and application boundaries."""
+"""Tests for stateless polling and GitHub marker semantics."""
+
+from types import SimpleNamespace
 
 from orchestrator.application import PollingApplication
 from orchestrator.domain import Context, WorkItem
+from orchestrator.github_input import GitHubPollingInputSource
 from orchestrator.providers import InputEvent
 
 
-class FakeSource:
-    def __init__(self, events):
-        self.events = events
-
-    def poll(self):
-        return self.events
+class Source:
+    def __init__(self, events): self.events = events
+    def poll(self): return self.events
 
 
-def issue_event(event_id: str, task_id: str, number: int | None, *, kind: str = "issue") -> InputEvent:
-    return InputEvent(
-        event_id,
-        WorkItem(task_id, task_id.split("#")[0], "Fix", context=Context({"github": {"issue_number": number}})),
-        metadata={"kind": kind},
-    )
+def event(task_id, kind="issue"):
+    return InputEvent(f"{kind}:{task_id}", WorkItem(task_id, "owner/repo", "Title", context=Context()),
+                      trigger="rerun" if kind == "comment" else "new", metadata={"kind": kind})
 
 
-def test_polling_application_starts_issue_workflow(tmp_path):
-    from orchestrator.persistence import TaskStore
-
-    store = TaskStore(tmp_path / "db.sqlite")
+def test_polling_prefers_comment_over_ordinary_issue():
     started = []
-    persisted = []
-    event = issue_event("issue:r#1", "r#1", 1)
-
-    app = PollingApplication(
-        store,
-        FakeSource([event]),
-        lambda current_store, seed, task_id: started.append((seed, task_id)) or {"task_id": task_id, "status": "FAILED"},
-        lambda current_store, result: persisted.append(result),
-        lambda *args: None,
-    )
-    app.poll_once(once=True)
-
-    assert started[0][1] == "r#1"
-    assert persisted[0]["task_id"] == "r#1"
-    assert store.get_task("r#1") is not None
+    app = PollingApplication(Source([event("owner/repo#1"), event("owner/repo#1", "comment")]),
+        lambda seed, task_id: started.append(task_id) or {"task_id": task_id, "status": "COMPLETED"},
+        lambda result: None, lambda current: None)
+    app.poll_once()
+    assert started == ["owner/repo#1"]
 
 
-def test_configured_input_provider_identity_is_persisted(tmp_path):
-    from orchestrator.persistence import TaskStore
-
-    class CustomSource(FakeSource):
-        provider_type = "custom_input"
-
-    store = TaskStore(tmp_path / "db.sqlite")
-    seeds = []
-    event = issue_event("issue:r#2", "r#2", 2)
-    app = PollingApplication(
-        store,
-        CustomSource([event]),
-        lambda current_store, seed, task_id: seeds.append(seed) or {"task_id": task_id, "status": "FAILED"},
-        lambda current_store, result: None,
-        lambda *args: None,
-    )
-
-    app.poll_once(once=True)
-
-    assert seeds[0]["input"]["provider"] == "custom_input"
-    assert "provider" not in seeds[0]
-
-
-def test_issue_event_is_skipped_if_task_was_created_by_an_earlier_event(tmp_path):
-    from orchestrator.persistence import TaskStore
-
-    store = TaskStore(tmp_path / "db.sqlite")
+def test_polling_only_starts_a_task_once_per_snapshot():
     started = []
-    store.create_task("r#3", "r", 3)
-    event = issue_event("issue:r#3", "r#3", 3)
-
-    app = PollingApplication(
-        store,
-        FakeSource([event]),
-        lambda *args: started.append(args),
-        lambda *args: None,
-        lambda *args: None,
-    )
-    app.poll_once(once=True)
-
-    assert started == []
+    app = PollingApplication(Source([event("owner/repo#1"), event("owner/repo#1")]),
+        lambda seed, task_id: started.append(task_id) or {"task_id": task_id, "status": "COMPLETED"},
+        lambda result: None, lambda current: None)
+    app.poll_once()
+    assert started == ["owner/repo#1"]
 
 
-def test_provider_neutral_comment_event_uses_its_work_item_id(tmp_path):
-    from orchestrator.persistence import TaskStore
-
-    class Feedback:
-        def __init__(self):
-            self.events = []
-
-        def mark_started(self, event):
-            self.events.append(("started", event.event_id))
-
-        def mark_succeeded(self, event):
-            self.events.append(("succeeded", event.event_id))
-
-        def mark_failed(self, event, error=None):
-            self.events.append(("failed", event.event_id, error))
-
-    store = TaskStore(tmp_path / "db.sqlite")
-    reset = []
-    started = []
-    feedback = Feedback()
-    event = InputEvent(
-        "comment:external-1",
-        WorkItem("external-work-42", "r", "Follow up"),
-        metadata={"kind": "comment"},
-    )
-    app = PollingApplication(
-        store,
-        FakeSource([event]),
-        lambda current_store, seed, task_id: started.append((seed, task_id)) or {
-            "task_id": task_id, "status": "COMPLETED"
-        },
-        lambda *args: None,
-        lambda current_store, current_event: reset.append(current_event.event_id),
-        feedback=feedback,
-    )
-
-    app.poll_once(once=True)
-
-    assert started[0][1] == "external-work-42"
-    assert started[0][0]["input"]["data"]["work_item_id"] == "external-work-42"
-    assert store.get_task("external-work-42") is not None
-    assert reset == ["comment:external-1"]
-    assert feedback.events == [
-        ("started", "comment:external-1"),
-        ("succeeded", "comment:external-1"),
-    ]
+class Client:
+    class GitHubError(Exception): pass
+    def __init__(self, reactions=()): self.reactions = reactions
+    def list_open_issues(self, repository):
+        return [SimpleNamespace(number=1, title="eligible", body="", labels=[]),
+                SimpleNamespace(number=2, title="done", body="", labels=["ai-developed"])]
+    def list_open_pull_requests(self, repository): return []
+    def list_issue_comments(self, repository, number): return [SimpleNamespace(id=11, body="/ai-agent rerun")]
+    def list_issue_comment_reactions(self, repository, comment_id): return self.reactions
+    def get_issue(self, repository, number): return SimpleNamespace(number=number, title="title", body="body")
+    def find_open_pr(self, repository, branch): return None
 
 
-def test_provider_neutral_issue_without_number_is_accepted(tmp_path):
-    from orchestrator.persistence import TaskStore
-
-    store = TaskStore(tmp_path / "db.sqlite")
-    started = []
-    event = InputEvent("issue:unknown", WorkItem("issue:unknown", "r", "Fix"), metadata={"kind": "issue"})
-    app = PollingApplication(
-        store,
-        FakeSource([event]),
-        lambda *args: started.append(args),
-        lambda *args: None,
-        lambda *args: None,
-    )
-
-    app.poll_once(once=True)
-
-    assert started[0][2] == "issue:unknown"
-    assert store.get_task("issue:unknown") is not None
+def config_module():
+    return SimpleNamespace(allowed_repositories=lambda: ["owner/repo"], repository_label=lambda repo: None,
+                           repository_command=lambda repo: "/ai-agent")
 
 
-def test_review_input_filters_processed_label():
-    from types import SimpleNamespace
+def test_developed_issue_is_not_returned_as_new_work():
+    source = GitHubPollingInputSource(Client(), config_module=config_module())
+    assert [item.work_item.id for item in source.poll() if item.metadata["kind"] == "issue"] == ["owner/repo#1"]
 
-    from orchestrator.github_review import GitHubReviewInputSource
 
-    class Client:
-        def list_open_pull_requests(self, repository):
-            return [SimpleNamespace(number=1), SimpleNamespace(number=2)]
-
-        def get_pull_request(self, repository, number):
-            return SimpleNamespace(
-                number=number, title="Review", body="", url="url",
-                labels=["ai-reviewed"] if number == 1 else [],
-                head_ref="head", base_ref="main", head_sha="sha",
-                head_clone_url="clone", files=[], changed_lines={},
-            )
-
-    source = GitHubReviewInputSource(Client(), SimpleNamespace(allowed_repositories=lambda: ["r"]))
-    assert [event.context.namespace("github")["pr_number"] for event in source.poll()] == [2]
+def test_comment_terminal_reactions_are_filtered_only_for_bot():
+    for content, login, expected in (("eyes", "app/bot", True), ("rocket", "app/bot", False),
+                                     ("-1", "app/bot", False), ("rocket", "other", True)):
+        source = GitHubPollingInputSource(Client([SimpleNamespace(content=content, user_login=login)]),
+                                          config_module=config_module(), options={"bot_login": "app/bot"})
+        comments = [item for item in source.poll() if item.metadata["kind"] == "comment"]
+        assert bool(comments) is expected

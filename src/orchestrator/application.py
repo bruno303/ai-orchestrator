@@ -26,11 +26,11 @@ class Runtime:
     context_presenter: ContextPresenter = NoopContextPresenter()
 
 
-def compose_runtime(store: Any) -> Runtime:
+def compose_runtime() -> Runtime:
     """Construct the configured provider pipeline with explicit dependencies."""
     pipeline = config.load_pipeline_config()
     input_source = config.INPUT_PROVIDERS.create(
-        pipeline.input_source.type, {**pipeline.input_source.options, "store": store, "_runtime": True}
+        pipeline.input_source.type, {**pipeline.input_source.options, "_runtime": True}
     )
     executor = config.EXECUTOR_PROVIDERS.create(
         pipeline.executor.type, {**pipeline.executor.options, "_runtime": True}
@@ -97,27 +97,37 @@ class PollingApplication:
 
     def __init__(
         self,
-        store: Any,
         input_source: InputSource,
-        run_graph: Callable[[Any, dict, str], dict],
-        persist_result: Callable[[Any, dict], None],
-        reset_task: Callable[[Any, InputEvent], None],
+        run_graph: Callable[[dict, str], dict],
+        report_result: Callable[[dict], None],
+        reset_task: Callable[[InputEvent], None],
         feedback: SourceFeedback | None = None,
         now: Callable[[], str] | None = None,
         input_provider: str | None = None,
     ) -> None:
-        self.store = store
         self.input_source = input_source
         self.run_graph = run_graph
-        self.persist_result = persist_result
+        self.report_result = report_result
         self.reset_task = reset_task
         self.feedback = feedback or getattr(input_source, "feedback", None) or _NoopFeedback()
         self.now = now or (lambda: "--:--:--")
         self.input_provider = input_provider
 
     def poll_once(self, once: bool = False) -> None:
-        for event in self.input_source.poll():
-            if event.trigger == "rerun" or event.metadata.get("kind") == "comment":
+        events = self.input_source.poll()
+        # Explicit commands override ordinary issue discovery in one snapshot.
+        command_task_ids = {
+            event.work_item.id for event in events
+            if event.trigger == "rerun" or event.metadata.get("kind") == "comment"
+        }
+        started: set[str] = set()
+        for event in events:
+            task_id = event.work_item.id
+            is_comment = event.trigger == "rerun" or event.metadata.get("kind") == "comment"
+            if task_id in started or (not is_comment and task_id in command_task_ids):
+                continue
+            started.add(task_id)
+            if is_comment:
                 self._run_comment(event)
             else:
                 self._run_issue(event)
@@ -126,27 +136,14 @@ class PollingApplication:
 
     def _run_issue(self, event: InputEvent) -> None:
         task_id = event.work_item.id
-        # A command comment for the same issue may have been processed earlier
-        # in this polling snapshot.
-        existing = (
-            self.store.exists_task(task_id)
-            if hasattr(self.store, "exists_task")
-            else self.store.get_task(task_id) is not None
-        )
-        if existing:
-            return
         seed = _input_seed(event, task_id, provider=self.input_provider or _input_provider(self.input_source))
         print(f"[{self.now()}] new issue: {task_id} - {event.work_item.title}")
-        self.store.create_task(task_id, event.work_item.repository)
-        self.persist_result(self.store, self.run_graph(self.store, seed, task_id))
+        self.report_result(self.run_graph(seed, task_id))
 
     def _run_comment(self, event: InputEvent) -> None:
         task_id = event.work_item.id
-        task = self.store.get_task(task_id)
-        if task and task["status"] in self._active_statuses():
-            return
         self.feedback.mark_started(event)
-        self.reset_task(self.store, event)
+        self.reset_task(event)
         seed = _input_seed(
             event,
             task_id,
@@ -158,10 +155,9 @@ class PollingApplication:
             f"on {event.work_item.repository} ({task_id})",
             flush=True,
         )
-        self.store.create_task(task_id, event.work_item.repository)
         try:
-            result = self.run_graph(self.store, seed, task_id)
-            self.persist_result(self.store, result)
+            result = self.run_graph(seed, task_id)
+            self.report_result(result)
             status = result.get("status", state_mod.FAILED)
             if status == state_mod.COMPLETED:
                 self.feedback.mark_succeeded(event)
@@ -170,18 +166,6 @@ class PollingApplication:
         except Exception as exc:
             self.feedback.mark_failed(event, str(exc))
             raise
-
-    @staticmethod
-    def _active_statuses() -> set[str]:
-        return {
-            state_mod.RECEIVED,
-            state_mod.PREPARING,
-            state_mod.PLANNING,
-            state_mod.IMPLEMENTING,
-            state_mod.TESTING,
-            state_mod.CREATING_PR,
-        }
-
 
 ApplicationService = PollingApplication
 

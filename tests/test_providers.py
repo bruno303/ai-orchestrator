@@ -143,9 +143,7 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
     )
     config.load_pipeline_config.cache_clear()
 
-    from orchestrator.persistence import TaskStore
-
-    runtime = compose_runtime(TaskStore(tmp_path / "db.sqlite"))
+    runtime = compose_runtime()
 
     assert isinstance(runtime.input_source, GitHubPollingInputSource)
     assert isinstance(runtime.executor, OpenCodeExecutor)
@@ -181,17 +179,13 @@ def test_composed_github_source_records_configured_provider_name(allowlist, tmp_
         "pipeline:\n  input_source:\n    type: github_polling\n"
     )
     config.load_pipeline_config.cache_clear()
-    from orchestrator.persistence import TaskStore
-
-    store = TaskStore(tmp_path / "db.sqlite")
-    runtime = compose_runtime(store)
+    runtime = compose_runtime()
     runtime.input_source.github_client = FakeGitHub
     seeds = []
     app = PollingApplication(
-        store,
         runtime.input_source,
-        lambda current_store, seed, task_id: seeds.append(seed) or {"task_id": task_id, "status": "FAILED"},
-        lambda current_store, result: None,
+        lambda seed, task_id: seeds.append(seed) or {"task_id": task_id, "status": "FAILED"},
+        lambda result: None,
         lambda *args: None,
     )
 

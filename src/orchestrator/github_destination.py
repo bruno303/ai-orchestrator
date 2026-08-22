@@ -36,6 +36,10 @@ class GitHubDestination:
         self.options = dict(options or {})
         self.provider_type = "github"
 
+    @property
+    def developed_label(self) -> str:
+        return str(self.options.get("developed_label", "ai-developed"))
+
     def publish(self, request: ChangeRequest) -> PublishedChange:
         github_context = request.context.namespace("github")
         git_context = request.context.namespace("git")
@@ -63,10 +67,12 @@ class GitHubDestination:
             body = _body(issue_number, current)
             if body != current:
                 github.update_pull_request_body(repository, existing_pr, body)
+            github.add_issue_label(repository, issue_number, self.developed_label)
             return PublishedChange(str(existing_pr), None, self.provider_type, context)
 
         number = github.create_pull_request(
             repository, title, _body(issue_number, description),
             head=source_ref, base=target_ref,
         )
+        github.add_issue_label(repository, issue_number, self.developed_label)
         return PublishedChange(str(number), provider=self.provider_type, context=context)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from urllib.parse import quote
 from dataclasses import dataclass, field
 
 from orchestrator import github_auth
@@ -60,7 +61,7 @@ class Issue:
 def get_issue(repository: str, number: int) -> Issue:
     out = _api(
         f"repos/{repository}/issues/{number}",
-        "{number, title, body, html_url, pull_request}",
+        "{number, title, body, html_url, pull_request, labels}",
     )
     data = json.loads(out)
     if data.get("pull_request"):
@@ -70,6 +71,7 @@ def get_issue(repository: str, number: int) -> Issue:
         title=data["title"],
         body=data.get("body") or "",
         html_url=data["html_url"],
+        labels=[label["name"] for label in data.get("labels") or [] if isinstance(label, dict)],
     )
 
 
@@ -302,15 +304,27 @@ def _changed_lines(files: list[dict]) -> dict[str, dict[str, list[int]]]:
     return result
 
 
-def add_pull_request_label(repository: str, number: int, label: str) -> None:
-    """Add a label to a pull request."""
+def ensure_label(repository: str, label: str) -> None:
+    """Ensure an issue label exists without changing any existing settings."""
+    try:
+        _api(f"repos/{repository}/labels/{quote(label, safe='')}")
+    except GitHubError as exc:
+        message = str(exc).lower()
+        if "404" not in message and "not found" not in message:
+            raise
+        _run_gh(["api", "--method", "POST", f"repos/{repository}/labels", "-f", f"name={label}"])
+
+
+def add_issue_label(repository: str, number: int, label: str) -> None:
+    """Ensure and add a label to an issue or pull request."""
+    ensure_label(repository, label)
     _run_gh(["api", f"repos/{repository}/issues/{number}/labels", "-f", f"labels[]={label}"])
 
 
-def remove_pull_request_label(repository: str, number: int, label: str) -> None:
-    """Remove a label from a pull request when it exists."""
+def remove_issue_label(repository: str, number: int, label: str) -> None:
+    """Remove a label from an issue or pull request when it exists."""
     try:
-        _run_gh(["api", "--method", "DELETE", f"repos/{repository}/issues/{number}/labels/{label}"])
+        _run_gh(["api", "--method", "DELETE", f"repos/{repository}/issues/{number}/labels/{quote(label, safe='')}"])
     except GitHubError as exc:
         # GitHub returns 404 when the label is already absent; removal is
         # intentionally idempotent for polling/retry workflows.
@@ -364,9 +378,11 @@ def publish_pull_request_review(
     )
 
 
-# Short aliases keep the adapter vocabulary convenient for callers.
-add_label = add_pull_request_label
-remove_label = remove_pull_request_label
+# GitHub's issue-label endpoint handles PRs too; retain old names as aliases.
+add_pull_request_label = add_issue_label
+remove_pull_request_label = remove_issue_label
+add_label = add_issue_label
+remove_label = remove_issue_label
 list_review_comments = list_pull_request_review_comments
 create_pull_request_review = publish_pull_request_review
 
@@ -388,3 +404,21 @@ def add_reaction(repository: str, comment_id: int, content: str) -> None:
             f"content={content}",
         ]
     )
+
+
+@dataclass(frozen=True)
+class Reaction:
+    content: str
+    user_login: str
+
+
+def list_issue_comment_reactions(repository: str, comment_id: int) -> list[Reaction]:
+    """List reactions on an issue comment, including their authors."""
+    out = _api(
+        f"repos/{repository}/issues/comments/{comment_id}/reactions?per_page=100",
+        paginate=True,
+    )
+    return [
+        Reaction(item.get("content") or "", (item.get("user") or {}).get("login") or "")
+        for item in json.loads(out or "[]")
+    ]
