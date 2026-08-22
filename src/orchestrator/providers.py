@@ -263,11 +263,9 @@ def _input_factory(options: dict[str, Any]) -> object:
     if not options.pop("_runtime", False):
         return _PlaceholderInputSource(options)
     from orchestrator.github_input import GitHubPollingInputSource, GitHubSourceFeedback
-    from orchestrator.persistence import TaskStore
 
-    store = options.pop("store", None) or TaskStore()
-    source = GitHubPollingInputSource(store, options=options)
-    source.feedback = GitHubSourceFeedback(store, source.github_client)
+    source = GitHubPollingInputSource(options=options)
+    source.feedback = GitHubSourceFeedback(source.github_client)
     return source
 
 

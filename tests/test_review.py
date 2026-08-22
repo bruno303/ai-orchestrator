@@ -131,7 +131,7 @@ def test_review_poll_continues_after_cleanup_failure():
     assert len(destination.published) == 2
 
 
-def test_review_runtime_uses_registries_and_store(monkeypatch):
+def test_review_runtime_uses_registries_without_store(monkeypatch):
     pipeline = config.ReviewPipelineConfig(
         config.ProviderConfig("input", {"input-option": 1}),
         config.ProviderConfig("executor", {"executor-option": 2}),
@@ -154,8 +154,8 @@ def test_review_runtime_uses_registries_and_store(monkeypatch):
     import orchestrator.providers as providers
     for name in ("REVIEW_INPUT_PROVIDERS", "REVIEW_EXECUTOR_PROVIDERS", "REVIEW_WORKSPACE_PROVIDERS", "REVIEW_DESTINATION_PROVIDERS"):
         monkeypatch.setattr(providers, name, Registry())
-    compose_review_runtime(store="store")
-    assert all(options["store"] == "store" for _, options in captured)
+    compose_review_runtime()
+    assert all("store" not in options for _, options in captured)
     assert [provider for provider, _ in captured] == ["input", "executor", "workspace", "destination"]
 
 

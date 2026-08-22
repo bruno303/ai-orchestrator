@@ -46,6 +46,7 @@ def test_destination_reuses_existing_pr_without_changing_body(monkeypatch, tmp_p
         "orchestrator.github.update_pull_request_body",
         lambda repository, number, body: calls.append(("update", number, body)),
     )
+    monkeypatch.setattr("orchestrator.github.add_issue_label", lambda *args: calls.append(("label", *args)))
     result = GitHubDestination().publish(
         ChangeRequest(
             "company/backend#1", "company/backend", "feat: x", "Closes #1",
@@ -56,7 +57,7 @@ def test_destination_reuses_existing_pr_without_changing_body(monkeypatch, tmp_p
     )
     assert result.id == "7"
     assert calls[0] == ("push", "ai/issue-1")
-    assert calls == [("push", "ai/issue-1")]
+    assert calls == [("push", "ai/issue-1"), ("label", "company/backend", 1, "ai-developed")]
 
 
 def test_github_destination_reads_issue_metadata_from_its_namespace(monkeypatch, tmp_path):
@@ -70,6 +71,7 @@ def test_github_destination_reads_issue_metadata_from_its_namespace(monkeypatch,
         "orchestrator.github.create_pull_request",
         lambda repository, title, body, **kwargs: calls.append(("create", body, kwargs)) or 23,
     )
+    monkeypatch.setattr("orchestrator.github.add_issue_label", lambda *args: calls.append(("label", *args)))
     request = ChangeRequest(
         "company/backend#7", "company/backend", "feat: task", "description",
         "ai/issue-7", "main",
@@ -86,3 +88,16 @@ def test_github_destination_reads_issue_metadata_from_its_namespace(monkeypatch,
     assert result.id == "23"
     assert calls[0] == ("commit", "feat: task\n\nCloses #7")
     assert calls[2][1].startswith("Closes #7")
+
+
+def test_destination_does_not_report_success_when_developed_label_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr(git, "has_changes", lambda workspace: False)
+    monkeypatch.setattr(git, "commits_ahead", lambda workspace, base: 1)
+    monkeypatch.setattr(git, "push_branch", lambda *args: None)
+    monkeypatch.setattr("orchestrator.github.find_open_pr", lambda *args: 12)
+    monkeypatch.setattr("orchestrator.github.get_pull_request", lambda *args: type("PR", (), {"body": "Closes #1"})())
+    monkeypatch.setattr("orchestrator.github.add_issue_label", lambda *args: (_ for _ in ()).throw(RuntimeError("label failed")))
+    import pytest
+    with pytest.raises(RuntimeError, match="label failed"):
+        GitHubDestination().publish(ChangeRequest("company/backend#1", "company/backend", "title", "",
+            "ai/issue-1", "main", Context({"github": {"issue_number": 1}, "git": {"workspace": str(tmp_path)}})))

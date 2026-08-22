@@ -1,4 +1,4 @@
-"""CLI: run / execute / review / list / status / resume."""
+"""CLI commands for stateless GitHub-backed orchestration."""
 
 from __future__ import annotations
 
@@ -8,14 +8,12 @@ import inspect
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from orchestrator import config, git, github, state as state_mod, workspace
 from orchestrator.application import PollingApplication, _input_seed, compose_runtime
 from orchestrator.domain import Context, WorkItem
 from orchestrator.graph import build_graph
-from orchestrator.persistence import PersistenceError, TaskStore
 from orchestrator.providers import InputEvent
 from orchestrator.review import compose_review_runtime
 
@@ -29,559 +27,197 @@ def _parse_ref(ref: str) -> tuple[str, int]:
     return match.group(1), int(match.group(2))
 
 
-def _seed_state(store: TaskStore, repository: str, issue_number: int) -> dict:
-    issue = github.get_issue(repository, issue_number)
-    try:
-        repository_metadata = github.get_repository(repository)
-    except github.GitHubError:
-        # ``run`` is a compatibility command; retain a usable GitHub checkout
-        # even when repository metadata is unavailable.
-        repository_metadata = {
-            "ssh_url": f"https://github.com/{repository}.git",
-            "default_branch": "",
-        }
-    task_id = f"{repository}#{issue_number}"
-    store.create_task(task_id, repository)
-    context = Context({
-        "github": {"issue_number": issue_number},
-        "git": {
-                "repository_url": github.https_clone_url(repository_metadata, repository),
-                "base_branch": repository_metadata.get("default_branch", ""),
-                "branch": f"ai/issue-{issue_number}",
-                "workspace": str(workspace.task_workspace(task_id)),
-        },
-    })
-    event = InputEvent(
-        f"issue:{task_id}",
-        WorkItem(task_id, repository, issue.title, issue.body, input_provider="github", context=context),
-    )
-    return _input_seed(event, task_id, provider="github")
-
-
 def _now() -> str:
     return time.strftime("%H:%M:%S")
 
 
-def _run_graph(
-    store: TaskStore,
-    seed: dict | None,
-    task_id: str,
-    *,
-    executor=None,
-    workspace_manager=None,
-    destination=None,
-    runtime=None,
-) -> dict:
-    """Run (or resume) the graph, streaming per-node progress to stdout and DB.
+def _seed_state(repository: str, issue_number: int) -> dict:
+    issue = github.get_issue(repository, issue_number)
+    try:
+        metadata = github.get_repository(repository)
+    except github.GitHubError:
+        metadata = {"ssh_url": f"https://github.com/{repository}.git", "default_branch": ""}
+    task_id = f"{repository}#{issue_number}"
+    context = Context({"github": {"issue_number": issue_number}, "git": {
+        "repository_url": github.https_clone_url(metadata, repository),
+        "base_branch": metadata.get("default_branch", ""), "branch": f"ai/issue-{issue_number}",
+        "workspace": str(workspace.task_workspace(task_id)),
+    }})
+    event = InputEvent(f"issue:{task_id}", WorkItem(task_id, repository, issue.title, issue.body,
+                       input_provider="github", context=context))
+    return _input_seed(event, task_id, provider="github")
 
-    The graph is built per run so the heartbeat callback knows the task_id.
-    Status persistence is best-effort: a PersistenceError never crashes the run
-    (the LangGraph checkpoint remains the source of truth).
-    """
+
+def _run_graph(seed: dict, task_id: str, *, executor=None, workspace_manager=None,
+               destination=None, runtime=None) -> dict:
+    """Run an in-memory graph and retain only human-readable event logs."""
     if runtime is None and executor is None and workspace_manager is None and destination is None:
-        configured_runtime = compose_runtime(store)
-        executor = configured_runtime.executor
-        workspace_manager = configured_runtime.workspace_manager
-        destination = configured_runtime.destination
-        runtime = configured_runtime.execution_runtime
-
-    node_starts: dict[str, float] = {}
+        configured = compose_runtime()
+        executor, workspace_manager = configured.executor, configured.workspace_manager
+        destination, runtime = configured.destination, configured.execution_runtime
+    starts: dict[str, float] = {}
 
     def on_node_start(node: str, state: dict) -> None:
-        node_starts[node] = time.monotonic()
-        try:
-            store.touch(task_id, node=node)
-            workspace.append_event(task_id, event="node_start", node=node)
-        except PersistenceError as exc:
-            print(f"[{_now()}] [{node}] warning: heartbeat failed: {exc}", flush=True)
+        starts[node] = time.monotonic()
+        workspace.append_event(task_id, event="node_start", node=node)
 
-    graph_kwargs = {"on_node_start": on_node_start}
-    supported = inspect.signature(build_graph).parameters
-    for name, value in (
-        ("executor", executor),
-        ("workspace_manager", workspace_manager),
-        ("destination", destination),
-        ("runtime", runtime),
-    ):
-        if value is not None and (name in supported or any(p.kind == p.VAR_KEYWORD for p in supported.values())):
-            graph_kwargs[name] = value
-    graph = build_graph(store.checkpointer(), **graph_kwargs)
-    config_dict = {"configurable": {"thread_id": task_id}}
-    for chunk in graph.stream(seed, config=config_dict, stream_mode="updates"):
+    kwargs = {"on_node_start": on_node_start}
+    for name, value in (("executor", executor), ("workspace_manager", workspace_manager),
+                        ("destination", destination), ("runtime", runtime)):
+        if value is not None and name in inspect.signature(build_graph).parameters:
+            kwargs[name] = value
+    graph = build_graph(**kwargs)
+    # Stream updates are partial; retain the input seed while merging the
+    # in-memory execution result instead of querying a durable graph state.
+    result: dict = dict(seed)
+    for chunk in graph.stream(seed, stream_mode="updates"):
         for node, update in chunk.items():
-            status = update.get("status")
-            error = update.get("error")
-            duration = round(time.monotonic() - node_starts.get(node, time.monotonic()), 1)
+            result.update(update)
+            status, error = update.get("status"), update.get("error")
+            duration = round(time.monotonic() - starts.get(node, time.monotonic()), 1)
             if status:
                 print(f"[{_now()}] [{node}] {status} ({duration}s)", flush=True)
-                try:
-                    store.update_task(
-                        task_id,
-                        status=status,
-                        workspace=(update.get("workspace") or {}).get("path") if isinstance(update.get("workspace"), dict) else update.get("workspace"),
-                        branch=(update.get("workspace") or {}).get("branch") if isinstance(update.get("workspace"), dict) else update.get("branch"),
-                        external_id=(update.get("output") or {}).get("external_id") if isinstance(update.get("output"), dict) else None,
-                        error=update.get("error"),
-                        input_provider=(update.get("input") or {}).get("provider"),
-                        output_provider=(update.get("output") or {}).get("provider"),
-                    )
-                    workspace.append_event(
-                        task_id,
-                        event="node_end",
-                        node=node,
-                        status=status,
-                        duration_s=duration,
-                    )
-                except PersistenceError as exc:
-                    print(f"[{_now()}] [{node}] warning: could not persist status: {exc}", flush=True)
+                workspace.append_event(task_id, event="node_end", node=node, status=status, duration_s=duration)
             elif error:
                 print(f"[{_now()}] [{node}] error: {error}", flush=True)
-                try:
-                    store.update_task(task_id, error=error)
-                    workspace.append_event(
-                        task_id,
-                        event="node_end",
-                        node=node,
-                        status=state_mod.FAILED,
-                        duration_s=duration,
-                        error=error[:200],
-                    )
-                except PersistenceError as exc:
-                    print(f"[{_now()}] [{node}] warning: could not persist error: {exc}", flush=True)
-    return graph.get_state(config_dict).values
+                workspace.append_event(task_id, event="node_end", node=node, status=state_mod.FAILED,
+                                       duration_s=duration, error=str(error)[:200])
+    return result
 
 
-def _reset_task(store: TaskStore, repository: str, issue_number: int, branch: str) -> None:
-    """Remove checkpoints, worktree, and branch so a task can run cleanly from scratch."""
-    task_id = f"{repository}#{issue_number}"
-    tables = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    for table in ("checkpoints", "writes"):
-        if table in tables:
-            store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
-    store.conn.commit()
-    ws = workspace.task_workspace(task_id)
-    if ws.exists():
-        git.remove_worktree(git.base_repo_dir(repository), ws, branch)
-    store.conn.execute(
-        """
-        UPDATE tasks SET status = ?, workspace = NULL, branch = NULL,
-                         external_id = NULL, publication_url = NULL,
-                         error = NULL, updated_at = datetime('now')
-        WHERE task_id = ?
-        """,
-        (state_mod.RECEIVED, task_id),
-    )
-    store.conn.commit()
-
-
-def _reset_event_task(store: TaskStore, event) -> None:
-    """Reset a task using its opaque identity and provider-supplied checkout."""
-    task_id = event.work_item.id
-    git_context = event.work_item.context.namespace("git")
-    tables = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    for table in ("checkpoints", "writes"):
-        if table in tables:
-            store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
-    workspace_path = git_context.get("workspace")
-    branch = str(git_context.get("branch", ""))
-    if workspace_path and Path(str(workspace_path)).exists():
-        git.remove_worktree(
-            git.base_repo_dir(event.work_item.repository), Path(str(workspace_path)), branch
-        )
-    store.conn.execute(
-        "UPDATE tasks SET status = ?, workspace = NULL, branch = NULL, external_id = NULL, "
-        "publication_url = NULL, error = NULL, updated_at = datetime('now') WHERE task_id = ?",
-        (state_mod.RECEIVED, task_id),
-    )
-    store.conn.commit()
-
-
-def cmd_run(args: argparse.Namespace) -> None:
-    repository, issue_number = _parse_ref(args.issue_ref)
-    if not config.is_repository_allowed(repository):
-        sys.exit(f"repository {repository} is not in the allowlist ({config.CONFIG_FILE})")
-    store = TaskStore()
-    task_id = f"{repository}#{issue_number}"
-    if store.exists_task(task_id) and not args.force:
-        sys.exit(f"task {task_id} already exists; use 'resume {task_id}' or --force")
-    if args.force:
-        _reset_task(store, repository, issue_number, f"ai/issue-{issue_number}")
-    seed = _seed_state(store, repository, issue_number)
-    result = _run_graph(store, seed, task_id)
-    _persist_result(store, result)
-
-
-def _drop_latest_checkpoint(store: TaskStore, task_id: str) -> None:
-    """Delete the most recent checkpoint (and its pending writes) so a finished FAILED thread can re-run its last node."""
-    store.conn.execute(
-        """
-        DELETE FROM checkpoints WHERE thread_id = ? AND checkpoint_id = (
-            SELECT checkpoint_id FROM checkpoints
-            WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1
-        )
-        """,
-        (task_id, task_id),
-    )
-    store.conn.execute("DELETE FROM writes WHERE thread_id = ?", (task_id,))
-    store.conn.commit()
-
-
-def _not_found_hint(task_id: str) -> str:
-    return f"task {task_id} not found; run 'orchestrator list' to see task ids (format owner/repo#issue)"
-
-
-def cmd_resume(args: argparse.Namespace) -> None:
-    task_id = args.task_id
-    store = TaskStore()
-    task = store.get_task(task_id)
-    if task is None:
-        sys.exit(_not_found_hint(task_id))
-    graph = build_graph(store.checkpointer())
-    config_dict = {"configurable": {"thread_id": task_id}}
-    current = graph.get_state(config_dict).values
-    if current.get("status") == state_mod.FAILED:
-        _drop_latest_checkpoint(store, task_id)
-    result = _run_graph(store, None, task_id)
-    _persist_result(store, result)
-
-
-def cmd_reset(args: argparse.Namespace) -> None:
-    """Delete a task entirely so the next execute re-runs it from scratch.
-
-    Standalone and non-running: it only clears DB state (tasks/checkpoints/writes)
-    and the worktree/branch. It does not invoke the graph. Because the tasks row is
-    removed, the already-running execute picks the issue up again on its next iteration
-    via the existing new-issue flow.
-    """
-    repository, issue_number = _parse_ref(args.issue_ref)
-    store = TaskStore()
-    task_id = f"{repository}#{issue_number}"
-    if store.get_task(task_id) is None:
-        sys.exit(_not_found_hint(task_id))
-    branch = f"ai/issue-{issue_number}"
-    ws = workspace.task_workspace(task_id)
-    if ws.exists():
-        try:
-            git.remove_worktree(git.base_repo_dir(repository), ws, branch)
-        except git.GitError as exc:
-            print(f"[{_now()}] reset: warning: could not remove worktree: {exc}", flush=True)
-    tables = {r[0] for r in store.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    for table in ("checkpoints", "writes"):
-        if table in tables:
-            store.conn.execute(f"DELETE FROM {table} WHERE thread_id = ?", (task_id,))
-    store.conn.execute("DELETE FROM tasks WHERE task_id = ?", (task_id,))
-    store.conn.commit()
-    print(f"[{_now()}] reset {task_id}: deleted; will re-run on next execute", flush=True)
-
-
-def _result_url(result: dict) -> str | None:
-    output = result.get("output")
-    if isinstance(output, dict):
-        url = output.get("url")
-        return str(url) if url is not None else None
-    return None
-
-
-def _result_external_id(result: dict) -> str | None:
-    output = result.get("output")
-    if isinstance(output, dict) and output.get("external_id") is not None:
-        return str(output["external_id"])
-    return None
-
-
-def _persist_result(store: TaskStore, result: dict) -> None:
-    status = result.get("status", state_mod.FAILED)
-    publication_url = _result_url(result)
-    external_id = _result_external_id(result)
-    store.update_task(
-        result["task_id"],
-        status=status,
-        workspace=(result.get("workspace") or {}).get("path") if isinstance(result.get("workspace"), dict) else result.get("workspace"),
-        branch=(result.get("workspace") or {}).get("branch") if isinstance(result.get("workspace"), dict) else result.get("branch"),
-        external_id=external_id,
-        publication_url=publication_url,
-        error=result.get("error") if status != state_mod.COMPLETED else None,
-        input_provider=(result.get("input") or {}).get("provider"),
-        output_provider=(result.get("output") or {}).get("provider"),
-    )
+def _report_result(result: dict) -> None:
+    task_id, status = str(result.get("task_id", "unknown")), result.get("status", state_mod.FAILED)
+    output = result.get("output") if isinstance(result.get("output"), dict) else {}
+    external_id, publication_url = output.get("external_id"), output.get("url")
+    workspace.append_event(task_id, event="task_end", status=status, external_id=external_id,
+                           publication_url=publication_url,
+                           error=str(result.get("error", ""))[:200] if status != state_mod.COMPLETED else None)
     if status == state_mod.COMPLETED:
-        store.clear_error(result["task_id"])
-    store.clear_node(result["task_id"])
-    workspace.append_event(
-        result["task_id"],
-        event="task_end",
-        status=status,
-        external_id=external_id,
-        publication_url=publication_url,
-        error=(result.get("error") or "")[:200] if status != state_mod.COMPLETED else None,
-    )
-    if status == state_mod.COMPLETED:
-        reference = external_id or publication_url or "published result"
-        print(f"[{_now()}] COMPLETED: {reference} for {result['task_id']}")
+        print(f"[{_now()}] COMPLETED: {external_id or publication_url or 'published result'} for {task_id}")
     else:
         print(f"[{_now()}] {status}: {result.get('error', 'no error')}")
 
 
-def cmd_list(args: argparse.Namespace) -> None:
-    store = TaskStore()
-    tasks = store.list_tasks()
-    if not tasks:
-        print("no tasks")
-        return
-    print(f"{'id':<28} {'status':<12} {'created_at'} {'published':<16} error")
-    for t in tasks:
-        publication = t.get("external_id") or t.get("publication_url") or ""
-        err = f" ({t['error']})" if t["error"] else ""
-        print(f"{t['task_id']:<28} {t['status']:<12} {t['created_at']} {publication:<16}{err}")
+def _remove_event_workspace(event: InputEvent) -> None:
+    context = event.work_item.context.namespace("git")
+    path = context.get("workspace")
+    if path and Path(str(path)).exists():
+        git.remove_worktree(git.base_repo_dir(event.work_item.repository), Path(str(path)), str(context.get("branch", "")))
 
 
-def cmd_status(args: argparse.Namespace) -> None:
-    store = TaskStore()
-    task = store.get_task(args.task_id)
-    if task is None:
-        sys.exit(_not_found_hint(args.task_id))
-    for key, value in task.items():
-        print(f"{key}: {value}")
-    print("---")
-    for event in workspace.read_events(args.task_id):
-        if event.get("event") in ("node_start", "node_end"):
-            print(
-                f"{event['ts']} {event['event']:<10} {event.get('node',''):<18} "
-                f"status={event.get('status','-'):<12} duration={event.get('duration_s','-')}s"
-            )
+def _developed_label() -> str:
+    """Return the GitHub adapter's configured publication marker."""
+    pipeline = config.load_pipeline_config()
+    return str(pipeline.destination.options.get(
+        "developed_label", pipeline.input_source.options.get("developed_label", "ai-developed")
+    ))
 
 
-def _format_elapsed(node_started_at: str | None, updated_at: str | None) -> str:
-    if not node_started_at:
-        return "-"
-    try:
-        start = datetime.strptime(node_started_at, "%Y-%m-%d %H:%M:%S")
-        end = datetime.strptime(updated_at or node_started_at, "%Y-%m-%d %H:%M:%S")
-        seconds = max(0, int((end - start).total_seconds()))
-        return f"{seconds // 60}m{seconds % 60:02d}s"
-    except ValueError:
-        return "-"
+def cmd_run(args: argparse.Namespace) -> None:
+    repository, number = _parse_ref(args.issue_ref)
+    if not config.is_repository_allowed(repository):
+        sys.exit(f"repository {repository} is not in the allowlist ({config.CONFIG_FILE})")
+    issue = github.get_issue(repository, number)
+    developed_label = _developed_label()
+    if developed_label in issue.labels and not args.force:
+        sys.exit(f"issue {repository}#{number} is already labeled {developed_label}; use --force to run again")
+    _report_result(_run_graph(_seed_state(repository, number), f"{repository}#{number}"))
 
 
-def cmd_watch(args: argparse.Namespace) -> None:
-    store = TaskStore()
-    while True:
-        if not args.once:
-            sys.stdout.write("\x1b[2J\x1b[H")
-            sys.stdout.flush()
-        print(f"\n[{_now()}] tasks ({config.LOGS_DIR})")
-        for task in store.list_tasks():
-            node = task.get("current_node") or ""
-            node_elapsed = _format_elapsed(task.get("node_started_at"), task.get("updated_at"))
-            log_tail = ""
-            if node:
-                log_path = workspace.task_log_path(task["task_id"], node)
-                if log_path.exists():
-                    log_tail = " | ".join(log_path.read_text(errors="replace").splitlines()[-1:])[:100]
-            published = f" published={task['external_id']}" if task.get("external_id") else ""
-            print(
-                f"{task['task_id']:<28} {task['status']:<12} "
-                f"node={node or '-':<16} {node_elapsed:<8} {task['updated_at']}{published} {log_tail}"
-            )
-        if args.once:
-            return
-        time.sleep(3)
+def cmd_reset(args: argparse.Namespace) -> None:
+    repository, number = _parse_ref(args.issue_ref)
+    task_id, branch = f"{repository}#{number}", f"ai/issue-{number}"
+    path = workspace.task_workspace(task_id)
+    if path.exists():
+        try:
+            git.remove_worktree(git.base_repo_dir(repository), path, branch)
+        except git.GitError as exc:
+            print(f"[{_now()}] reset: warning: could not remove worktree: {exc}", flush=True)
+    github.remove_issue_label(repository, number, _developed_label())
+    print(f"[{_now()}] reset {task_id}: marker removed; issue is eligible on the next poll", flush=True)
 
 
 def cmd_logs(args: argparse.Namespace) -> None:
-    task_id = args.task_id
-    logs_dir = workspace.task_logs_dir(task_id)
+    directory = workspace.task_logs_dir(args.task_id)
     if args.node:
-        log_path = logs_dir / f"{args.node}.log"
-        if not log_path.exists():
-            sys.exit(f"no log for node {args.node!r} in {task_id} ({logs_dir})")
-        if args.follow:
-            try:
-                log_path.touch(exist_ok=True)
-                offset = max(0, log_path.stat().st_size - args.lines * 400)
-                with log_path.open(errors="replace") as fh:
-                    fh.seek(offset)
-                    for line in fh:
-                        print(line, end="")
-                    while True:
-                        line = fh.readline()
-                        if line:
-                            print(line, end="")
-                        else:
-                            time.sleep(1)
-            except KeyboardInterrupt:
-                return
-        else:
-            with log_path.open(errors="replace") as fh:
-                lines = fh.readlines()
-                for line in lines[-args.lines :]:
-                    print(line, end="")
+        path = directory / f"{args.node}.log"
+        if not path.exists():
+            sys.exit(f"no log for node {args.node!r} in {args.task_id} ({directory})")
+        print("".join(path.read_text(errors="replace").splitlines(keepends=True)[-args.lines:]), end="")
         return
-    if not logs_dir.exists():
-        sys.exit(f"no logs for {task_id}")
-    print(f"logs for {task_id} ({logs_dir}):")
-    for path in sorted(logs_dir.glob("*.log")):
-        size = path.stat().st_size
-        mtime = datetime.fromtimestamp(path.stat().st_mtime).strftime("%H:%M:%S")
-        print(f"  {path.stem:<12} {size:>9,} bytes  last write {mtime}")
+    if not directory.exists():
+        sys.exit(f"no logs for {args.task_id}")
+    print(f"logs for {args.task_id} ({directory}):")
+    for path in sorted(directory.glob("*.log")):
+        print(f"  {path.stem:<12} {path.stat().st_size:>9,} bytes")
 
 
-def _acquire_poll_lock() -> Path:
-    """Single-instance lock for poll: a second poll exits instead of racing tasks."""
-    lock_path = config.STATE_DIR / "poll.lock"
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = lock_path.open("w")
+def _acquire_poll_lock():
+    path = config.STATE_DIR / "poll.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("w")
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        fd.close()
-        sys.exit(f"another poll is already running (lock {lock_path})")
-    return fd
+        handle.close(); sys.exit(f"another poll is already running (lock {path})")
+    return handle
 
 
-def _detect_stale_tasks(store: TaskStore) -> None:
-    """Mark tasks that look dead (active status, no activity for a long time)."""
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(seconds=config.STALE_SECONDS)
-    ).strftime("%Y-%m-%d %H:%M:%S")
-    placeholders = ",".join("?" * len(ACTIVE_STATUSES))
-    rows = store.conn.execute(
-        f"SELECT task_id FROM tasks WHERE status IN ({placeholders}) AND updated_at < ?",
-        (*ACTIVE_STATUSES, cutoff),
-    ).fetchall()
-    for row in rows:
-        task_id = row["task_id"]
-        print(
-            f"[{_now()}] stale task {task_id}: no activity for {config.STALE_SECONDS}s, marking FAILED",
-            flush=True,
-        )
-        store.update_task(task_id, status=state_mod.FAILED, error="process died (stale task)")
-
-
-def _poll_reviews(review_application) -> None:
+def _poll_reviews(application) -> None:
     try:
-        review_application.poll_once()
+        application.poll_once()
     except Exception as exc:
-        # Review input providers are independent from issue polling.
         print(f"[{_now()}] review poll error (continuing): {exc}", flush=True)
 
 
 def cmd_review(args: argparse.Namespace) -> None:
-    """Poll configured pull-request reviews without polling issues."""
-    lock_fd = _acquire_poll_lock()
+    lock = _acquire_poll_lock()
     try:
-        store = TaskStore()
-        review_application = compose_review_runtime(store)
+        reviews = compose_review_runtime()
         while True:
-            _poll_reviews(review_application)
-            if args.once:
-                break
-            print(f"[{_now()}] review: next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
+            _poll_reviews(reviews)
+            if args.once: return
             time.sleep(config.POLL_INTERVAL_SECONDS)
     finally:
-        lock_fd.close()
+        lock.close()
 
 
 def cmd_execute(args: argparse.Namespace) -> None:
-    lock_fd = _acquire_poll_lock()
+    lock = _acquire_poll_lock()
     try:
-        store = TaskStore()
-        runtime = compose_runtime(store)
-        review_application = compose_review_runtime(store)
-        application = PollingApplication(
-            store,
-            runtime.input_source,
-            lambda current_store, seed, task_id: _run_graph(
-                current_store,
-                seed,
-                task_id,
-                executor=runtime.executor,
-                workspace_manager=runtime.workspace_manager,
-                destination=runtime.destination,
-                runtime=runtime.execution_runtime,
-            ),
-            _persist_result,
-            _reset_event_task,
-            now=_now,
-            input_provider=runtime.input_provider,
-            feedback=runtime.feedback,
-        )
+        runtime, reviews = compose_runtime(), compose_review_runtime()
+        application = PollingApplication(runtime.input_source,
+            lambda seed, task_id: _run_graph(seed, task_id, executor=runtime.executor,
+                workspace_manager=runtime.workspace_manager, destination=runtime.destination, runtime=runtime.execution_runtime),
+            _report_result, _remove_event_workspace, now=_now, input_provider=runtime.input_provider,
+            feedback=runtime.feedback)
         while True:
-            _detect_stale_tasks(store)
-            try:
-                application.poll_once(args.once)
-            except PersistenceError as exc:
-                print(f"[{_now()}] execute: persistence error (continuing): {exc}", flush=True)
-            _poll_reviews(review_application)
-            if args.once:
-                break
+            application.poll_once(args.once); _poll_reviews(reviews)
+            if args.once: return
             print(f"[{_now()}] execute: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
             time.sleep(config.POLL_INTERVAL_SECONDS)
     finally:
-        lock_fd.close()
-
-
-ACTIVE_STATUSES = {
-    state_mod.RECEIVED,
-    state_mod.PREPARING,
-    state_mod.PLANNING,
-    state_mod.IMPLEMENTING,
-    state_mod.TESTING,
-    state_mod.CREATING_PR,
-}
+        lock.close()
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="orchestrator", description="GitHub Issue -> OpenCode -> PR")
     sub = parser.add_subparsers(dest="command", required=True)
-
-    p_run = sub.add_parser("run", help="run a task for an issue (owner/repo#number)")
-    p_run.add_argument("issue_ref")
-    p_run.add_argument("--force", action="store_true", help="re-run even if the task exists")
-    p_run.set_defaults(func=cmd_run)
-
-    p_execute = sub.add_parser("execute", help="execute issue and review workflows")
-    p_execute.add_argument("--once", action="store_true", help="single pass, then exit")
-    p_execute.set_defaults(func=cmd_execute)
-
-    p_review = sub.add_parser("review", help="poll configured pull requests for reviews")
-    p_review.add_argument("--once", action="store_true", help="single pass, then exit")
-    p_review.set_defaults(func=cmd_review)
-
-    p_list = sub.add_parser("list", help="list tasks")
-    p_list.set_defaults(func=cmd_list)
-
-    p_status = sub.add_parser("status", help="show task details")
-    p_status.add_argument("task_id")
-    p_status.set_defaults(func=cmd_status)
-
-    p_resume = sub.add_parser("resume", help="resume an interrupted task")
-    p_resume.add_argument("task_id")
-    p_resume.set_defaults(func=cmd_resume)
-
-    p_reset = sub.add_parser("reset", help="delete a task so the next execute re-runs it from scratch")
-    p_reset.add_argument("issue_ref", help="owner/repo#issue")
-    p_reset.set_defaults(func=cmd_reset)
-
-    p_logs = sub.add_parser("logs", help="list or tail a task's node logs")
-    p_logs.add_argument("task_id")
-    p_logs.add_argument("--node", help="tail a specific node log")
-    p_logs.add_argument("--follow", "-f", action="store_true", help="follow the log live")
-    p_logs.add_argument("--lines", "-n", type=int, default=50, help="last N lines (default 50)")
-    p_logs.set_defaults(func=cmd_logs)
-
-    p_watch = sub.add_parser("watch", help="live view of all tasks")
-    p_watch.add_argument("--once", action="store_true", help="single frame, then exit")
-    p_watch.set_defaults(func=cmd_watch)
-
+    run = sub.add_parser("run", help="run a task for an issue (owner/repo#number)")
+    run.add_argument("issue_ref"); run.add_argument("--force", action="store_true", help="run even if ai-developed is present"); run.set_defaults(func=cmd_run)
+    execute = sub.add_parser("execute", help="execute issue and review workflows")
+    execute.add_argument("--once", action="store_true"); execute.set_defaults(func=cmd_execute)
+    review = sub.add_parser("review", help="poll configured pull requests for reviews")
+    review.add_argument("--once", action="store_true"); review.set_defaults(func=cmd_review)
+    reset = sub.add_parser("reset", help="remove local workspace and ai-developed marker")
+    reset.add_argument("issue_ref"); reset.set_defaults(func=cmd_reset)
+    logs = sub.add_parser("logs", help="list a task's node logs")
+    logs.add_argument("task_id"); logs.add_argument("--node"); logs.add_argument("--lines", "-n", type=int, default=50); logs.set_defaults(func=cmd_logs)
     args = parser.parse_args(argv)
     try:
         args.func(args)
     except KeyboardInterrupt:
-        print(
-            f"\n[{_now()}] interrupted (Ctrl+C). Running tasks are checkpointed; "
-            f"resume later with 'orchestrator resume <task_id>'."
-        )
+        print("\ninterrupted: work is not checkpointed; unlabeled issues can retry from the beginning.")
         sys.exit(130)
 
 

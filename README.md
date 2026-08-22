@@ -77,7 +77,7 @@ Paths, limits, model and loop detection (env overrides):
 |---|---|
 | `ORCHESTRATOR_REPOS_DIR` | `~/agent-repos` (base clones) |
 | `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task worktrees) |
-| `ORCHESTRATOR_DATA_DIR` | `./data` (sqlite state + logs) |
+| `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll lock) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
@@ -104,17 +104,12 @@ orchestrator execute --once
 # Poll open pull requests for provider-neutral AI reviews (loop, or --once)
 orchestrator review --once
 
-# Inspect tasks
-orchestrator list
-orchestrator status company/backend#123
-
-# Resume an interrupted task (state is checkpointed to SQLite)
-orchestrator resume company/backend#123
+# Reset local workspace state and make a developed issue eligible again
+orchestrator reset company/backend#123
 
 # Observability
 orchestrator logs company/backend#123                 # list the task's node logs
-orchestrator logs company/backend#123 --node plan -f  # tail the plan log live
-orchestrator watch                                    # live table of all tasks
+orchestrator logs company/backend#123 --node plan     # read a node log
 ```
 
 ## Comment triggers (`/ai-agent`)
@@ -179,9 +174,8 @@ another workflow engine without duplicating OpenCode, git, or provider logic.
 `GitWorkspaceManager` is provider-neutral: adapters provide explicit clone/fetch
 URLs, refs, revisions, checkout mode, and workspace paths; it performs only git
 clone, fetch, worktree, and cleanup operations.
-LangGraph remains responsible for issue checkpoints and routing; the polling
-review workflow remains independently invokable and does not use issue
-checkpoints.
+LangGraph routes a single in-memory execution. The review workflow remains
+independently invokable and has its own GitHub `ai-reviewed` marker.
 
 Every task or review target has exactly one mandatory, non-empty, opaque string
 ID. Providers use their stable identifier when one exists (`owner/repo#123`,
@@ -195,8 +189,7 @@ under `github`, checkout metadata under `git`, and executor session data under
 `opencode`. Updating one namespace preserves all unrelated namespaces. Generic
 application and runtime code may pass and merge Context, but it must never read
 provider-specific namespaces or keys. Providers may read and update their own
-namespace. Context is data-only so it remains safe in LangGraph checkpoints,
-SQLite state, process restarts, and future HTTP or n8n boundaries.
+namespace. Context is data-only and safe to pass to future HTTP or n8n boundaries.
 
 Provider-specific logging enrichment is supplied by an optional
 `ContextPresenter`. The generic application logs the presenter's generic
@@ -210,13 +203,10 @@ reuse, inline review validation, and processed labels. None of that behavior is
 owned by the generic runtime.
 
 The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the GitHub
-destination. New seeds and graph updates write only the `input`, `processing`,
-`workspace`, and `output` state namespaces. This keeps LangGraph checkpoints
-serializable and lets a provider retain its own metadata without adding
-provider-specific fields to workflow logic. SQLite uses `task_id TEXT PRIMARY KEY NOT NULL`;
-provider numeric IDs are stored only as generic `external_id` values. This
-version starts with a fresh SQLite database and does not migrate old schemas or
-checkpoints.
+destination. New seeds and graph updates use only the `input`, `processing`,
+`workspace`, and `output` state namespaces. GitHub supplies durable execution
+state: successful publication adds `ai-developed` to the source issue; an
+unlabeled issue is retried from the beginning after an interruption.
 
 Pipeline providers can be selected in `config/repositories.yaml`:
 
@@ -256,8 +246,9 @@ Context namespace. Do not put service-specific values in generic fields.
 - **Cleanup**: after a successful PR, the task worktree and local branch are
   removed (logs and the remote branch are kept). Failed tasks keep their
   worktree for debugging.
-- **Persistence**: LangGraph checkpoints + task metadata in
-  `data/state/orchestrator.db` (SQLite).
+- **Execution state**: GitHub is the durable source of truth. A source issue
+  receives `ai-developed` only after its PR is published; interrupted work is
+  retried from the beginning while it remains unlabeled.
 
 ## Development
 

@@ -6,19 +6,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from orchestrator import config, github, state as state_mod, workspace
+from orchestrator import config, github, github_auth, workspace
 from orchestrator.domain import Context, WorkItem
 from orchestrator.providers import InputEvent
 
-
-ACTIVE_STATUSES = {
-    state_mod.RECEIVED,
-    state_mod.PREPARING,
-    state_mod.PLANNING,
-    state_mod.IMPLEMENTING,
-    state_mod.TESTING,
-    state_mod.CREATING_PR,
-}
 
 
 def _pr_context_block(pr: github.PullRequestDetail) -> str:
@@ -38,8 +29,7 @@ def _pr_context_block(pr: github.PullRequestDetail) -> str:
 class GitHubSourceFeedback:
     """Translate semantic input lifecycle events to GitHub comment behavior."""
 
-    def __init__(self, store: Any, github_client: Any = github) -> None:
-        self.store = store
+    def __init__(self, github_client: Any = github) -> None:
         self.github_client = github_client
 
     def _reaction(self, event: InputEvent, content: str) -> None:
@@ -52,28 +42,12 @@ class GitHubSourceFeedback:
             pass
 
     def mark_started(self, event: InputEvent) -> None:
-        github_context = event.context.namespace("github")
-        comment_id = github_context.get("comment_id")
-        if comment_id is not None:
-            self.store.mark_comment_handled(
-                comment_id,
-                event.work_item.id,
-                event.work_item.repository,
-                event.work_item.context.namespace("github")["issue_number"],
-                "STARTED",
-            )
         self._reaction(event, "eyes")
 
     def mark_succeeded(self, event: InputEvent) -> None:
-        comment_id = event.context.namespace("github").get("comment_id")
-        if comment_id is not None:
-            self.store.update_comment_status(comment_id, state_mod.COMPLETED)
         self._reaction(event, "rocket")
 
     def mark_failed(self, event: InputEvent, error: str | None = None) -> None:
-        comment_id = event.context.namespace("github").get("comment_id")
-        if comment_id is not None:
-            self.store.update_comment_status(comment_id, state_mod.FAILED)
         self._reaction(event, "-1")
 
 
@@ -82,11 +56,18 @@ class GitHubPollingInputSource:
     """Translate the existing GitHub polling protocol into input events."""
 
     provider_type = "github_polling"
-    store: Any
     github_client: Any = github
     config_module: Any = config
     options: dict[str, Any] = field(default_factory=dict)
     feedback: Any = None
+
+    @property
+    def developed_label(self) -> str:
+        return str(self.options.get("developed_label", "ai-developed"))
+
+    @property
+    def bot_login(self) -> str:
+        return str(self.options.get("bot_login", github_auth.BOT_LOGIN))
 
     def poll(self) -> list[InputEvent]:
         events: list[InputEvent] = []
@@ -126,7 +107,7 @@ class GitHubPollingInputSource:
                 issues = [issue for issue in issues if label in issue.labels]
             for issue in issues:
                 task_id = f"{repository}#{issue.number}"
-                if self.store.exists_task(task_id):
+                if self.developed_label in issue.labels:
                     continue
                 context = Context({
                     "github": {"issue_number": issue.number},
@@ -169,13 +150,7 @@ class GitHubPollingInputSource:
             comment
             for comment in comments
             if comment.body.strip().startswith(command)
-            and not self.store.is_comment_handled(
-                comment.id, stale_after_seconds=self.config_module.STALE_SECONDS
-            )
-            and not (
-                (task := self.store.get_task(task_id))
-                and task["status"] in ACTIVE_STATUSES
-            )
+            and self._comment_is_eligible(repository, comment.id)
         ]
         if not eligible:
             return []
@@ -223,6 +198,17 @@ class GitHubPollingInputSource:
                 )
             )
         return events
+
+    def _comment_is_eligible(self, repository: str, comment_id: int) -> bool:
+        try:
+            reactions = self.github_client.list_issue_comment_reactions(repository, comment_id)
+        except self.github_client.GitHubError as exc:
+            print(f"[poll] {repository} comment {comment_id}: reactions: {exc}", flush=True)
+            return False
+        return not any(
+            reaction.user_login == self.bot_login and reaction.content in {"rocket", "-1"}
+            for reaction in reactions
+        )
 
     def _repository_state(self, repository: str) -> dict[str, Any]:
         try:
