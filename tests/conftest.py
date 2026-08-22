@@ -11,6 +11,34 @@ from pathlib import Path
 import pytest
 
 
+_ORCHESTRATOR_ENVIRONMENT = (
+    "ORCHESTRATOR_CONFIG_FILE",
+    "ORCHESTRATOR_DATA_DIR",
+    "ORCHESTRATOR_GITHUB_APP_ID",
+    "ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID",
+    "ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE",
+    "ORCHESTRATOR_GITHUB_APP_SLUG",
+    "ORCHESTRATOR_LOAD_DOTENV",
+    "ORCHESTRATOR_MAX_CONCURRENT",
+    "ORCHESTRATOR_MODEL_EXECUTION_NAME",
+    "ORCHESTRATOR_MODEL_EXECUTION_VARIANT",
+    "ORCHESTRATOR_MODEL_REVIEW_NAME",
+    "ORCHESTRATOR_MODEL_REVIEW_VARIANT",
+    "ORCHESTRATOR_OPENCODE_BIN",
+    "ORCHESTRATOR_OPENCODE_TIMEOUT",
+    "ORCHESTRATOR_POLL_INTERVAL",
+    "ORCHESTRATOR_REPOS_DIR",
+    "ORCHESTRATOR_SKILL_SUBAGENT_PLAN_EXECUTION",
+    "ORCHESTRATOR_STALE_SECONDS",
+    "ORCHESTRATOR_WORKSPACES_DIR",
+)
+
+# Isolate imports from the developer's deployment configuration. These values
+# are read at module import time, before per-test monkeypatch fixtures run.
+for _name in _ORCHESTRATOR_ENVIRONMENT:
+    os.environ.pop(_name, None)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _git_identity():
     subprocess.run(["git", "config", "--global", "user.email", "test@test"], check=True, capture_output=True)
@@ -20,8 +48,9 @@ _TMP = Path(tempfile.mkdtemp(prefix="orchestrator-test-"))
 os.environ["ORCHESTRATOR_DATA_DIR"] = str(_TMP / "data")
 os.environ["ORCHESTRATOR_REPOS_DIR"] = str(_TMP / "repos")
 os.environ["ORCHESTRATOR_WORKSPACES_DIR"] = str(_TMP / "workspaces")
-os.environ["ORCHESTRATOR_CONFIG_FILE"] = str(_TMP / "repositories.yaml")
+os.environ["ORCHESTRATOR_CONFIG_FILE"] = str(_TMP / "config.yaml")
 os.environ["ORCHESTRATOR_OPENCODE_BIN"] = str(_TMP / "bin" / "fake-opencode")
+os.environ["ORCHESTRATOR_LOAD_DOTENV"] = "0"
 
 from orchestrator.main import config  # noqa: E402
 from orchestrator.infra.github import auth as github_auth  # noqa: E402
@@ -106,10 +135,14 @@ def fake_opencode_bin() -> Path:
 @pytest.fixture(autouse=True)
 def clear_config_cache():
     config.load_repository_config.cache_clear()
-    config.load_model_config.cache_clear()
+    config.load_execution_model_config.cache_clear()
+    config.load_review_model_config.cache_clear()
+    config.load_pipeline_config.cache_clear()
     yield
     config.load_repository_config.cache_clear()
-    config.load_model_config.cache_clear()
+    config.load_execution_model_config.cache_clear()
+    config.load_review_model_config.cache_clear()
+    config.load_pipeline_config.cache_clear()
 
 
 @pytest.fixture
@@ -129,12 +162,16 @@ def model_config():
         "repositories:\n"
         "  - name: company/backend\n"
         "model:\n"
-        "  primary:\n"
+        "  execution:\n"
         "    name: verboo/deepseek-v4-flash\n"
         "    variant: high\n"
+        "  review:\n"
+        "    name: openai/gpt-5.6-luna\n"
+        "    variant: medium\n"
     )
     config.load_repository_config.cache_clear()
-    config.load_model_config.cache_clear()
+    config.load_execution_model_config.cache_clear()
+    config.load_review_model_config.cache_clear()
     return path
 
 

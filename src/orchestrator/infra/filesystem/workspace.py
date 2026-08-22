@@ -9,8 +9,10 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-WORKSPACES_DIR = Path(os.environ.get("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces"))
-LOGS_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", Path.cwd() / "data")) / "logs"
+WORKSPACES_DIR = Path(
+    os.environ.get("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces")
+).expanduser()
+LOGS_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", Path.cwd() / "data")).expanduser() / "logs"
 
 
 def safe_task_token(task_id: str) -> str:

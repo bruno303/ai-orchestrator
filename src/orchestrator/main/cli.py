@@ -114,7 +114,7 @@ def _remove_event_workspace(event: InputEvent) -> None:
 
 def _developed_label() -> str:
     """Return the GitHub adapter's configured publication marker."""
-    pipeline = config.load_pipeline_config()
+    pipeline = config.load_pipeline_config().execution
     return str(pipeline.destination.options.get(
         "developed_label", pipeline.input_source.options.get("developed_label", "ai-developed")
     ))
@@ -186,6 +186,10 @@ def cmd_review(args: argparse.Namespace) -> None:
         while True:
             _poll_reviews(reviews)
             if args.once: return
+            print(
+                f"[{_now()}] review: next check in {config.POLL_INTERVAL_SECONDS}s",
+                flush=True,
+            )
             time.sleep(config.POLL_INTERVAL_SECONDS)
     finally:
         lock.close()

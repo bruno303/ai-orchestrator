@@ -26,7 +26,7 @@ from orchestrator.main.providers import (
     UnknownProviderError, WORKSPACE_PROVIDERS,
 )
 from orchestrator.main import config
-from orchestrator.main.composition import compose_runtime
+from orchestrator.main.composition import compose_review_runtime, compose_runtime
 from orchestrator.domain import Artifact, Context, ReviewOutcome, ReviewTarget, WorkItem
 from orchestrator.domain import ChangeRequest, PublishedChange
 from orchestrator.infra.github.destination import GitHubDestination
@@ -134,10 +134,11 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
     config.CONFIG_FILE.write_text(
         "repositories:\n  - name: company/backend\n"
         "pipeline:\n"
-        "  input_source:\n    type: github_polling\n    interval: 30\n"
-        "  executor:\n    type: opencode\n    timeout: 10\n"
-        "  workspace:\n    type: git\n    root: /tmp/workspaces\n"
-        "  destination:\n    type: github\n    draft: true\n"
+        "  execution:\n"
+        "    input_source:\n      type: github_polling\n      interval: 30\n"
+        "    executor:\n      type: opencode\n      timeout: 10\n"
+        "    workspace_manager:\n      type: git\n      root: /tmp/workspaces\n"
+        "    destination:\n      type: github\n      draft: true\n"
     )
     config.load_pipeline_config.cache_clear()
 
@@ -151,6 +152,23 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
     assert runtime.executor.options == {"timeout": 10}
     assert runtime.workspace_manager.options == {"root": "/tmp/workspaces"}
     assert runtime.destination.options == {"draft": True}
+
+
+def test_composition_uses_independent_execution_and_review_models(allowlist):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "model:\n"
+        "  execution: {name: provider/execution, variant: high}\n"
+        "  review: {name: provider/review, variant: low}\n"
+    )
+    config.load_execution_model_config.cache_clear()
+    config.load_review_model_config.cache_clear()
+
+    execution = compose_runtime()
+    reviews = compose_review_runtime()
+
+    assert execution.execution_runtime.agent.settings.model == config.ModelConfig("provider/execution", "high")
+    assert reviews.runtime.executor.options["model_config"] == config.ModelConfig("provider/review", "low")
 
 
 def test_composed_github_source_records_configured_provider_name(allowlist, tmp_path):
@@ -174,7 +192,7 @@ def test_composed_github_source_records_configured_provider_name(allowlist, tmp_
 
     config.CONFIG_FILE.write_text(
         "repositories:\n  - name: company/backend\n"
-        "pipeline:\n  input_source:\n    type: github_polling\n"
+        "pipeline:\n  execution:\n    input_source:\n      type: github_polling\n"
     )
     config.load_pipeline_config.cache_clear()
     runtime = compose_runtime()

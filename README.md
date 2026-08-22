@@ -25,8 +25,8 @@ override them for another deployment with environment variables:
 
 | Variable | Default |
 |---|---|
-| `ORCHESTRATOR_GITHUB_APP_ID` | `4666139` |
-| `ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID` | `155320111` |
+| `ORCHESTRATOR_GITHUB_APP_ID` | `123` |
+| `ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID` | `123` |
 | `ORCHESTRATOR_GITHUB_APP_SLUG` | `bruno303-ai-agent-bot` |
 | `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE` | `config/key.pem` |
 
@@ -34,7 +34,11 @@ The private key is used only in memory to create short-lived installation tokens
 HTTPS Git operations use the same token, and commits use the App bot identity.
 Keep the private key outside version control.
 
-Edit `config/repositories.yaml` — only repositories listed here can trigger the
+Copy `.env.example` to `.env` to override these and the runtime defaults below.
+The application loads `.env` automatically; exported shell variables take precedence.
+The test suite disables `.env` loading to remain isolated from local deployment settings.
+
+Edit `config/config.yaml` — only repositories listed here can trigger the
 orchestrator (enforced by the CLI, the executor, and the graph itself):
 
 ```yaml
@@ -46,16 +50,23 @@ repositories:
     label: ai-agent
 ```
 
-Optional global model config applies to all repositories. `primary` is used
-for every execution and review. Omitting the section keeps opencode's default
-model (no `-m`/`--variant` flags):
+Configure OpenCode models independently for issue execution and pull-request
+review. Omitting either section keeps OpenCode's default model for that workflow
+(no `-m`/`--variant` flags):
 
 ```yaml
 model:
-  primary:
+  execution:
+    name: verboo/deepseek-v4-flash
+    variant: high
+  review:
     name: verboo/deepseek-v4-flash
     variant: high
 ```
+
+Set `ORCHESTRATOR_MODEL_EXECUTION_NAME` / `ORCHESTRATOR_MODEL_EXECUTION_VARIANT`
+or `ORCHESTRATOR_MODEL_REVIEW_NAME` / `ORCHESTRATOR_MODEL_REVIEW_VARIANT` to
+override the corresponding `config.yaml` values through the environment.
 
 The planning phase must produce `.agents/plans/plan.md`. The read-only planning
 agent returns the plan in its response, and the orchestrator persists it. The
@@ -72,8 +83,10 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
-| `ORCHESTRATOR_MODEL_PRIMARY_NAME` | (none — opencode default) |
-| `ORCHESTRATOR_MODEL_PRIMARY_VARIANT` | (none — opencode default) |
+| `ORCHESTRATOR_MODEL_EXECUTION_NAME` | `model.execution.name` |
+| `ORCHESTRATOR_MODEL_EXECUTION_VARIANT` | `model.execution.variant` |
+| `ORCHESTRATOR_MODEL_REVIEW_NAME` | `model.review.name` |
+| `ORCHESTRATOR_MODEL_REVIEW_VARIANT` | `model.review.variant` |
 
 ## Usage
 
@@ -219,15 +232,24 @@ destination. New seeds and graph updates use only the `input`, `processing`,
 state: successful publication adds `ai-developed` to the source issue; an
 unlabeled issue is retried from the beginning after an interruption.
 
-Pipeline providers can be selected in `config/repositories.yaml`:
+Pipeline providers can be selected in `config/config.yaml`:
 
 ```yaml
 pipeline:
-  input_source: {type: github_polling}
-  executor: {type: opencode}
-  workspace_manager: {type: git}
-  destination: {type: github}
+  execution:
+    input_source: {type: github_polling}
+    executor: {type: opencode}
+    workspace_manager: {type: git}
+    destination: {type: github}
+  review:
+    input_source: {type: github_polling}
+    executor: {type: opencode}
+    workspace_manager: {type: git}
+    destination: {type: github}
 ```
+
+The execution and review sections are independent; omitted provider settings use
+their workflow's built-in defaults and never inherit values from the other section.
 
 To add a provider, implement the relevant protocol in `application/ports`, add
 its concrete adapter under `infra`, register its factory in `main/providers.py`,
@@ -243,8 +265,8 @@ Context namespace. Do not put service-specific values in generic fields.
 - **Implement**: `opencode run --agent build` explicitly uses the
   `plan-implementation` skill to execute `.agents/plans/plan.md` and modify the
   workspace. The agent must not stop after creating, revising, or saving a plan.
-- **Model**: each phase runs opencode once with the configured `primary`
-  model. The model and variant are logged for each phase (visible via
+- **Model**: issue phases use the configured `execution` model and pull-request
+  reviews use the configured `review` model. The model and variant are logged for each phase (visible via
   `orchestrator logs <task> --node <node>`).
 - **Test**: a standalone opencode run executes the project's test suite; a
   non-zero exit fails the task.
