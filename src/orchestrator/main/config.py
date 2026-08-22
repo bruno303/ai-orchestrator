@@ -175,8 +175,9 @@ def _load_model_config(section: str) -> ModelConfig | None:
         with CONFIG_FILE.open() as fh:
             data = yaml.safe_load(fh) or {}
     entry = (data.get("model") or {}).get(section) or {}
-    name = entry.get("name")
-    variant = entry.get("variant")
+    variable_prefix = f"ORCHESTRATOR_MODEL_{section.upper()}"
+    name = os.environ.get(f"{variable_prefix}_NAME", entry.get("name"))
+    variant = os.environ.get(f"{variable_prefix}_VARIANT", entry.get("variant"))
     return ModelConfig(name=name, variant=variant) if name or variant else None
 
 

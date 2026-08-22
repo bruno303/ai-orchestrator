@@ -62,6 +62,18 @@ def test_model_config_sections_do_not_inherit(allowlist):
     assert config.load_review_model_config() is None
 
 
+def test_model_config_environment_overrides_are_scoped(model_config, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_MODEL_EXECUTION_NAME", "provider/execution-override")
+    monkeypatch.setenv("ORCHESTRATOR_MODEL_EXECUTION_VARIANT", "low")
+    monkeypatch.setenv("ORCHESTRATOR_MODEL_REVIEW_NAME", "provider/review-override")
+    monkeypatch.setenv("ORCHESTRATOR_MODEL_REVIEW_VARIANT", "high")
+    config.load_execution_model_config.cache_clear()
+    config.load_review_model_config.cache_clear()
+
+    assert config.load_execution_model_config() == config.ModelConfig("provider/execution-override", "low")
+    assert config.load_review_model_config() == config.ModelConfig("provider/review-override", "high")
+
+
 def test_model_config_absent(allowlist):
     assert config.load_execution_model_config() is None
     assert config.load_review_model_config() is None

@@ -64,6 +64,10 @@ model:
     variant: high
 ```
 
+Set `ORCHESTRATOR_MODEL_EXECUTION_NAME` / `ORCHESTRATOR_MODEL_EXECUTION_VARIANT`
+or `ORCHESTRATOR_MODEL_REVIEW_NAME` / `ORCHESTRATOR_MODEL_REVIEW_VARIANT` to
+override the corresponding `config.yaml` values through the environment.
+
 The planning phase must produce `.agents/plans/plan.md`. The read-only planning
 agent returns the plan in its response, and the orchestrator persists it. The
 planner must not modify repository files. The orchestrator validates the
@@ -79,6 +83,10 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
+| `ORCHESTRATOR_MODEL_EXECUTION_NAME` | `model.execution.name` |
+| `ORCHESTRATOR_MODEL_EXECUTION_VARIANT` | `model.execution.variant` |
+| `ORCHESTRATOR_MODEL_REVIEW_NAME` | `model.review.name` |
+| `ORCHESTRATOR_MODEL_REVIEW_VARIANT` | `model.review.variant` |
 
 ## Usage
 
