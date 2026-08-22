@@ -113,6 +113,49 @@ def test_list_open_issues_label_filter(fake_gh):
     assert "labels=ai-agent" in " ".join(fake_gh[0])
 
 
+def test_list_open_issues_combines_label_and_assignee_filters(fake_gh):
+    github.list_open_issues("company/backend", label="ai-agent", assignee="none")
+
+    assert fake_gh[0][1] == (
+        "repos/company/backend/issues?state=open&per_page=100"
+        "&labels=ai-agent&assignee=none"
+    )
+
+
+def test_assign_issue_to_authenticated_user_uses_selected_login(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        github,
+        "_run_gh",
+        lambda args, input_text=None: calls.append((args, json.loads(input_text))) or "",
+    )
+    client = github.GitHubClient(github_auth.GitHubIdentity("bot"))
+
+    client.assign_issue_to_authenticated_user("company/backend", 7)
+
+    assert calls == [(
+        ["api", "--method", "PATCH", "repos/company/backend/issues/7", "--input", "-"],
+        {"assignees": [github_auth.BOT_LOGIN]},
+    )]
+
+
+def test_assign_issue_to_authenticated_user_resolves_user_client_login(monkeypatch):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args == ["gh", "api", "user", "--jq", ".login"]:
+            return type("Process", (), {"returncode": 0, "stdout": "local-user\n", "stderr": ""})()
+        return type("Process", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(github.subprocess, "run", run)
+    client = github.GitHubClient(github_auth.GitHubIdentity("user"))
+
+    client.assign_issue_to_authenticated_user("company/backend", 7)
+
+    assert json.loads(calls[-1][1]["input"]) == {"assignees": ["local-user"]}
+
+
 def test_list_issue_comments(fake_gh):
     comments = github.list_issue_comments("company/backend", 7)
     assert [c.id for c in comments] == [101, 102]

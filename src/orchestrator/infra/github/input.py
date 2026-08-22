@@ -115,12 +115,22 @@ class GitHubPollingInputSource:
                     )
 
             label = self.config_module.repository_label(repository)
-            if label:
-                issues = [issue for issue in issues if label in issue.labels]
+            try:
+                issues = self.github_client.list_open_issues(
+                    repository, label=label, assignee="none",
+                )
+            except self.github_client.GitHubError as exc:
+                print(f"[poll] {repository}: unassigned issues: {exc}", flush=True)
+                continue
             for issue in issues:
-                task_id = f"{repository}#{issue.number}"
                 if self.developed_label in issue.labels:
                     continue
+                try:
+                    self.github_client.assign_issue_to_authenticated_user(repository, issue.number)
+                except Exception as exc:
+                    print(f"[poll] {repository}#{issue.number}: assignment: {exc}", flush=True)
+                    continue
+                task_id = f"{repository}#{issue.number}"
                 context = Context({
                     "github": {"issue_number": issue.number},
                     "git": {

@@ -258,8 +258,11 @@ GitHub destination. Set an executor to `type: codex` or `type: claude` to use
 that CLI provider instead.
 New seeds and graph updates use only the `input`, `processing`,
 `workspace`, and `output` state namespaces. GitHub supplies durable execution
-state: successful publication adds `ai-developed` to the source issue; an
-unlabeled issue is retried from the beginning after an interruption.
+state: polling selects open, unassigned issues (while preserving the
+configured repository label filter), assigns the authenticated GitHub user
+before execution, and successful publication adds `ai-developed` to the source
+issue. Assignment failures are logged and skipped so polling can continue;
+issues assigned before an interruption are no longer selected as new work.
 
 Pipeline providers can be selected in `config/config.yaml`:
 
@@ -297,6 +300,10 @@ Context namespace. Do not put service-specific values in generic fields.
 - **Isolation**: each task gets its own `git worktree` under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,
   created from a shared base clone in `~/agent-repos/`.
+- **Assignment**: polling selects only unassigned issues matching the
+  repository's configured label and assigns the authenticated GitHub user
+  before starting work. A failed assignment is logged and the issue is skipped
+  for that poll.
 - **Plan**: the selected provider analyzes the issue and writes the plan
   to `.agents/plans/plan.md` (skill `plan-implementation`).
 - **Implement**: the selected provider explicitly uses the
@@ -314,8 +321,9 @@ Context namespace. Do not put service-specific values in generic fields.
   removed (logs and the remote branch are kept). Failed tasks keep their
   worktree for debugging.
 - **Execution state**: GitHub is the durable source of truth. A source issue
-  receives `ai-developed` only after its PR is published; interrupted work is
-  retried from the beginning while it remains unlabeled.
+  is assigned before work starts and receives `ai-developed` only after its PR
+  is published. Use a comment command or direct `run` to rerun interrupted
+  work.
 
 ## Development
 
