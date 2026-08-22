@@ -48,10 +48,14 @@ def compose_execution_runtime(*, executor=None, workspace_manager=None, destinat
     from orchestrator.infra.filesystem import workspace
 
     pipeline = config.load_pipeline_config().execution
+    manager = workspace_manager or _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager)
+    publication = destination or _create(DESTINATION_PROVIDERS, pipeline.destination)
+    if hasattr(publication, "git_client") and hasattr(manager, "git_client"):
+        publication.git_client = manager.git_client
     return ExecutionRuntime(
         executor or _create(EXECUTOR_PROVIDERS, pipeline.executor),
-        workspace_manager or _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager),
-        destination or _create(DESTINATION_PROVIDERS, pipeline.destination),
+        manager,
+        publication,
         repository_allowed=config.is_repository_allowed,
         agent_settings=_agent_settings(),
         task_log_path=workspace.task_log_path,
@@ -64,6 +68,9 @@ def compose_runtime() -> Runtime:
     executor = _create(EXECUTOR_PROVIDERS, pipeline.executor)
     manager = _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager)
     destination = _create(DESTINATION_PROVIDERS, pipeline.destination)
+    execution_runtime = compose_execution_runtime(
+        executor=executor, workspace_manager=manager, destination=destination
+    )
     return Runtime(
         source,
         executor,
@@ -71,9 +78,7 @@ def compose_runtime() -> Runtime:
         destination,
         getattr(source, "feedback", None),
         pipeline.input_source.type,
-        compose_execution_runtime(
-            executor=executor, workspace_manager=manager, destination=destination
-        ),
+        execution_runtime,
         getattr(source, "context_presenter", NoopContextPresenter()),
     )
 

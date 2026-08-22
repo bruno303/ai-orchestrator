@@ -9,6 +9,7 @@ from orchestrator.infra.git import client as git
 from orchestrator.domain import Context
 from orchestrator.infra.git.workspace import GitWorkspaceManager
 from orchestrator.application.ports import WorkspaceRequest
+from orchestrator.infra.github import auth as github_auth
 
 
 def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatch, tmp_path):
@@ -68,6 +69,32 @@ def test_prepare_requires_explicit_repository_url(monkeypatch):
         ))
 
     assert not cloned
+
+
+def test_workspace_manager_uses_its_injected_identity_bound_git_client(tmp_path):
+    calls = []
+
+    class FakeGitClient:
+        identity = github_auth.GitHubIdentity("user")
+
+        def ensure_base_clone(self, repository, url):
+            calls.append(("clone", repository, url, self.identity.mode))
+            return tmp_path / "repo"
+
+        def create_worktree(self, repo, path, branch, base):
+            calls.append(("worktree", branch, self.identity.mode))
+
+    manager = GitWorkspaceManager(git_client=FakeGitClient())
+    manager.prepare(WorkspaceRequest(
+        "company/backend#1", "company/backend", "ai/issue-1", "main",
+        workspace=str(tmp_path / "workspace"),
+        context=Context({"git": {"repository_url": "https://github.com/company/backend.git"}}),
+    ))
+
+    assert calls == [
+        ("clone", "company/backend", "https://github.com/company/backend.git", "user"),
+        ("worktree", "ai/issue-1", "user"),
+    ]
 
 
 def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch, tmp_path):

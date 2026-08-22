@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import subprocess
 import os
+from contextvars import ContextVar
 from pathlib import Path
+from functools import wraps
 
 from orchestrator.infra.github import auth as github_auth
 
@@ -22,6 +24,39 @@ class GitError(Exception):
 
 class NoChangesError(GitError):
     pass
+
+
+_identity: ContextVar[github_auth.GitHubIdentity | None] = ContextVar("git_identity", default=None)
+
+
+class GitClient:
+    """An identity-bound view of the Git adapter.
+
+    Module-level functions retain the bot-compatible default. Runtime workspace
+    and publication adapters receive this client so the selected provider
+    identity is carried through every GitHub remote operation.
+    """
+
+    def __init__(self, identity: github_auth.GitHubIdentity | None = None) -> None:
+        self.identity = identity or github_auth.GitHubIdentity()
+
+    def _call(self, function, *args, **kwargs):
+        token = _identity.set(self.identity)
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _identity.reset(token)
+
+    def __getattr__(self, name: str):
+        function = globals().get(name)
+        if not callable(function):
+            raise AttributeError(name)
+
+        @wraps(function)
+        def call(*args, **kwargs):
+            return self._call(function, *args, **kwargs)
+
+        return call
 
 
 def _run(
@@ -69,8 +104,13 @@ def fetch(repo_dir: Path) -> None:
 
 def fetch_commit(repo_dir: Path, commit: str, remote: str = "origin") -> None:
     """Fetch an immutable commit, including one advertised by a fork remote."""
+    environment = (
+        _github_env_for_url(remote)
+        if "github.com" in remote
+        else _github_env_for_remote(repo_dir, remote)
+    )
     _run(["git", "fetch", remote, commit], cwd=repo_dir,
-         env=_github_env_for_url(remote))
+         env=environment)
 
 
 def detect_default_branch(repo_dir: Path) -> str:
@@ -198,7 +238,8 @@ def _github_env_for_remote(cwd: Path, remote: str) -> dict[str, str] | None:
 def _github_env_for_url(url: str) -> dict[str, str] | None:
     if "github.com" not in url:
         return None
-    return github_auth.git_environment()
+    identity = _identity.get()
+    return identity.git_environment() if identity else github_auth.git_environment()
 
 
 def diff_stat(workspace: Path, base_branch: str) -> str:

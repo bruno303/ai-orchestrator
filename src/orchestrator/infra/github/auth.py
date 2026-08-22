@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jwt
 
@@ -28,6 +28,44 @@ BOT_EMAIL = f"{APP_ID}+{APP_SLUG}[bot]@users.noreply.github.com"
 
 _cached_token: str | None = None
 _cached_expires_at = 0.0
+
+GitHubAuthMode = Literal["bot", "user"]
+
+
+class GitHubIdentity:
+    """Authentication and Git identity selected for one provider instance.
+
+    Keeping this object small makes the choice explicit at composition time and
+    prevents a user-authenticated adapter from accidentally inheriting the App
+    token used by another adapter in the same process.
+    """
+
+    def __init__(self, mode: GitHubAuthMode = "bot") -> None:
+        self.mode = mode
+
+    @property
+    def login(self) -> str:
+        if self.mode != "bot":
+            raise RuntimeError("the authenticated login for user auth is resolved by gh")
+        return BOT_LOGIN
+
+    def gh_environment(self) -> dict[str, str]:
+        if self.mode == "user":
+            return os.environ.copy()
+        return gh_environment()
+
+    def git_environment(self) -> dict[str, str]:
+        if self.mode == "user":
+            return os.environ.copy()
+        return git_environment()
+
+
+def identity_from_options(options: dict[str, Any]) -> GitHubIdentity:
+    """Build an identity from provider options, defaulting to the App bot."""
+    mode = options.get("auth", "bot")
+    if mode not in {"bot", "user"}:
+        raise ValueError(f"GitHub provider auth must be 'bot' or 'user', got {mode!r}")
+    return GitHubIdentity(mode)
 
 
 def installation_token() -> str:

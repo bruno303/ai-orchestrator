@@ -97,6 +97,15 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.review.workspace_manager.options == {}
 
 
+def test_omitted_workspace_auth_remains_bot_compatible(allowlist):
+    from orchestrator.main.composition import compose_runtime
+
+    runtime = compose_runtime()
+
+    assert runtime.workspace_manager.git_client.identity.mode == "bot"
+    assert runtime.destination.git_client is runtime.workspace_manager.git_client
+
+
 def test_pipeline_config_parses_provider_options(allowlist):
     config.CONFIG_FILE.write_text(
         "pipeline:\n"

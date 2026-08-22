@@ -9,18 +9,20 @@ model:
     variant: medium
 
 # Providers for the current GitHub -> OpenCode -> Git -> GitHub workflow.
+# GitHub-facing and Git providers accept auth: bot (the default) or user.
+# This sample uses a local user for execution and the GitHub App bot for review.
 # Register new adapter types in main/providers.py before selecting them here.
 pipeline:
   execution:
-    input_source: {type: github_polling}
+    input_source: {type: github_polling, auth: user}
     executor: {type: opencode}
-    workspace_manager: {type: git}
-    destination: {type: github}
+    workspace_manager: {type: git, auth: user}
+    destination: {type: github, auth: user}
   review:
-    input_source: {type: github_polling}
+    input_source: {type: github_polling, auth: bot}
     executor: {type: opencode}
-    workspace_manager: {type: git}
-    destination: {type: github}
+    workspace_manager: {type: git, auth: bot}
+    destination: {type: github, auth: bot}
 
 # Repositories allowed to trigger the orchestrator.
 # Only repos listed here can be processed (CLI, poll, and graph all enforce this).

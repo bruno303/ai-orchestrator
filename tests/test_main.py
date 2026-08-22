@@ -20,6 +20,48 @@ def test_run_skips_developed_issue_without_force(allowlist, monkeypatch):
         main(["run", "company/backend#1"])
 
 
+def test_run_uses_the_configured_input_client_for_issue_metadata(allowlist, monkeypatch):
+    calls = []
+
+    class Client:
+        GitHubError = github.GitHubError
+
+        def get_issue(self, repository, number):
+            calls.append(("issue", repository, number))
+            return github.Issue(number, "title", "body", "url", [])
+
+        def get_repository(self, repository):
+            calls.append(("repository", repository))
+            return {"clone_url": "https://github.com/company/backend.git", "default_branch": "main"}
+
+        @staticmethod
+        def https_clone_url(metadata, repository):
+            return metadata["clone_url"]
+
+    runtime = SimpleNamespace(
+        input_source=SimpleNamespace(github_client=Client()), executor=object(),
+        workspace_manager=object(), destination=object(), execution_runtime=object(),
+    )
+    monkeypatch.setattr(cli, "compose_runtime", lambda: runtime)
+    monkeypatch.setattr(cli, "_run_graph", lambda seed, task_id, **kwargs: {"task_id": task_id, "status": "completed"})
+
+    cli.cmd_run(SimpleNamespace(issue_ref="company/backend#8", force=False))
+
+    assert calls == [("issue", "company/backend", 8), ("issue", "company/backend", 8), ("repository", "company/backend")]
+
+
+def test_reset_uses_the_configured_destination_client(allowlist, monkeypatch):
+    calls = []
+    destination = SimpleNamespace(github_client=SimpleNamespace(
+        remove_issue_label=lambda repository, number, label: calls.append((repository, number, label))
+    ))
+    monkeypatch.setattr(cli, "compose_execution_runtime", lambda: SimpleNamespace(destination=destination))
+
+    cli.cmd_reset(SimpleNamespace(issue_ref="company/backend#8"))
+
+    assert calls == [("company/backend", 8, "ai-developed")]
+
+
 def test_review_poll_logs_completion_after_success(capsys):
     _poll_reviews(type("Reviews", (), {"poll_once": lambda self: None})())
 

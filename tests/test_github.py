@@ -7,6 +7,7 @@ import json
 import pytest
 
 from orchestrator.infra.github import client as github
+from orchestrator.infra.github import auth as github_auth
 
 
 @pytest.fixture
@@ -72,6 +73,23 @@ def test_get_issue(fake_gh):
 
 def test_get_authenticated_user_login_uses_app_bot_identity():
     assert github.get_authenticated_user_login() == "app/bruno303-ai-agent-bot"
+
+
+def test_user_client_uses_host_gh_auth_and_resolves_its_login(monkeypatch):
+    captured = {}
+
+    def run(args, **kwargs):
+        captured.update(kwargs)
+        assert args == ["gh", "api", "user", "--jq", ".login"]
+        return type("Process", (), {"returncode": 0, "stdout": "local-user\n", "stderr": ""})()
+
+    monkeypatch.setenv("GH_TOKEN", "local-token")
+    monkeypatch.setattr(github.subprocess, "run", run)
+
+    client = github.GitHubClient(github_auth.GitHubIdentity("user"))
+
+    assert client.get_authenticated_user_login() == "local-user"
+    assert captured["env"]["GH_TOKEN"] == "local-token"
 
 
 def test_get_issue_rejects_pr(monkeypatch):

@@ -8,12 +8,76 @@ from pathlib import Path
 import pytest
 
 from orchestrator.infra.git import client as git
+from orchestrator.infra.github import auth as github_auth
 
 
 def test_git_environment_path_expands_home_directory(monkeypatch):
     monkeypatch.setenv("ORCHESTRATOR_REPOS_DIR", "~/agent-repos")
 
     assert git._environment_path("ORCHESTRATOR_REPOS_DIR", "/unused") == Path.home() / "agent-repos"
+
+
+def test_identity_bound_git_client_uses_selected_identity_environment(monkeypatch):
+    monkeypatch.setenv("GIT_AUTHOR_NAME", "Local User")
+    monkeypatch.setattr(github_auth, "installation_token", lambda: (_ for _ in ()).throw(AssertionError()))
+
+    environment = git.GitClient(github_auth.GitHubIdentity("user"))._call(
+        git._github_env_for_url, "https://github.com/company/backend.git"
+    )
+
+    assert environment["GIT_AUTHOR_NAME"] == "Local User"
+
+
+def test_fetch_commit_uses_selected_identity_for_named_remote(monkeypatch, tmp_path):
+    selected_environment = {"GIT_AUTHOR_NAME": "Local User"}
+    calls = []
+
+    def fake_run(args, cwd, *, check=True, env=None):
+        calls.append((args, cwd, env))
+        if args == ["git", "remote", "get-url", "origin"]:
+            return subprocess.CompletedProcess(args, 0, "https://github.com/company/backend.git\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(git, "_run", fake_run)
+    monkeypatch.setattr(
+        github_auth.GitHubIdentity,
+        "git_environment",
+        lambda self: selected_environment,
+    )
+
+    git.GitClient(github_auth.GitHubIdentity("user")).fetch_commit(
+        tmp_path, "a" * 40, remote="origin"
+    )
+
+    assert calls == [
+        (["git", "remote", "get-url", "origin"], tmp_path, None),
+        (["git", "fetch", "origin", "a" * 40], tmp_path, selected_environment),
+    ]
+
+
+def test_fetch_commit_uses_selected_identity_for_direct_github_url(monkeypatch, tmp_path):
+    selected_environment = {"GIT_AUTHOR_NAME": "Local User"}
+    calls = []
+
+    def fake_run(args, cwd, *, check=True, env=None):
+        calls.append((args, cwd, env))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(git, "_run", fake_run)
+    monkeypatch.setattr(
+        github_auth.GitHubIdentity,
+        "git_environment",
+        lambda self: selected_environment,
+    )
+    remote = "https://github.com/contributor/backend.git"
+
+    git.GitClient(github_auth.GitHubIdentity("user")).fetch_commit(
+        tmp_path, "a" * 40, remote=remote
+    )
+
+    assert calls == [
+        (["git", "fetch", remote, "a" * 40], tmp_path, selected_environment),
+    ]
 
 
 @pytest.fixture

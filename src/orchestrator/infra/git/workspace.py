@@ -8,6 +8,7 @@ from typing import Any
 
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.git import client as git
+from orchestrator.infra.github import auth as github_auth
 from orchestrator.domain import Context
 from orchestrator.application.ports import WorkspaceRequest, WorkspaceResult
 
@@ -15,8 +16,13 @@ from orchestrator.application.ports import WorkspaceRequest, WorkspaceResult
 class GitWorkspaceManager:
     """Prepare isolated task worktrees and remove them after successful tasks."""
 
-    def __init__(self, options: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        options: dict[str, Any] | None = None,
+        git_client: Any | None = None,
+    ) -> None:
         self.options = dict(options or {})
+        self.git_client = git_client or git.GitClient(github_auth.identity_from_options(self.options))
         self.provider_type = "git"
 
     def prepare(self, request: WorkspaceRequest) -> WorkspaceResult:
@@ -25,9 +31,9 @@ class GitWorkspaceManager:
         if not repository_url:
             raise git.GitError("workspace request requires a repository URL")
         base_branch = request.base_branch or request.target_ref or git_context.get("base_branch", "")
-        repo_dir = git.ensure_base_clone(request.repository, repository_url)
+        repo_dir = self.git_client.ensure_base_clone(request.repository, repository_url)
         if not base_branch:
-            base_branch = git.detect_default_branch(repo_dir)
+            base_branch = self.git_client.detect_default_branch(repo_dir)
 
         if request.purpose not in {"execution", "review"}:
             raise git.GitError(f"unknown workspace purpose: {request.purpose}")
@@ -46,15 +52,15 @@ class GitWorkspaceManager:
             commit = request.revision or git_context.get("revision")
             if not commit:
                 raise git.GitError("revision workspace requires a commit revision")
-            git.fetch_commit(
+            self.git_client.fetch_commit(
                 repo_dir,
                 commit,
                 request.fetch_url or git_context.get("fetch_url")
                 or "origin",
             )
-            git.create_detached_worktree(repo_dir, workspace_path, commit)
+            self.git_client.create_detached_worktree(repo_dir, workspace_path, commit)
         else:
-            git.create_worktree(repo_dir, workspace_path, branch, base_branch)
+            self.git_client.create_worktree(repo_dir, workspace_path, branch, base_branch)
         result_context = request.context.merge_namespace("git", {
             **dict(request.context.namespace("git")),
             "repository": request.repository,
@@ -75,6 +81,6 @@ class GitWorkspaceManager:
     def cleanup(self, result: WorkspaceResult) -> None:
         git_context = dict(result.context.namespace("git"))
         repo_dir = Path(git_context.get("repo_dir") or git.base_repo_dir(git_context["repository"]))
-        git.remove_worktree(repo_dir, Path(result.workspace), result.branch)
+        self.git_client.remove_worktree(repo_dir, Path(result.workspace), result.branch)
         if Path(result.workspace).exists():
             shutil.rmtree(Path(result.workspace), ignore_errors=True)
