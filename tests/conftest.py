@@ -11,6 +11,34 @@ from pathlib import Path
 import pytest
 
 
+_ORCHESTRATOR_ENVIRONMENT = (
+    "ORCHESTRATOR_CONFIG_FILE",
+    "ORCHESTRATOR_DATA_DIR",
+    "ORCHESTRATOR_GITHUB_APP_ID",
+    "ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID",
+    "ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE",
+    "ORCHESTRATOR_GITHUB_APP_SLUG",
+    "ORCHESTRATOR_LOAD_DOTENV",
+    "ORCHESTRATOR_MAX_CONCURRENT",
+    "ORCHESTRATOR_MODEL_EXECUTION_NAME",
+    "ORCHESTRATOR_MODEL_EXECUTION_VARIANT",
+    "ORCHESTRATOR_MODEL_REVIEW_NAME",
+    "ORCHESTRATOR_MODEL_REVIEW_VARIANT",
+    "ORCHESTRATOR_OPENCODE_BIN",
+    "ORCHESTRATOR_OPENCODE_TIMEOUT",
+    "ORCHESTRATOR_POLL_INTERVAL",
+    "ORCHESTRATOR_REPOS_DIR",
+    "ORCHESTRATOR_SKILL_SUBAGENT_PLAN_EXECUTION",
+    "ORCHESTRATOR_STALE_SECONDS",
+    "ORCHESTRATOR_WORKSPACES_DIR",
+)
+
+# Isolate imports from the developer's deployment configuration. These values
+# are read at module import time, before per-test monkeypatch fixtures run.
+for _name in _ORCHESTRATOR_ENVIRONMENT:
+    os.environ.pop(_name, None)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _git_identity():
     subprocess.run(["git", "config", "--global", "user.email", "test@test"], check=True, capture_output=True)
