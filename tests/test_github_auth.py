@@ -22,6 +22,6 @@ def test_git_environment_uses_bot_credentials_and_identity(monkeypatch):
 
     assert environment["GIT_AUTHOR_NAME"] == "bruno303-ai-agent-bot[bot]"
     assert environment["GIT_COMMITTER_NAME"] == "bruno303-ai-agent-bot[bot]"
-    assert environment["GIT_AUTHOR_EMAIL"] == "4666139+bruno303-ai-agent-bot[bot]@users.noreply.github.com"
+    assert environment["GIT_AUTHOR_EMAIL"] == "123+bruno303-ai-agent-bot[bot]@users.noreply.github.com"
     assert environment["GIT_COMMITTER_EMAIL"] == environment["GIT_AUTHOR_EMAIL"]
     assert "installation-token" not in json.dumps(environment)
