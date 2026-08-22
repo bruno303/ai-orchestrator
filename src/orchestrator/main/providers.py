@@ -105,6 +105,14 @@ def _codex_executor_factory(options):
     return CodexExecutor(options=options)
 
 
+def _claude_executor_factory(options):
+    if not options.pop("_runtime", False):
+        return _PlaceholderExecutor(options)
+    from orchestrator.infra.claude.executor import ClaudeExecutor
+
+    return ClaudeExecutor(options=options)
+
+
 def _workspace_factory(options):
     from orchestrator.infra.github import auth as github_auth
 
@@ -133,6 +141,7 @@ def _destination_factory(options):
 
 INPUT_PROVIDERS = ProviderRegistry({"github_polling": _input_factory}, InputSource)
 EXECUTOR_PROVIDERS = ProviderRegistry({
+    "claude": _claude_executor_factory,
     "codex": _codex_executor_factory,
     "opencode": _opencode_executor_factory,
 }, Executor)
@@ -197,6 +206,14 @@ def _codex_review_executor_factory(options):
     return CodexReviewExecutor(options=options)
 
 
+def _claude_review_executor_factory(options):
+    if not options.pop("_runtime", False):
+        return _PlaceholderReviewExecutor(options)
+    from orchestrator.infra.claude.executor import ClaudeReviewExecutor
+
+    return ClaudeReviewExecutor(options=options)
+
+
 def _review_destination_factory(options):
     from orchestrator.infra.github import auth as github_auth
 
@@ -212,6 +229,7 @@ def _review_destination_factory(options):
 
 REVIEW_INPUT_PROVIDERS = ProviderRegistry({"github_polling": _review_input_factory}, ReviewInputSource)
 REVIEW_EXECUTOR_PROVIDERS = ProviderRegistry({
+    "claude": _claude_review_executor_factory,
     "codex": _codex_review_executor_factory,
     "opencode": _opencode_review_executor_factory,
 }, ReviewExecutor)

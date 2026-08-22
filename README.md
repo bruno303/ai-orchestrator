@@ -1,6 +1,6 @@
 # AI Orchestrator
 
-Local orchestrator (LangGraph + OpenCode or Codex) that turns input events into published changes:
+Local orchestrator (LangGraph + OpenCode, Codex, or Claude Code) that turns input events into published changes:
 
 ```
 GitHub Issue → workspace (git worktree) → agent plan → agent build (subagent-plan-execution)
@@ -9,7 +9,7 @@ GitHub Issue → workspace (git worktree) → agent plan → agent build (subage
 
 ## Requirements
 
-- `uv`, `git`, `gh`, and the CLI for the selected agent provider (`opencode` >= 1.18 or `codex`)
+- `uv`, `git`, `gh`, and the CLI for the selected agent provider (`opencode` >= 1.18, `codex`, or `claude`)
 
 ## Setup
 
@@ -69,14 +69,25 @@ override the corresponding `config.yaml` values through the environment.
 
 Select the executor independently for issue execution and pull-request review
 with `ORCHESTRATOR_EXECUTOR_EXECUTION` and `ORCHESTRATOR_EXECUTOR_REVIEW`.
-Each accepts `opencode` or `codex` and overrides only the matching
+Each accepts `opencode`, `codex`, or `claude` and overrides only the matching
 `pipeline.*.executor.type` value; any executor options in `config.yaml` remain
 in effect. For example, use `ORCHESTRATOR_EXECUTOR_EXECUTION=codex` while
 keeping the review executor configured in YAML.
 
 OpenCode receives `name` and `variant` as its model flags. Codex receives
 `name` as `codex exec -m` and maps `variant` to the Codex
-`model_reasoning_effort` setting.
+`model_reasoning_effort` setting. Claude Code receives `name` as `--model` and
+sets `CLAUDE_CODE_EFFORT_LEVEL` for the configured `variant`.
+
+When selecting Claude, configure Claude-compatible model names for each
+workflow (for example, `sonnet` or `opus`). Claude runs each phase with its
+prompt; the generic `plan`/`build` agent name is not passed as a Claude custom
+agent flag. It uses Claude's default permission policy for issue execution
+unless `pipeline.execution.executor.permission_mode` is set; PR reviews default
+to Claude's read-only `plan` mode. Configure a non-default execution policy
+deliberately—for example `acceptEdits`—and use `bypassPermissions` only in an
+isolated environment. Claude authenticates through its own CLI configuration;
+no Claude credentials belong in this project's `.env` file.
 
 The planning phase must produce `.agents/plans/plan.md`. The read-only planning
 agent returns the plan in its response, and the orchestrator persists it. The
@@ -95,6 +106,8 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
 | `ORCHESTRATOR_CODEX_BIN` | `codex` |
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
+| `ORCHESTRATOR_CLAUDE_BIN` | `claude` |
+| `ORCHESTRATOR_CLAUDE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_EXECUTOR_EXECUTION` | `pipeline.execution.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_REVIEW` | `pipeline.review.executor.type` |
 | `ORCHESTRATOR_MODEL_EXECUTION_NAME` | `model.execution.name` |
@@ -241,7 +254,8 @@ reuse, inline review validation, and processed labels. None of that behavior is
 owned by the generic runtime.
 
 The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the
-GitHub destination. Set an executor to `type: codex` to use the Codex CLI instead.
+GitHub destination. Set an executor to `type: codex` or `type: claude` to use
+that CLI provider instead.
 New seeds and graph updates use only the `input`, `processing`,
 `workspace`, and `output` state namespaces. GitHub supplies durable execution
 state: successful publication adds `ai-developed` to the source issue; an
@@ -253,12 +267,12 @@ Pipeline providers can be selected in `config/config.yaml`:
 pipeline:
   execution:
     input_source: {type: github_polling, auth: user}
-    executor: {type: opencode} # or {type: codex}
+    executor: {type: opencode} # or {type: codex} or {type: claude}
     workspace_manager: {type: git, auth: user}
     destination: {type: github, auth: user}
   review:
     input_source: {type: github_polling, auth: bot}
-    executor: {type: opencode} # or {type: codex}
+    executor: {type: opencode} # or {type: codex} or {type: claude}
     workspace_manager: {type: git, auth: bot}
     destination: {type: github, auth: bot}
 ```
