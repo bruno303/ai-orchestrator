@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from orchestrator.main import config
+
+
+def test_environment_path_expands_home_directory(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_REPOS_DIR", "~/agent-repos")
+
+    assert config._environment_path("ORCHESTRATOR_REPOS_DIR", "/unused") == Path.home() / "agent-repos"
 
 
 def test_load_environment_reads_env_file_without_overwriting_exported_values(tmp_path, monkeypatch):

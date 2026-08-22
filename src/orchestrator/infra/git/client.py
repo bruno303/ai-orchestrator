@@ -8,7 +8,12 @@ from pathlib import Path
 
 from orchestrator.infra.github import auth as github_auth
 
-REPOS_DIR = Path(os.environ.get("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-repos"))
+
+def _environment_path(name: str, default: str | Path) -> Path:
+    return Path(os.environ.get(name, default)).expanduser()
+
+
+REPOS_DIR = _environment_path("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-repos")
 
 
 class GitError(Exception):

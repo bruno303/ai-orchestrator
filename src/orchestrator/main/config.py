@@ -27,6 +27,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 ENV_FILE = REPO_ROOT / ".env"
 
 
+def _environment_path(name: str, default: str | Path) -> Path:
+    return Path(os.environ.get(name, default)).expanduser()
+
+
 def load_environment() -> bool:
     """Load local deployment overrides without replacing exported variables."""
     if os.environ.get("ORCHESTRATOR_LOAD_DOTENV", "1") != "1":
@@ -36,13 +40,13 @@ def load_environment() -> bool:
 
 load_environment()
 
-DATA_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", REPO_ROOT / "data"))
+DATA_DIR = _environment_path("ORCHESTRATOR_DATA_DIR", REPO_ROOT / "data")
 STATE_DIR = DATA_DIR / "state"
 LOGS_DIR = DATA_DIR / "logs"
-CONFIG_FILE = Path(os.environ.get("ORCHESTRATOR_CONFIG_FILE", REPO_ROOT / "config" / "config.yaml"))
+CONFIG_FILE = _environment_path("ORCHESTRATOR_CONFIG_FILE", REPO_ROOT / "config" / "config.yaml")
 
-REPOS_DIR = Path(os.environ.get("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-repos"))
-WORKSPACES_DIR = Path(os.environ.get("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces"))
+REPOS_DIR = _environment_path("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-repos")
+WORKSPACES_DIR = _environment_path("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces")
 
 
 def _find_opencode() -> str:

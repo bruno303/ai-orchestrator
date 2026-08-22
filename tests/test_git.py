@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from orchestrator.infra.git import client as git
+
+
+def test_git_environment_path_expands_home_directory(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_REPOS_DIR", "~/agent-repos")
+
+    assert git._environment_path("ORCHESTRATOR_REPOS_DIR", "/unused") == Path.home() / "agent-repos"
 
 
 @pytest.fixture
