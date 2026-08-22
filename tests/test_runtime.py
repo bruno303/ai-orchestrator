@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator import config, opencode
+from orchestrator.main import config
+from orchestrator.infra.opencode import executor as opencode
 from orchestrator.domain import Context, PublishedChange, PublishedReview, ReviewOutcome, ReviewTarget, WorkItem
-from orchestrator.providers import ExecutionResult, WorkspaceResult
-from orchestrator.runtime import compose_execution_runtime
-from orchestrator.runtime.errors import ReviewExecutionError
-from orchestrator.runtime.models import (
+from orchestrator.application.ports import ExecutionResult, WorkspaceResult
+from orchestrator.main.composition import compose_execution_runtime
+from orchestrator.application.execution.errors import ReviewExecutionError
+from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
     CleanupReviewRequest,
@@ -23,7 +24,7 @@ from orchestrator.runtime.models import (
     TestRequest as RuntimeTestRequest,
     WorkContext,
 )
-from orchestrator.runtime.review import REVIEW_PROMPT, ReviewRuntime
+from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
 
 
 class ExecutionWorkspace:

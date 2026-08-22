@@ -6,9 +6,10 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from orchestrator import git, workspace
+from orchestrator.infra.filesystem import workspace
+from orchestrator.infra.git import client as git
 from orchestrator.domain import Context
-from orchestrator.providers import WorkspaceRequest, WorkspaceResult
+from orchestrator.application.ports import WorkspaceRequest, WorkspaceResult
 
 
 class GitWorkspaceManager:

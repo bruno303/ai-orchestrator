@@ -5,13 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from orchestrator import config, state as state_mod
-from orchestrator.domain import Context, ContextPresenter, NoopContextPresenter
-from orchestrator.providers import (
+from orchestrator.domain import Context
+from orchestrator.application.ports import (
+    ContextPresenter, NoopContextPresenter,
     Destination, Executor, InputEvent, InputSource, SourceFeedback, WorkspaceManager,
 )
-from orchestrator.runtime import compose_execution_runtime
-from orchestrator.runtime.execution import ExecutionRuntime
+from orchestrator.application.execution.service import ExecutionRuntime
+
+RECEIVED = "RECEIVED"
+COMPLETED = "COMPLETED"
+FAILED = "FAILED"
 
 
 @dataclass(frozen=True)
@@ -24,35 +27,6 @@ class Runtime:
     input_provider: str | None = None
     execution_runtime: ExecutionRuntime | None = None
     context_presenter: ContextPresenter = NoopContextPresenter()
-
-
-def compose_runtime() -> Runtime:
-    """Construct the configured provider pipeline with explicit dependencies."""
-    pipeline = config.load_pipeline_config()
-    input_source = config.INPUT_PROVIDERS.create(
-        pipeline.input_source.type, {**pipeline.input_source.options, "_runtime": True}
-    )
-    executor = config.EXECUTOR_PROVIDERS.create(
-        pipeline.executor.type, {**pipeline.executor.options, "_runtime": True}
-    )
-    workspace_manager = config.WORKSPACE_PROVIDERS.create(
-        pipeline.workspace_manager.type, {**pipeline.workspace_manager.options, "_runtime": True}
-    )
-    destination = config.DESTINATION_PROVIDERS.create(
-        pipeline.destination.type, {**pipeline.destination.options, "_runtime": True}
-    )
-    return Runtime(
-        input_source=input_source,
-        executor=executor,
-        workspace_manager=workspace_manager,
-        destination=destination,
-        feedback=getattr(input_source, "feedback", None),
-        input_provider=pipeline.input_source.type,
-        execution_runtime=compose_execution_runtime(
-            executor=executor, workspace_manager=workspace_manager, destination=destination
-        ),
-        context_presenter=getattr(input_source, "context_presenter", NoopContextPresenter()),
-    )
 
 
 def _input_seed(
@@ -82,7 +56,7 @@ def _input_seed(
         "processing": {"phase_attempts": 1},
         "workspace": {},
         "output": {},
-        "status": state_mod.RECEIVED,
+        "status": RECEIVED,
         "iteration": 1,
         "phase_attempts": 1,
     }
@@ -158,8 +132,8 @@ class PollingApplication:
         try:
             result = self.run_graph(seed, task_id)
             self.report_result(result)
-            status = result.get("status", state_mod.FAILED)
-            if status == state_mod.COMPLETED:
+            status = result.get("status", FAILED)
+            if status == COMPLETED:
                 self.feedback.mark_succeeded(event)
             else:
                 self.feedback.mark_failed(event, result.get("error"))

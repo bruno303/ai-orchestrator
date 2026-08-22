@@ -1,7 +1,7 @@
 """Provider-neutral domain contracts."""
 
 from orchestrator.domain.change import Artifact, ChangeRequest, PublishedChange
-from orchestrator.domain.context import Context, ContextPresenter, NoopContextPresenter
+from orchestrator.domain.context import Context
 from orchestrator.domain.review import (
     PublishedReview,
     ReviewCheck,
@@ -15,8 +15,6 @@ __all__ = [
     "Artifact",
     "ChangeRequest",
     "Context",
-    "ContextPresenter",
-    "NoopContextPresenter",
     "PublishedChange",
     "PublishedReview",
     "ReviewCheck",

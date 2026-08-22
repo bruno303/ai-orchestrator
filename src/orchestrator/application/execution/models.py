@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from orchestrator.domain import Context, PublishedChange, PublishedReview, ReviewOutcome, ReviewTarget, WorkItem
-from orchestrator.providers import ExecutionResult, ReviewRequest, WorkspaceResult
+from orchestrator.application.ports import ExecutionResult, ReviewRequest, WorkspaceResult
 
 
 @dataclass(frozen=True)

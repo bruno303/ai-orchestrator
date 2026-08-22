@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from orchestrator.providers import (
+from orchestrator.main.providers import (
     DESTINATION_PROVIDERS,
     EXECUTOR_PROVIDERS,
     INPUT_PROVIDERS,
@@ -22,7 +22,7 @@ from orchestrator.providers import (
     REVIEW_WORKSPACE_PROVIDERS,
 )
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DATA_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", REPO_ROOT / "data"))
 STATE_DIR = DATA_DIR / "state"
 LOGS_DIR = DATA_DIR / "logs"

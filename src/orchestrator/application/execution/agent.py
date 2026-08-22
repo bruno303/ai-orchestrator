@@ -4,28 +4,41 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from orchestrator import config, workspace
-from orchestrator.providers import ExecutorError, ExecutionRequest
-from orchestrator.runtime.errors import AgentExecutionError
-from orchestrator.runtime.models import AgentRequest, PhaseResult
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from orchestrator.application.ports import ExecutorError, ExecutionRequest
+from orchestrator.application.execution.errors import AgentExecutionError
+from orchestrator.application.execution.models import AgentRequest, PhaseResult
 
 
 def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+@dataclass(frozen=True)
+class AgentSettings:
+    primary_model: object | None = None
+    fallback_model: object | None = None
+    fallback_enabled: bool = False
+    max_attempts: int = 1
+
+
 class IssueAgentRunner:
     """Run issue phases with the configured primary/fallback policy."""
 
-    def __init__(self, executor) -> None:
+    def __init__(self, executor, settings: AgentSettings = AgentSettings(), task_log_path: Callable[[str, str], Path] | None = None) -> None:
         self.executor = executor
+        self.settings = settings
+        self.task_log_path = task_log_path or (lambda task_id, node: Path(f"{task_id}-{node}.log"))
 
     def execute(self, request: AgentRequest) -> PhaseResult:
-        log_path = workspace.task_log_path(request.work.task_id, request.node)
+        log_path = self.task_log_path(request.work.task_id, request.node)
         attempt = 1
-        max_attempts = config.PHASE_MAX_ATTEMPTS if config.MODEL_FALLBACK_ENABLED else 1
+        max_attempts = self.settings.max_attempts if self.settings.fallback_enabled else 1
         while attempt <= max_attempts:
-            model_cfg = config.MODEL_PRIMARY if attempt == 1 else config.MODEL_FALLBACK
+            model_cfg = self.settings.primary_model if attempt == 1 else self.settings.fallback_model
             model = model_cfg.name if model_cfg else None
             variant = model_cfg.variant if model_cfg else None
             print(
@@ -47,7 +60,7 @@ class IssueAgentRunner:
                 variant=variant,
                 context=previous_context.merge_namespace("opencode", {
                     "log_file": str(log_path),
-                    "detect_degenerate": config.MODEL_FALLBACK_ENABLED,
+                    "detect_degenerate": self.settings.fallback_enabled,
                 }),
             )
             try:
@@ -64,7 +77,7 @@ class IssueAgentRunner:
                     ) from exc
                 print(
                     f"[{_now()}] {request.node}: degenerate output, retrying with "
-                    f"model={(config.MODEL_FALLBACK.name if config.MODEL_FALLBACK else 'default')}",
+                    f"model={(self.settings.fallback_model.name if self.settings.fallback_model else 'default')}",
                     flush=True,
                 )
                 continue

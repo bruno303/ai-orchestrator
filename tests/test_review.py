@@ -3,12 +3,14 @@
 import json
 from types import SimpleNamespace
 
-from orchestrator import config, github
-from orchestrator.github_review import GitHubReviewDestination, GitHubReviewInputSource
-from orchestrator.opencode import OpenCodeResult, OpenCodeReviewExecutor
+from orchestrator.main import config
+from orchestrator.infra.github import client as github
+from orchestrator.infra.github.review import GitHubReviewDestination, GitHubReviewInputSource
+from orchestrator.infra.opencode.executor import OpenCodeResult, OpenCodeReviewExecutor
 from orchestrator.domain import Context, ReviewCheck, ReviewFinding, ReviewOutcome, ReviewTarget
-from orchestrator.providers import ReviewRequest
-from orchestrator.review import ReviewApplication, compose_review_runtime
+from orchestrator.application.ports import ReviewRequest
+from orchestrator.application.review import ReviewApplication
+from orchestrator.main.composition import compose_review_runtime
 
 
 class FakeWorkspace:
@@ -151,9 +153,9 @@ def test_review_runtime_uses_registries_without_store(monkeypatch):
                 "destination": type("Destination", (), {"publish": lambda self, request, result: None})(),
             }[provider_type]
 
-    import orchestrator.providers as providers
+    import orchestrator.main.composition as composition
     for name in ("REVIEW_INPUT_PROVIDERS", "REVIEW_EXECUTOR_PROVIDERS", "REVIEW_WORKSPACE_PROVIDERS", "REVIEW_DESTINATION_PROVIDERS"):
-        monkeypatch.setattr(providers, name, Registry())
+        monkeypatch.setattr(composition, name, Registry())
     compose_review_runtime()
     assert all("store" not in options for _, options in captured)
     assert [provider for provider, _ in captured] == ["input", "executor", "workspace", "destination"]
@@ -216,7 +218,7 @@ def test_github_destination_demotes_invalid_locations_and_validates_start_side()
 
 
 def test_review_executor_rejects_invalid_structured_result(monkeypatch):
-    monkeypatch.setattr("orchestrator.opencode.run_opencode", lambda *args, **kwargs: OpenCodeResult(0, json.dumps({
+    monkeypatch.setattr("orchestrator.infra.opencode.executor.run_opencode", lambda *args, **kwargs: OpenCodeResult(0, json.dumps({
         "verdict": "comment", "summary": "x", "findings": [{"message": "x", "side": "middle"}], "checks": [],
     }), "", 0.1))
     result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", Context()))
@@ -234,9 +236,10 @@ def test_review_executor_uses_configured_primary_model(monkeypatch):
             "verdict": "comment", "summary": "ok", "findings": [], "checks": [],
         }), "", 0.1)
 
-    monkeypatch.setattr("orchestrator.opencode.run_opencode", run)
-    monkeypatch.setattr(config, "MODEL_PRIMARY", config.ModelConfig("provider/model", "fast"))
-    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", Context()))
+    monkeypatch.setattr("orchestrator.infra.opencode.executor.run_opencode", run)
+    result = OpenCodeReviewExecutor({"model_config": config.ModelConfig("provider/model", "fast")}).execute(
+        ReviewRequest("review:r#1", "r", "/tmp", "p", Context())
+    )
 
     assert result.success
     assert captured["args"][1] is None
@@ -251,7 +254,7 @@ def test_review_executor_accepts_transcript_before_json(monkeypatch):
         "checks": [{"name": "tests", "status": "pass"}],
     })
     monkeypatch.setattr(
-        "orchestrator.opencode.run_opencode",
+        "orchestrator.infra.opencode.executor.run_opencode",
         lambda *args, **kwargs: OpenCodeResult(0, transcript, "", 0.1),
     )
 
@@ -270,10 +273,10 @@ def test_review_executor_disables_degenerate_detection_without_fallback(monkeypa
             "verdict": "comment", "summary": "ok", "findings": [], "checks": [],
         }), "", 0.1)
 
-    monkeypatch.setattr("orchestrator.opencode.run_opencode", run)
-    monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", False)
-
-    result = OpenCodeReviewExecutor().execute(ReviewRequest("review:r#1", "r", "/tmp", "p", Context()))
+    monkeypatch.setattr("orchestrator.infra.opencode.executor.run_opencode", run)
+    result = OpenCodeReviewExecutor({"fallback_enabled": False}).execute(
+        ReviewRequest("review:r#1", "r", "/tmp", "p", Context())
+    )
 
     assert result.success
     assert captured["detect_degenerate"] is False

@@ -10,12 +10,16 @@ import sys
 import time
 from pathlib import Path
 
-from orchestrator import config, git, github, state as state_mod, workspace
-from orchestrator.application import PollingApplication, _input_seed, compose_runtime
+from orchestrator.main import config
+from orchestrator.infra.filesystem import workspace
+from orchestrator.infra.git import client as git
+from orchestrator.infra.github import client as github
+from orchestrator.infra.langgraph import state as state_mod
+from orchestrator.application import PollingApplication, _input_seed
+from orchestrator.main.composition import compose_execution_runtime, compose_review_runtime, compose_runtime
 from orchestrator.domain import Context, WorkItem
-from orchestrator.graph import build_graph
-from orchestrator.providers import InputEvent
-from orchestrator.review import compose_review_runtime
+from orchestrator.infra.langgraph.graph import build_graph
+from orchestrator.application.ports import InputEvent
 
 ISSUE_REF_RE = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
 
@@ -55,6 +59,10 @@ def _run_graph(seed: dict, task_id: str, *, executor=None, workspace_manager=Non
         configured = compose_runtime()
         executor, workspace_manager = configured.executor, configured.workspace_manager
         destination, runtime = configured.destination, configured.execution_runtime
+    if runtime is None:
+        runtime = compose_execution_runtime(
+            executor=executor, workspace_manager=workspace_manager, destination=destination
+        )
     starts: dict[str, float] = {}
 
     def on_node_start(node: str, state: dict) -> None:
@@ -62,8 +70,7 @@ def _run_graph(seed: dict, task_id: str, *, executor=None, workspace_manager=Non
         workspace.append_event(task_id, event="node_start", node=node)
 
     kwargs = {"on_node_start": on_node_start}
-    for name, value in (("executor", executor), ("workspace_manager", workspace_manager),
-                        ("destination", destination), ("runtime", runtime)):
+    for name, value in (("runtime", runtime),):
         if value is not None and name in inspect.signature(build_graph).parameters:
             kwargs[name] = value
     graph = build_graph(**kwargs)

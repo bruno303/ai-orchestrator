@@ -5,11 +5,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from orchestrator import config
 from orchestrator.domain import ChangeRequest, Context, PublishedChange
-from orchestrator.providers import Destination, Executor, WorkspaceManager, WorkspaceRequest, WorkspaceResult
-from orchestrator.runtime.agent import IssueAgentRunner
-from orchestrator.runtime.errors import (
+from orchestrator.application.ports import Destination, Executor, WorkspaceManager, WorkspaceRequest, WorkspaceResult
+from orchestrator.application.execution.agent import AgentSettings, IssueAgentRunner
+from orchestrator.application.execution.errors import (
     AgentExecutionError,
     CleanupError,
     PlanValidationError,
@@ -17,7 +16,7 @@ from orchestrator.runtime.errors import (
     QualityGateError,
     WorkspacePreparationError,
 )
-from orchestrator.runtime.models import (
+from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
     CleanupResult,
@@ -90,13 +89,14 @@ Do not modify code. Report all results and failures.
 class ExecutionRuntime:
     """Perform execution steps without interpreting provider-owned context."""
 
-    def __init__(self, executor: Executor, workspace_manager: WorkspaceManager, destination: Destination) -> None:
+    def __init__(self, executor: Executor, workspace_manager: WorkspaceManager, destination: Destination, *, repository_allowed=lambda _repository: True, agent_settings: AgentSettings = AgentSettings(), task_log_path=None) -> None:
         self.workspace_manager = workspace_manager
         self.destination = destination
-        self.agent = IssueAgentRunner(executor)
+        self.repository_allowed = repository_allowed
+        self.agent = IssueAgentRunner(executor, agent_settings, task_log_path)
 
     def prepare(self, request: PrepareExecutionRequest) -> PrepareExecutionResult:
-        if not config.is_repository_allowed(request.work.repository):
+        if not self.repository_allowed(request.work.repository):
             raise WorkspacePreparationError(
                 f"repository {request.work.repository} is not in the allowlist"
             )

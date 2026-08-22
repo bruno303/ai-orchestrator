@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from pathlib import Path
 
-from orchestrator import config, github_auth
+from orchestrator.infra.github import auth as github_auth
+
+REPOS_DIR = Path(os.environ.get("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-repos"))
 
 
 class GitError(Exception):
@@ -40,7 +43,7 @@ def _run(
 
 
 def base_repo_dir(repository: str) -> Path:
-    return config.REPOS_DIR / repository.replace("/", "-")
+    return REPOS_DIR / repository.replace("/", "-")
 
 
 def ensure_base_clone(repository: str, clone_url: str) -> Path:

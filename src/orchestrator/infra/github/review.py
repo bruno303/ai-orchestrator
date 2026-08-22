@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from orchestrator import config, github, workspace
+from orchestrator.infra.filesystem import workspace
+from orchestrator.infra.github import client as github
 from orchestrator.domain import (
     Context,
     PublishedReview,
@@ -30,12 +31,14 @@ class GitHubContextPresenter:
 @dataclass
 class GitHubReviewInputSource:
     github_client: Any = github
-    config_module: Any = config
+    config_module: Any = None
     options: dict[str, Any] = field(default_factory=dict)
     provider_type: str = "github_polling"
     context_presenter: GitHubContextPresenter = field(default_factory=GitHubContextPresenter)
 
     def poll(self) -> list[ReviewTarget]:
+        if self.config_module is None:
+            raise RuntimeError("GitHubReviewInputSource requires an allowlist configuration")
         targets: list[ReviewTarget] = []
         for repository in self.config_module.allowed_repositories():
             repository_state = self._repository_state(repository)

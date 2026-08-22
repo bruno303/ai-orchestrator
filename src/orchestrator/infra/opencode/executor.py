@@ -6,13 +6,14 @@ import select
 import subprocess
 import time
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orchestrator import config
 from orchestrator.domain import ReviewCheck, ReviewFinding, ReviewOutcome
-from orchestrator.providers import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest
+from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest
 
 
 class OpenCodeError(ExecutorError):
@@ -30,6 +31,16 @@ class OpenCodeResult:
     stdout: str
     stderr: str
     duration_seconds: float
+
+
+def _find_opencode() -> str:
+    found = shutil.which("opencode")
+    if found:
+        return found
+    for candidate in (Path.home() / ".opencode" / "bin" / "opencode", Path.home() / ".local" / "bin" / "opencode"):
+        if candidate.is_file():
+            return str(candidate)
+    return "opencode"
 
 
 class OpenCodeExecutor:
@@ -74,14 +85,14 @@ class OpenCodeReviewExecutor:
 
     def execute(self, request: ReviewRequest) -> ReviewOutcome:
         options = {**self.options, **dict(request.context.namespace("opencode"))}
-        model_config = config.MODEL_PRIMARY
+        model_config = options.get("model_config")
         result = run_opencode(
             request.workspace, None, request.prompt,
             log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
             timeout=options.get("timeout"),
-            detect_degenerate=options.get("detect_degenerate", config.MODEL_FALLBACK_ENABLED),
+            detect_degenerate=options.get("detect_degenerate", options.get("fallback_enabled", False)),
         )
         if result.exit_code != 0:
             return ReviewOutcome(False, summary=result.stdout or result.stderr,
@@ -177,7 +188,7 @@ def run_opencode(
     if not workspace.exists():
         raise OpenCodeError(f"workspace does not exist: {workspace}")
     cmd = [
-        config.OPENCODE_BIN,
+        os.environ.get("ORCHESTRATOR_OPENCODE_BIN") or _find_opencode(),
         "run",
         "--auto",
         "--dir",
@@ -190,7 +201,7 @@ def run_opencode(
     if variant is not None:
         cmd += ["--variant", variant]
     cmd.append(prompt)
-    timeout = timeout or config.OPENCODE_TIMEOUT_SECONDS
+    timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
     start = time.monotonic()
     try:
         proc = subprocess.Popen(
@@ -202,7 +213,7 @@ def run_opencode(
             bufsize=1,
         )
     except FileNotFoundError as exc:
-        raise OpenCodeError(f"opencode binary not found: {config.OPENCODE_BIN}") from exc
+        raise OpenCodeError(f"opencode binary not found: {cmd[0]}") from exc
 
     lines: list[str] = []
     fh = None
@@ -239,11 +250,11 @@ def run_opencode(
             if fh is not None:
                 fh.write(line)
                 fh.flush()
-            if detect_degenerate and len(lines) % config.LOOP_CHECK_INTERVAL == 0 and detect_loop(
+            if detect_degenerate and len(lines) % int(os.environ.get("ORCHESTRATOR_LOOP_CHECK_INTERVAL", "25")) == 0 and detect_loop(
                 lines,
-                config.LOOP_REPEAT_WINDOW,
-                config.LOOP_REPEAT_THRESHOLD,
-                config.LOOP_RATIO_THRESHOLD,
+                int(os.environ.get("ORCHESTRATOR_LOOP_REPEAT_WINDOW", "100")),
+                int(os.environ.get("ORCHESTRATOR_LOOP_REPEAT_THRESHOLD", "20")),
+                float(os.environ.get("ORCHESTRATOR_LOOP_RATIO_THRESHOLD", "0.1")),
             ):
                 proc.kill()
                 proc.wait()

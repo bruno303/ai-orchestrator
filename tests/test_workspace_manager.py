@@ -4,10 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator import git, workspace
+from orchestrator.infra.filesystem import workspace
+from orchestrator.infra.git import client as git
 from orchestrator.domain import Context
-from orchestrator.git_workspace import GitWorkspaceManager
-from orchestrator.providers import WorkspaceRequest
+from orchestrator.infra.git.workspace import GitWorkspaceManager
+from orchestrator.application.ports import WorkspaceRequest
 
 
 def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatch, tmp_path):

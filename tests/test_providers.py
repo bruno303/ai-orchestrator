@@ -4,21 +4,13 @@ from __future__ import annotations
 
 import json
 
-from orchestrator.providers import (
-    DESTINATION_PROVIDERS,
-    EXECUTOR_PROVIDERS,
-    INPUT_PROVIDERS,
-    REVIEW_DESTINATION_PROVIDERS,
-    REVIEW_EXECUTOR_PROVIDERS,
-    REVIEW_INPUT_PROVIDERS,
-    WORKSPACE_PROVIDERS,
+from orchestrator.application.ports import (
     Destination,
     ExecutionRequest,
     ExecutionResult,
     Executor,
     InputEvent,
     InputSource,
-    UnknownProviderError,
     WorkspaceManager,
     WorkspaceRequest,
     WorkspaceResult,
@@ -27,14 +19,20 @@ from orchestrator.providers import (
     ReviewExecutor,
     ReviewDestination,
 )
-from orchestrator.application import PollingApplication, compose_runtime
-from orchestrator import config
+from orchestrator.application import PollingApplication
+from orchestrator.main.providers import (
+    DESTINATION_PROVIDERS, EXECUTOR_PROVIDERS, INPUT_PROVIDERS,
+    REVIEW_DESTINATION_PROVIDERS, REVIEW_EXECUTOR_PROVIDERS, REVIEW_INPUT_PROVIDERS,
+    UnknownProviderError, WORKSPACE_PROVIDERS,
+)
+from orchestrator.main import config
+from orchestrator.main.composition import compose_runtime
 from orchestrator.domain import Artifact, Context, ReviewOutcome, ReviewTarget, WorkItem
 from orchestrator.domain import ChangeRequest, PublishedChange
-from orchestrator.github_destination import GitHubDestination
-from orchestrator.github_input import GitHubPollingInputSource
-from orchestrator.git_workspace import GitWorkspaceManager
-from orchestrator.opencode import OpenCodeExecutor
+from orchestrator.infra.github.destination import GitHubDestination
+from orchestrator.infra.github.input import GitHubPollingInputSource
+from orchestrator.infra.git.workspace import GitWorkspaceManager
+from orchestrator.infra.opencode.executor import OpenCodeExecutor
 
 
 def test_provider_models_are_json_serializable():
@@ -162,7 +160,7 @@ def test_composed_github_source_records_configured_provider_name(allowlist, tmp_
 
         @staticmethod
         def list_open_issues(repository):
-            from orchestrator.github import Issue
+            from orchestrator.infra.github.client import Issue
 
             return [Issue(7, "Fix bug", "details", "https://example.test/7")]
 

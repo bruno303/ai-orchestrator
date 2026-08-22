@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from orchestrator import github_auth
+from orchestrator.infra.github import auth as github_auth
 
 
 def test_gh_environment_uses_installation_token(monkeypatch):
