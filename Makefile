@@ -1,4 +1,4 @@
-.PHONY: help test run execute review list status resume reset logs watch smoke
+.PHONY: help test run execute review logs smoke
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | sort
@@ -15,23 +15,8 @@ execute:
 review:
 	uv run orchestrator review
 
-list:
-	uv run orchestrator list
-
-status:
-	uv run orchestrator status $(TASK)
-
-resume:
-	uv run orchestrator resume $(TASK)
-
-reset:
-	uv run orchestrator reset $(TASK)
-
 logs:
-	uv run orchestrator logs $(TASK) $(if $(NODE),--node $(NODE),) $(if $(FOLLOW),--follow,)
-
-watch:
-	uv run orchestrator watch
+	uv run orchestrator logs $(TASK) $(if $(NODE),--node $(NODE),)
 
 smoke:
 	bash /tmp/opencode/smoke.sh
