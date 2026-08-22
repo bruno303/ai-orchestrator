@@ -7,7 +7,7 @@ import subprocess
 from urllib.parse import quote
 from dataclasses import dataclass, field
 
-from orchestrator import github_auth
+from orchestrator.infra.github import auth as github_auth
 
 
 class GitHubError(Exception):

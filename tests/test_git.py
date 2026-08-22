@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from orchestrator import git
+from orchestrator.infra.git import client as git
 
 
 @pytest.fixture

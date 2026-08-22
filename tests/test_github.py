@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from orchestrator import github
+from orchestrator.infra.github import client as github
 
 
 @pytest.fixture

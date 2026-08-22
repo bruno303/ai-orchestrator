@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from orchestrator import git, github
+from orchestrator.infra.git import client as git
+from orchestrator.infra.github import client as github
 from orchestrator.domain import ChangeRequest, Context, PublishedChange
 
 

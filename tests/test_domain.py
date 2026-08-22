@@ -8,7 +8,7 @@ from uuid import UUID
 import pytest
 
 from orchestrator.domain import Context, ReviewTarget, WorkItem, ensure_task_id
-from orchestrator import workspace
+from orchestrator.infra.filesystem import workspace
 
 
 def test_context_merges_namespaces_without_erasing_unrelated_data():

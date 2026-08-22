@@ -6,9 +6,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from orchestrator import config, github, github_auth, workspace
+from orchestrator.infra.filesystem import workspace
+from orchestrator.infra.github import auth as github_auth
+from orchestrator.infra.github import client as github
 from orchestrator.domain import Context, WorkItem
-from orchestrator.providers import InputEvent
+from orchestrator.application.ports import InputEvent
 
 
 
@@ -57,7 +59,7 @@ class GitHubPollingInputSource:
 
     provider_type = "github_polling"
     github_client: Any = github
-    config_module: Any = config
+    config_module: Any = None
     options: dict[str, Any] = field(default_factory=dict)
     feedback: Any = None
 
@@ -70,6 +72,8 @@ class GitHubPollingInputSource:
         return str(self.options.get("bot_login", github_auth.BOT_LOGIN))
 
     def poll(self) -> list[InputEvent]:
+        if self.config_module is None:
+            raise RuntimeError("GitHubPollingInputSource requires an allowlist configuration")
         events: list[InputEvent] = []
         for repository in self.config_module.allowed_repositories():
             repository_state = self._repository_state(repository)

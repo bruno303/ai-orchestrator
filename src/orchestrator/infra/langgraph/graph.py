@@ -7,16 +7,15 @@ from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
-from orchestrator import state as state_mod
+from orchestrator.infra.langgraph import state as state_mod
 from orchestrator.domain import Context, WorkItem
-from orchestrator.providers import Destination, ExecutionResult, Executor, WorkspaceManager, WorkspaceResult
-from orchestrator.runtime import compose_execution_runtime
-from orchestrator.runtime.errors import RuntimeOperationError
-from orchestrator.runtime.execution import PLAN_FILE, implement_prompt as runtime_implement_prompt
-from orchestrator.runtime.execution import plan_prompt as runtime_plan_prompt
-from orchestrator.runtime.execution import test_prompt as runtime_test_prompt
-from orchestrator.runtime.models import (
-    AgentRequest,
+from orchestrator.application.ports import WorkspaceResult
+from orchestrator.application.execution.errors import RuntimeOperationError
+from orchestrator.application.execution.service import ExecutionRuntime
+from orchestrator.application.execution.service import PLAN_FILE, implement_prompt as runtime_implement_prompt
+from orchestrator.application.execution.service import plan_prompt as runtime_plan_prompt
+from orchestrator.application.execution.service import test_prompt as runtime_test_prompt
+from orchestrator.application.execution.models import (
     CleanupRequest,
     ImplementationRequest,
     PlanRequest,
@@ -25,7 +24,7 @@ from orchestrator.runtime.models import (
     TestRequest,
     WorkContext,
 )
-from orchestrator.state import TaskState
+from orchestrator.infra.langgraph.state import TaskState
 
 
 # Generic application/runtime code may pass and merge Context, but may not
@@ -111,27 +110,10 @@ def _runtime_error(exc: Exception) -> dict[str, Any]:
     return updates
 
 
-def _run_opencode(
-    state: TaskState, node: str, agent: str, prompt: str, executor: Executor | None = None
-) -> tuple[dict[str, Any], ExecutionResult | None]:
-    runtime = compose_execution_runtime(executor=executor)
-    try:
-        result = runtime.execute_phase(
-            AgentRequest(_work(state), node, agent, prompt, _workspace(state)["path"], _context(state))
-        )
-    except Exception as exc:
-        return _runtime_error(exc), None
-    return {
-        "phase_attempts": result.attempts,
-        "processing": _processing(state, {"context": result.context.to_dict()}),
-    }, result.execution
-
-
-def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None, runtime=None) -> dict[str, Any]:
+def prepare_workspace(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     print(f"[{_now()}] prepare_workspace: starting", flush=True)
     try:
         current = _workspace(state)
-        runtime = runtime or compose_execution_runtime(workspace_manager=manager)
         prepared = runtime.prepare(PrepareExecutionRequest(
             _work(state), current["branch"], current["base_branch"], current["path"], _context(state)
         ))
@@ -145,7 +127,7 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None,
     )
     return {
         "workspace": {
-            "provider": _provider_name(manager or getattr(runtime, "workspace_manager", None), ""),
+            "provider": _provider_name(runtime.workspace_manager, ""),
             "path": result.workspace,
             "branch": result.branch,
             "base_branch": prepared.base_branch,
@@ -155,9 +137,8 @@ def prepare_workspace(state: TaskState, manager: WorkspaceManager | None = None,
     }
 
 
-def plan(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
+def plan(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     try:
-        runtime = runtime or compose_execution_runtime(executor=executor)
         result = runtime.plan(PlanRequest(_work(state), _workspace(state)["path"], _context(state)))
     except Exception as exc:
         return _runtime_error(exc)
@@ -171,9 +152,8 @@ def plan(state: TaskState, executor: Executor | None = None, runtime=None) -> di
     }
 
 
-def implement(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
+def implement(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     try:
-        runtime = runtime or compose_execution_runtime(executor=executor)
         result = runtime.implement(ImplementationRequest(
             _work(state), _workspace(state)["path"], PLAN_FILE, _context(state)
         ))
@@ -188,9 +168,8 @@ def implement(state: TaskState, executor: Executor | None = None, runtime=None) 
     }
 
 
-def test(state: TaskState, executor: Executor | None = None, runtime=None) -> dict[str, Any]:
+def test(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     try:
-        runtime = runtime or compose_execution_runtime(executor=executor)
         result = runtime.test(TestRequest(_work(state), _workspace(state)["path"], _context(state)))
     except Exception as exc:
         return _runtime_error(exc)
@@ -203,11 +182,10 @@ def test(state: TaskState, executor: Executor | None = None, runtime=None) -> di
     }
 
 
-def create_pr(state: TaskState, destination: Destination | None = None, runtime=None) -> dict[str, Any]:
+def create_pr(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     print(f"[{_now()}] publish: starting", flush=True)
     try:
         current = _workspace(state)
-        runtime = runtime or compose_execution_runtime(destination=destination)
         publication = runtime.publish(PublishRequest(
             _work(state), current["path"], current["branch"], current["base_branch"], _context(state)
         )).publication
@@ -215,7 +193,7 @@ def create_pr(state: TaskState, destination: Destination | None = None, runtime=
         print(f"[{_now()}] publish: ERROR {exc}", flush=True)
         return _runtime_error(exc)
     output: dict[str, Any] = {
-        "provider": publication.provider or _provider_name(destination or getattr(runtime, "destination", None), ""),
+        "provider": publication.provider or _provider_name(runtime.destination, ""),
         "context": publication.context.to_dict(),
     }
     if publication.id is not None:
@@ -225,10 +203,9 @@ def create_pr(state: TaskState, destination: Destination | None = None, runtime=
     return {"status": state_mod.COMPLETED, "output": output}
 
 
-def cleanup(state: TaskState, manager: WorkspaceManager | None = None, runtime=None) -> dict[str, Any]:
+def cleanup(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     try:
         current = _workspace(state)
-        runtime = runtime or compose_execution_runtime(workspace_manager=manager)
         runtime.cleanup(CleanupRequest(
             _work(state).repository,
             WorkspaceResult(
@@ -259,10 +236,8 @@ def _route(next_node: str) -> Callable[[TaskState], str]:
 
 def build_graph(
     on_node_start: Callable[[str, TaskState], None] | None = None,
-    executor: Executor | None = None,
-    workspace_manager: WorkspaceManager | None = None,
-    destination: Destination | None = None,
-    runtime=None,
+    *,
+    runtime: ExecutionRuntime,
 ):
     def guard(name: str, fn: Callable[[TaskState], dict[str, Any]]):
         def wrapped(state: TaskState) -> dict[str, Any]:
@@ -277,17 +252,14 @@ def build_graph(
                 return _fail(f"unhandled exception in {name}: {exc}")
         return wrapped
 
-    workflow_runtime = runtime or compose_execution_runtime(
-        executor=executor, workspace_manager=workspace_manager, destination=destination
-    )
     builder = StateGraph(TaskState)
     nodes = {
-        "prepare_workspace": lambda value: prepare_workspace(value, runtime=workflow_runtime),
-        "plan": lambda value: plan(value, runtime=workflow_runtime),
-        "implement": lambda value: implement(value, runtime=workflow_runtime),
-        "test": lambda value: test(value, runtime=workflow_runtime),
-        "create_pr": lambda value: create_pr(value, runtime=workflow_runtime),
-        "cleanup": lambda value: cleanup(value, runtime=workflow_runtime),
+        "prepare_workspace": lambda value: prepare_workspace(value, runtime=runtime),
+        "plan": lambda value: plan(value, runtime=runtime),
+        "implement": lambda value: implement(value, runtime=runtime),
+        "test": lambda value: test(value, runtime=runtime),
+        "create_pr": lambda value: create_pr(value, runtime=runtime),
+        "cleanup": lambda value: cleanup(value, runtime=runtime),
     }
     for name, fn in nodes.items():
         builder.add_node(name, guard(name, fn))

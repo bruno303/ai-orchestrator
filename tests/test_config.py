@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from orchestrator import config
+from orchestrator.main import config
 
 
 def _clear_pipeline_cache():

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from orchestrator import opencode
-from orchestrator.config import OPENCODE_BIN
-from orchestrator.providers import ExecutionRequest, ExecutionResult
+from orchestrator.infra.opencode import executor as opencode
+from orchestrator.application.ports import ExecutionRequest, ExecutionResult
 
 
 def test_run_opencode_success(tmp_path, clean_env):

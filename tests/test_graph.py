@@ -1,6 +1,6 @@
 """Graph executes entirely in memory."""
 
-from orchestrator.graph import build_graph
+from orchestrator.infra.langgraph.graph import build_graph
 
 
 def test_graph_compiles_without_a_checkpointer():

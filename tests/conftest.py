@@ -23,7 +23,8 @@ os.environ["ORCHESTRATOR_WORKSPACES_DIR"] = str(_TMP / "workspaces")
 os.environ["ORCHESTRATOR_CONFIG_FILE"] = str(_TMP / "repositories.yaml")
 os.environ["ORCHESTRATOR_OPENCODE_BIN"] = str(_TMP / "bin" / "fake-opencode")
 
-from orchestrator import config, github_auth  # noqa: E402
+from orchestrator.main import config  # noqa: E402
+from orchestrator.infra.github import auth as github_auth  # noqa: E402
 
 
 @pytest.fixture(autouse=True)

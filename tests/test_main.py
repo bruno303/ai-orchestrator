@@ -2,8 +2,8 @@
 
 import pytest
 
-from orchestrator import github
-from orchestrator.main import main
+from orchestrator.infra.github import client as github
+from orchestrator.main.cli import main
 
 
 def test_removed_persistence_commands_are_absent(capsys):

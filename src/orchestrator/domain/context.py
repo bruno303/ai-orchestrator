@@ -6,7 +6,7 @@ from collections.abc import Iterator, Mapping
 from copy import deepcopy
 import json
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any
 
 
 def _validated(data: Mapping[str, Mapping[str, Any]] | None) -> dict[str, dict[str, Any]]:
@@ -81,12 +81,3 @@ class Context(Mapping[str, Mapping[str, Any]]):
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Context":
         return cls(value)  # type: ignore[arg-type]
-
-
-class ContextPresenter(Protocol):
-    def logging_fields(self, context: Context) -> Mapping[str, Any]: ...
-
-
-class NoopContextPresenter:
-    def logging_fields(self, context: Context) -> Mapping[str, Any]:
-        return {}

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from orchestrator import workspace
 from orchestrator.domain import Context, PublishedReview, ReviewOutcome
-from orchestrator.providers import ReviewDestination, ReviewExecutor, ReviewRequest, WorkspaceManager, WorkspaceRequest, WorkspaceResult
-from orchestrator.runtime.errors import CleanupError, ReviewExecutionError, ReviewPublicationError, WorkspacePreparationError
-from orchestrator.runtime.models import (
+from pathlib import Path
+from typing import Callable
+
+from orchestrator.application.ports import ReviewDestination, ReviewExecutor, ReviewRequest, WorkspaceManager, WorkspaceRequest, WorkspaceResult
+from orchestrator.application.execution.errors import CleanupError, ReviewExecutionError, ReviewPublicationError, WorkspacePreparationError
+from orchestrator.application.execution.models import (
     CleanupReviewRequest,
     CleanupReviewResult,
     ExecuteReviewRequest,
@@ -25,10 +27,11 @@ REVIEW_PROMPT = """Use only the `/code-review` skill to review this change. Foll
 
 
 class ReviewRuntime:
-    def __init__(self, executor: ReviewExecutor, workspace_manager: WorkspaceManager, destination: ReviewDestination) -> None:
+    def __init__(self, executor: ReviewExecutor, workspace_manager: WorkspaceManager, destination: ReviewDestination, *, task_log_path: Callable[[str, str], Path] | None = None) -> None:
         self.executor = executor
         self.workspace_manager = workspace_manager
         self.destination = destination
+        self.task_log_path = task_log_path or (lambda task_id, node: Path(f"{task_id}-{node}.log"))
 
     def prepare(self, request: PrepareReviewRequest) -> PrepareReviewResult:
         target = request.target
@@ -68,7 +71,7 @@ class ReviewRuntime:
             workspace=prepared.workspace.workspace,
             prompt=request.prompt,
             context=prepared.context,
-            log_file=str(workspace.task_log_path(prepared.target.id, "review")),
+            log_file=str(self.task_log_path(prepared.target.id, "review")),
         )
         try:
             result = self.executor.execute(review_request)

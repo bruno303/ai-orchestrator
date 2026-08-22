@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 from orchestrator.application import PollingApplication
 from orchestrator.domain import Context, WorkItem
-from orchestrator.github_input import GitHubPollingInputSource
-from orchestrator.providers import InputEvent
+from orchestrator.infra.github.input import GitHubPollingInputSource
+from orchestrator.application.ports import InputEvent
 
 
 class Source:

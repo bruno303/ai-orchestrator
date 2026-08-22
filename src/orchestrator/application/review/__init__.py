@@ -5,16 +5,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from orchestrator import config, workspace
-from orchestrator.domain import ContextPresenter, NoopContextPresenter, ReviewTarget
-from orchestrator.providers import ReviewDestination, ReviewExecutor, ReviewInputSource, WorkspaceManager
-from orchestrator.runtime.models import (
+from typing import Callable
+
+from orchestrator.application.ports import ContextPresenter, NoopContextPresenter, ReviewDestination, ReviewExecutor, ReviewInputSource, WorkspaceManager
+from orchestrator.domain import ReviewTarget
+from orchestrator.application.execution.models import (
     CleanupReviewRequest,
     ExecuteReviewRequest,
     PrepareReviewRequest,
     PublishReviewRequest,
 )
-from orchestrator.runtime.review import REVIEW_PROMPT, ReviewRuntime
+from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
 
 
 @dataclass(init=False)
@@ -33,12 +34,14 @@ class ReviewApplication:
         destination: ReviewDestination | None = None,
         runtime: ReviewRuntime | None = None,
         context_presenter: ContextPresenter | None = None,
+        write_task_log: Callable[[str, str, str], None] | None = None,
     ) -> None:
         self.input_source = input_source
         self.runtime = runtime or ReviewRuntime(executor, workspace_manager, destination)
         self.context_presenter = context_presenter or getattr(
             input_source, "context_presenter", NoopContextPresenter()
         )
+        self.write_task_log = write_task_log or (lambda _task_id, _node, _message: None)
 
     def poll_once(self) -> list[ReviewTarget]:
         processed: list[ReviewTarget] = []
@@ -47,7 +50,7 @@ class ReviewApplication:
             prepared = None
             fields = dict(self.context_presenter.logging_fields(target.context))
             title = " ".join(target.title.split()) or "<untitled>"
-            workspace.write_task_log(
+            self.write_task_log(
                 task_id,
                 "review",
                 f"[review] starting: repository={target.repository} "
@@ -73,26 +76,3 @@ class ReviewApplication:
                     except Exception as exc:
                         print(f"[review] cleanup {target.id}: {exc}", flush=True)
         return processed
-
-
-def compose_review_runtime() -> ReviewApplication:
-    pipeline = config.load_review_pipeline_config()
-    from orchestrator.providers import (
-        REVIEW_DESTINATION_PROVIDERS,
-        REVIEW_EXECUTOR_PROVIDERS,
-        REVIEW_INPUT_PROVIDERS,
-        REVIEW_WORKSPACE_PROVIDERS,
-    )
-
-    def create(registry, provider):
-        options = {**provider.options, "_runtime": True}
-        return registry.create(provider.type, options)
-
-    return ReviewApplication(
-        create(REVIEW_INPUT_PROVIDERS, pipeline.input_source),
-        runtime=ReviewRuntime(
-            create(REVIEW_EXECUTOR_PROVIDERS, pipeline.executor),
-            create(REVIEW_WORKSPACE_PROVIDERS, pipeline.workspace_manager),
-            create(REVIEW_DESTINATION_PROVIDERS, pipeline.destination),
-        ),
-    )

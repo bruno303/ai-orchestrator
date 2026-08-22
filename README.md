@@ -147,6 +147,34 @@ support arbitrary unchanged-file locations.
 
 ## How it works
 
+## Architecture
+
+The package layout keeps policy and external adapters separate. `main` is the
+only composition root: it loads deployment configuration, selects providers,
+and wires concrete adapters into application services.
+
+```
+src/orchestrator/
+├── domain/        # business values and invariants; Python standard library only
+├── application/   # use cases, workflows, and provider protocols
+├── infra/         # GitHub, git, filesystem, LangGraph, and OpenCode adapters
+└── main/          # config, provider registries, composition, and CLI
+```
+
+Dependencies always point inward:
+
+```
+main ──────────────> application ───> domain
+  │                       ▲
+  └──> infra ─────────────┘
+```
+
+Place a new business rule or value object in `domain`; add a use case or a
+provider protocol in `application`; implement external I/O in `infra`; and
+register/wire a concrete provider in `main/providers.py` and
+`main/composition.py`. Infrastructure must not import `main`, and no flat
+compatibility modules are retained at the package root.
+
 Provider adapters translate external events into neutral domain values.
 Workflow engines decide which step runs next; reusable runtime services perform
 the side effects. Execution and review remain separate:
@@ -218,8 +246,9 @@ pipeline:
   destination: {type: github}
 ```
 
-To add a provider, implement the relevant protocol in `providers.py`, register
-its factory in the matching registry, and configure its type. Input events carry
+To add a provider, implement the relevant protocol in `application/ports`, add
+its concrete adapter under `infra`, register its factory in `main/providers.py`,
+and configure its type. Input events carry
 the configured input provider identity, and provider metadata belongs in its
 Context namespace. Do not put service-specific values in generic fields.
 
