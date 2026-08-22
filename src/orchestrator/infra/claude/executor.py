@@ -122,7 +122,7 @@ def run_claude(
 
     The generic ``agent`` argument is intentionally not forwarded: Claude Code
     custom agents are deployment-specific, while the orchestrator's prompts
-    already describe each plan/build/test phase. Claude Code 2.1.19 does not
+    already describe each plan/build phase. Claude Code 2.1.19 does not
     accept an ``--effort`` CLI option, so a configured variant is exposed to
     the child process through ``CLAUDE_CODE_EFFORT_LEVEL`` instead.
     """

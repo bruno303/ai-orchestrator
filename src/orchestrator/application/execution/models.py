@@ -90,18 +90,6 @@ class ImplementationResult:
 
 
 @dataclass(frozen=True)
-class TestRequest:
-    work: WorkContext
-    workspace: str
-    context: Context = field(default_factory=Context)
-
-@dataclass(frozen=True)
-class TestResult:
-    summary: str
-    phase: PhaseResult
-
-
-@dataclass(frozen=True)
 class PublishRequest:
     work: WorkContext
     workspace: str

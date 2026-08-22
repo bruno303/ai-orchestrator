@@ -9,11 +9,9 @@ from orchestrator.domain import ChangeRequest, Context, PublishedChange
 from orchestrator.application.ports import Destination, Executor, WorkspaceManager, WorkspaceRequest, WorkspaceResult
 from orchestrator.application.execution.agent import AgentSettings, IssueAgentRunner
 from orchestrator.application.execution.errors import (
-    AgentExecutionError,
     CleanupError,
     PlanValidationError,
     PublicationError,
-    QualityGateError,
     WorkspacePreparationError,
 )
 from orchestrator.application.execution.models import (
@@ -29,8 +27,6 @@ from orchestrator.application.execution.models import (
     PrepareExecutionResult,
     PublishRequest,
     PublishResult,
-    TestRequest,
-    TestResult,
     WorkContext,
 )
 
@@ -77,14 +73,10 @@ Description:
 The implementation plan is at {plan_path}. Execute it using the
 /plan-implementation skill to implement this work item. Do not stop after
 creating, revising, or saving a plan: modify the workspace to complete the
-implementation. Work only in this workspace. Do not push or create a pull
-request.
-"""
-
-
-def test_prompt(work: WorkContext) -> str:
-    return f"""Run the appropriate test suite for repository {work.repository}, work item {work.task_id}.
-Do not modify code. Report all results and failures.
+implementation. During implementation, run the repository's appropriate tests,
+linters, and other relevant quality checks. Fix any failures and only finish
+when the implementation and its validation are complete. Work only in this
+workspace. Do not push or create a pull request.
 """
 
 
@@ -166,17 +158,6 @@ class ExecutionRuntime:
             request.workspace, request.context,
         ))
         return ImplementationResult(phase.execution.stdout[:4000], phase)
-
-    def test(self, request: TestRequest) -> TestResult:
-        try:
-            phase = self.agent.execute(AgentRequest(
-                request.work, "test", "build", test_prompt(request.work), request.workspace, request.context
-            ))
-        except AgentExecutionError as exc:
-            raise QualityGateError(
-                str(exc), context=exc.context
-            ) from exc
-        return TestResult(phase.execution.stdout[:4000], phase)
 
     def publish(self, request: PublishRequest) -> PublishResult:
         context = request.work.item.context.merged(request.context)

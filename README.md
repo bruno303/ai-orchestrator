@@ -3,8 +3,8 @@
 Local orchestrator (LangGraph + OpenCode, Codex, or Claude Code) that turns input events into published changes:
 
 ```
-GitHub Issue → workspace (git worktree) → agent plan → agent build (subagent-plan-execution)
-             → tests → push / PR publication → cleanup
+GitHub Issue → workspace (git worktree) → agent plan → agent build with tests and quality checks
+             (subagent-plan-execution) → push / PR publication → cleanup
 ```
 
 ## Requirements
@@ -301,14 +301,14 @@ Context namespace. Do not put service-specific values in generic fields.
   to `.agents/plans/plan.md` (skill `plan-implementation`).
 - **Implement**: the selected provider explicitly uses the
   `plan-implementation` skill to execute `.agents/plans/plan.md` and modify the
-  workspace. The agent must not stop after creating, revising, or saving a plan.
+  workspace. The agent must run the repository's appropriate tests and quality
+  checks during implementation, fix failures, and must not stop after creating,
+  revising, or saving a plan.
 - **Model**: issue phases use the configured `execution` model and pull-request
   reviews use the configured `review` model. The model and variant are logged for each phase (visible via
   `orchestrator logs <task> --node <node>`).
-- **Test**: a standalone agent run executes the project's test suite; a
-  non-zero exit fails the task.
-- **PR**: after the standalone test phase succeeds, changes are committed
-  (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
+- **PR**: after implementation and its validation succeed, changes are
+  committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
 - **Cleanup**: after a successful PR, the task worktree and local branch are
   removed (logs and the remote branch are kept). Failed tasks keep their

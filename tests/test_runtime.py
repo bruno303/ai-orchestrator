@@ -21,7 +21,6 @@ from orchestrator.application.execution.models import (
     PrepareReviewRequest,
     PublishRequest,
     PublishReviewRequest,
-    TestRequest as RuntimeTestRequest,
     WorkContext,
 )
 from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
@@ -59,7 +58,7 @@ def _context() -> WorkContext:
     ))
 
 
-def test_execution_runtime_exposes_independent_steps(tmp_path, monkeypatch):
+def test_execution_runtime_runs_plan_and_implementation_steps(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "is_repository_allowed", lambda repository: True)
     workspace_manager = ExecutionWorkspace(str(tmp_path))
     executor = ExecutionAgent()
@@ -73,18 +72,20 @@ def test_execution_runtime_exposes_independent_steps(tmp_path, monkeypatch):
     implementation = runtime.implement(
         ImplementationRequest(_context(), prepared.workspace.workspace, context=plan.phase.context)
     )
-    tests = runtime.test(RuntimeTestRequest(_context(), prepared.workspace.workspace, implementation.phase.context))
     published = runtime.publish(
-        PublishRequest(_context(), prepared.workspace.workspace, prepared.workspace.branch, prepared.base_branch)
+        PublishRequest(
+            _context(), prepared.workspace.workspace, prepared.workspace.branch,
+            prepared.base_branch, implementation.phase.context,
+        )
     )
     runtime.cleanup(CleanupRequest("company/backend", prepared.workspace))
 
     assert plan.plan_path == ".agents/plans/plan.md"
     assert implementation.summary == "build complete"
-    assert tests.summary == "build complete"
     assert published.publication.id == "17"
     assert workspace_manager.requests[0].purpose == "execution"
     assert len(workspace_manager.cleaned) == 1
+    assert [request.agent for request in executor.requests] == ["plan", "build"]
     assert executor.requests[1].context.namespace("opencode")["session"] == "s1"
     assert executor.requests[0].log_file.endswith("plan.log")
     assert "log_file" not in executor.requests[0].context.namespace("opencode")
@@ -125,6 +126,8 @@ def test_implementation_prompt_requires_execution_with_plan_skill():
     assert "/plan-implementation" in prompt
     assert ".agents/plans/plan.md" in prompt
     assert "Do not stop after" in prompt
+    assert "tests" in prompt
+    assert "quality checks" in prompt
     assert "subagent-plan-execution" not in prompt
 
 
@@ -252,11 +255,8 @@ def test_provider_neutral_execution_preserves_all_context_namespaces(tmp_path, m
     implemented = runtime.implement(ImplementationRequest(
         work, prepared.workspace.workspace, context=planned.phase.context
     ))
-    tested = runtime.test(RuntimeTestRequest(
-        work, prepared.workspace.workspace, implemented.phase.context
-    ))
     published = runtime.publish(PublishRequest(
-        work, prepared.workspace.workspace, "task-ABC-42", "main", tested.phase.context
+        work, prepared.workspace.workspace, "task-ABC-42", "main", implemented.phase.context
     ))
 
     assert published.publication.id == "change-42"
