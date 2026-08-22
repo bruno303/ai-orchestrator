@@ -73,7 +73,7 @@ STALE_SECONDS = int(os.environ.get("ORCHESTRATOR_STALE_SECONDS", str(2 * 60 * 60
 
 @dataclass
 class ModelConfig:
-    """Model selection for OpenCode runs."""
+    """Model selection for agent runs."""
 
     name: str | None
     variant: str | None

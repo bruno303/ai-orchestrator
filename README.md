@@ -1,15 +1,15 @@
 # AI Orchestrator
 
-Local orchestrator (LangGraph + OpenCode) that turns input events into published changes:
+Local orchestrator (LangGraph + OpenCode or Codex) that turns input events into published changes:
 
 ```
-GitHub Issue → workspace (git worktree) → OpenCode plan → OpenCode build (subagent-plan-execution)
+GitHub Issue → workspace (git worktree) → agent plan → agent build (subagent-plan-execution)
              → tests → push / PR publication → cleanup
 ```
 
 ## Requirements
 
-- `uv`, `git`, `opencode` (>= 1.18), `gh`
+- `uv`, `git`, `gh`, and the CLI for the selected agent provider (`opencode` >= 1.18 or `codex`)
 
 ## Setup
 
@@ -50,9 +50,8 @@ repositories:
     label: ai-agent
 ```
 
-Configure OpenCode models independently for issue execution and pull-request
-review. Omitting either section keeps OpenCode's default model for that workflow
-(no `-m`/`--variant` flags):
+Configure agent models independently for issue execution and pull-request
+review. Omitting either section keeps the selected provider's default model:
 
 ```yaml
 model:
@@ -67,6 +66,10 @@ model:
 Set `ORCHESTRATOR_MODEL_EXECUTION_NAME` / `ORCHESTRATOR_MODEL_EXECUTION_VARIANT`
 or `ORCHESTRATOR_MODEL_REVIEW_NAME` / `ORCHESTRATOR_MODEL_REVIEW_VARIANT` to
 override the corresponding `config.yaml` values through the environment.
+
+OpenCode receives `name` and `variant` as its model flags. Codex receives
+`name` as `codex exec -m` and maps `variant` to the Codex
+`model_reasoning_effort` setting.
 
 The planning phase must produce `.agents/plans/plan.md`. The read-only planning
 agent returns the plan in its response, and the orchestrator persists it. The
@@ -83,6 +86,8 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
+| `ORCHESTRATOR_CODEX_BIN` | `codex` |
+| `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_MODEL_EXECUTION_NAME` | `model.execution.name` |
 | `ORCHESTRATOR_MODEL_EXECUTION_VARIANT` | `model.execution.variant` |
 | `ORCHESTRATOR_MODEL_REVIEW_NAME` | `model.review.name` |
@@ -153,7 +158,7 @@ and wires concrete adapters into application services.
 src/orchestrator/
 ├── domain/        # business values and invariants; Python standard library only
 ├── application/   # use cases, workflows, and provider protocols
-├── infra/         # GitHub, git, filesystem, LangGraph, and OpenCode adapters
+├── infra/         # GitHub, git, filesystem, LangGraph, and agent adapters
 └── main/          # config, provider registries, composition, and CLI
 ```
 
@@ -194,7 +199,7 @@ GitHub PR
 
 Runtime operations accept typed request objects rather than LangGraph state, so
 the same issue and review steps can later be called by an HTTP API, n8n, or
-another workflow engine without duplicating OpenCode, git, or provider logic.
+another workflow engine without duplicating agent, git, or provider logic.
 `GitWorkspaceManager` is provider-neutral: adapters provide explicit clone/fetch
 URLs, refs, revisions, checkout mode, and workspace paths; it performs only git
 clone, fetch, worktree, and cleanup operations.
@@ -210,7 +215,7 @@ and there is no separate `source_item_id`.
 Cross-step integration state is a JSON-serializable `Context` whose top-level
 keys are provider-owned namespaces. For example, GitHub source metadata belongs
 under `github`, checkout metadata under `git`, and executor session data under
-`opencode`. Updating one namespace preserves all unrelated namespaces. Generic
+the selected provider namespace. Updating one namespace preserves all unrelated namespaces. Generic
 application and runtime code may pass and merge Context, but it must never read
 provider-specific namespaces or keys. Providers may read and update their own
 namespace. Context is data-only and safe to pass to future HTTP or n8n boundaries.
@@ -226,8 +231,9 @@ destination interprets `context.github` to implement issue-closing text, PR
 reuse, inline review validation, and processed labels. None of that behavior is
 owned by the generic runtime.
 
-The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the GitHub
-destination. New seeds and graph updates use only the `input`, `processing`,
+The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the
+GitHub destination. Set an executor to `type: codex` to use the Codex CLI instead.
+New seeds and graph updates use only the `input`, `processing`,
 `workspace`, and `output` state namespaces. GitHub supplies durable execution
 state: successful publication adds `ai-developed` to the source issue; an
 unlabeled issue is retried from the beginning after an interruption.
@@ -238,12 +244,12 @@ Pipeline providers can be selected in `config/config.yaml`:
 pipeline:
   execution:
     input_source: {type: github_polling, auth: user}
-    executor: {type: opencode}
+    executor: {type: opencode} # or {type: codex}
     workspace_manager: {type: git, auth: user}
     destination: {type: github, auth: user}
   review:
     input_source: {type: github_polling, auth: bot}
-    executor: {type: opencode}
+    executor: {type: opencode} # or {type: codex}
     workspace_manager: {type: git, auth: bot}
     destination: {type: github, auth: bot}
 ```
@@ -268,15 +274,15 @@ Context namespace. Do not put service-specific values in generic fields.
 - **Isolation**: each task gets its own `git worktree` under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,
   created from a shared base clone in `~/agent-repos/`.
-- **Plan**: `opencode run --agent plan` analyzes the issue and writes the plan
+- **Plan**: the selected provider analyzes the issue and writes the plan
   to `.agents/plans/plan.md` (skill `plan-implementation`).
-- **Implement**: `opencode run --agent build` explicitly uses the
+- **Implement**: the selected provider explicitly uses the
   `plan-implementation` skill to execute `.agents/plans/plan.md` and modify the
   workspace. The agent must not stop after creating, revising, or saving a plan.
 - **Model**: issue phases use the configured `execution` model and pull-request
   reviews use the configured `review` model. The model and variant are logged for each phase (visible via
   `orchestrator logs <task> --node <node>`).
-- **Test**: a standalone opencode run executes the project's test suite; a
+- **Test**: a standalone agent run executes the project's test suite; a
   non-zero exit fails the task.
 - **PR**: after the standalone test phase succeeds, changes are committed
   (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts

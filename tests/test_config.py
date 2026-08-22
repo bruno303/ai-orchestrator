@@ -177,3 +177,21 @@ def test_pipeline_config_rejects_unknown_provider(allowlist):
         assert "unknown provider type: unknown" in str(exc)
     else:
         raise AssertionError("expected unknown provider error")
+
+
+def test_pipeline_config_accepts_codex_for_execution_and_review(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    executor: {type: codex, sandbox: workspace-write}\n"
+        "  review:\n"
+        "    executor: {type: codex, sandbox: read-only}\n"
+    )
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+
+    assert pipeline.execution.executor.type == "codex"
+    assert pipeline.execution.executor.options == {"sandbox": "workspace-write"}
+    assert pipeline.review.executor.type == "codex"
+    assert pipeline.review.executor.options == {"sandbox": "read-only"}

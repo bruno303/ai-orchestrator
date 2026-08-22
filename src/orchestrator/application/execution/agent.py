@@ -35,8 +35,9 @@ class IssueAgentRunner:
         model_cfg = self.settings.model
         model = model_cfg.name if model_cfg else None
         variant = model_cfg.variant if model_cfg else None
+        provider_type = getattr(self.executor, "provider_type", None) or "executor"
         print(
-            f"[{_now()}] {request.node}: starting opencode "
+            f"[{_now()}] {request.node}: starting {provider_type} "
             f"(agent={request.agent}, model={model or 'default'}, "
             f"variant={variant or '-'}, log={log_path})",
             flush=True,
@@ -49,7 +50,8 @@ class IssueAgentRunner:
             agent=request.agent,
             model=model,
             variant=variant,
-            context=previous_context.merge_namespace("opencode", {"log_file": str(log_path)}),
+            context=previous_context,
+            log_file=str(log_path),
         )
         try:
             result = self.executor.execute(execution_request)
@@ -66,9 +68,9 @@ class IssueAgentRunner:
         )
         if not result.success or result.exit_code != 0:
             error = (
-                f"{request.node} executor ({request.agent}) reported failure"
+                f"{request.node} executor ({provider_type}) reported failure"
                 if result.exit_code == 0
-                else f"opencode ({request.agent}) exited with {result.exit_code}"
+                else f"{provider_type} ({request.agent}) exited with {result.exit_code}"
             )
             raise AgentExecutionError(error, context=context)
         return PhaseResult(result, context)
