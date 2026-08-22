@@ -186,6 +186,10 @@ def cmd_review(args: argparse.Namespace) -> None:
         while True:
             _poll_reviews(reviews)
             if args.once: return
+            print(
+                f"[{_now()}] review: next check in {config.POLL_INTERVAL_SECONDS}s",
+                flush=True,
+            )
             time.sleep(config.POLL_INTERVAL_SECONDS)
     finally:
         lock.close()

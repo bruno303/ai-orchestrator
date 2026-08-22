@@ -1,5 +1,7 @@
 """CLI stateless behavior."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from orchestrator.infra.github import client as github
@@ -33,6 +35,21 @@ def test_review_poll_logs_completion_after_error(capsys):
     output = capsys.readouterr().out
     assert "review poll error (continuing): source unavailable" in output
     assert "review poll: finished" in output
+
+
+def test_review_logs_wait_before_next_poll(monkeypatch, capsys):
+    closed = []
+    monkeypatch.setattr(cli, "_acquire_poll_lock", lambda: type("Lock", (), {"close": lambda self: closed.append(True)})())
+    monkeypatch.setattr(cli, "compose_review_runtime", lambda: object())
+    monkeypatch.setattr(cli, "_poll_reviews", lambda _reviews: None)
+    monkeypatch.setattr(cli.config, "POLL_INTERVAL_SECONDS", 42)
+    monkeypatch.setattr(cli.time, "sleep", lambda _seconds: (_ for _ in ()).throw(RuntimeError("stop")))
+
+    with pytest.raises(RuntimeError, match="stop"):
+        cli.cmd_review(SimpleNamespace(once=False))
+
+    assert "review: next check in 42s" in capsys.readouterr().out
+    assert closed == [True]
 
 
 def test_keyboard_interrupt_prints_generic_stop_message(monkeypatch, capsys):
