@@ -1,0 +1,41 @@
+# OpenCode model selection is independent for issue execution and pull-request
+# review. Omit either section to use OpenCode's default model for that workflow.
+model:
+  execution:
+    name: openai/gpt-5.6-luna
+    variant: medium
+  review:
+    name: openai/gpt-5.6-luna
+    variant: medium
+
+# Providers for the current GitHub -> OpenCode -> Git -> GitHub workflow.
+# Register new adapter types in main/providers.py before selecting them here.
+pipeline:
+  execution:
+    input_source: {type: github_polling}
+    executor: {type: opencode}
+    workspace_manager: {type: git}
+    destination: {type: github}
+  review:
+    input_source: {type: github_polling}
+    executor: {type: opencode}
+    workspace_manager: {type: git}
+    destination: {type: github}
+
+# Repositories allowed to trigger the orchestrator.
+# Only repos listed here can be processed (CLI, poll, and graph all enforce this).
+#
+# Optional per-repo options:
+#   label: ai-agent   -> poll only picks up issues carrying this label
+#   command: /ai-agent -> comment prefix that triggers a re-run (default /ai-agent)
+repositories:
+  - name: bruno303/ai-tools
+    label: ai-agent
+  - name: bruno303/study-topics
+    label: ai-agent
+  - name: bruno303/planning-poker
+    label: ai-agent
+    default_branch: main
+  - name: bruno303/ai-orchestrator
+    label: ai-agent
+    default_branch: main

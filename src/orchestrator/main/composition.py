@@ -29,7 +29,7 @@ def _create(registry, provider):
     if registry in (INPUT_PROVIDERS, REVIEW_INPUT_PROVIDERS):
         settings["_config_module"] = config
     if registry is REVIEW_EXECUTOR_PROVIDERS:
-        settings["model_config"] = config.MODEL_PRIMARY
+        settings["model_config"] = config.load_review_model_config()
     return registry.create(
         provider.type,
         {
@@ -41,13 +41,13 @@ def _create(registry, provider):
 
 
 def _agent_settings() -> AgentSettings:
-    return AgentSettings(config.MODEL_PRIMARY)
+    return AgentSettings(config.load_execution_model_config())
 
 
 def compose_execution_runtime(*, executor=None, workspace_manager=None, destination=None) -> ExecutionRuntime:
     from orchestrator.infra.filesystem import workspace
 
-    pipeline = config.load_pipeline_config()
+    pipeline = config.load_pipeline_config().execution
     return ExecutionRuntime(
         executor or _create(EXECUTOR_PROVIDERS, pipeline.executor),
         workspace_manager or _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager),
@@ -59,7 +59,7 @@ def compose_execution_runtime(*, executor=None, workspace_manager=None, destinat
 
 
 def compose_runtime() -> Runtime:
-    pipeline = config.load_pipeline_config()
+    pipeline = config.load_pipeline_config().execution
     source = _create(INPUT_PROVIDERS, pipeline.input_source)
     executor = _create(EXECUTOR_PROVIDERS, pipeline.executor)
     manager = _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager)

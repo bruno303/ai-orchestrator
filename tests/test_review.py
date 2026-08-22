@@ -227,7 +227,7 @@ def test_review_executor_rejects_invalid_structured_result(monkeypatch):
     assert "invalid structured" in result.summary
 
 
-def test_review_executor_uses_configured_primary_model(monkeypatch):
+def test_review_executor_uses_configured_review_model(monkeypatch):
     captured = {}
 
     def run(*args, **kwargs):
