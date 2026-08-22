@@ -20,11 +20,6 @@ class OpenCodeError(ExecutorError):
     pass
 
 
-class DegenerateOutputError(OpenCodeError):
-    def __init__(self, message: str) -> None:
-        super().__init__(message, retryable=True)
-
-
 @dataclass
 class OpenCodeResult:
     exit_code: int
@@ -60,10 +55,7 @@ class OpenCodeExecutor:
                 model=request.model,
                 variant=request.variant,
                 timeout=options.get("timeout"),
-                detect_degenerate=options.get("detect_degenerate", True),
             )
-        except DegenerateOutputError as exc:
-            raise ExecutorError(str(exc), retryable=True) from exc
         except OpenCodeError as exc:
             raise ExecutorError(str(exc)) from exc
         return ExecutionResult(
@@ -92,7 +84,6 @@ class OpenCodeReviewExecutor:
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
             timeout=options.get("timeout"),
-            detect_degenerate=options.get("detect_degenerate", options.get("fallback_enabled", False)),
         )
         if result.exit_code != 0:
             return ReviewOutcome(False, summary=result.stdout or result.stderr,
@@ -150,24 +141,6 @@ def _extract_review_json(output: str) -> dict[str, Any]:
     return value
 
 
-def detect_loop(
-    lines: list[str],
-    window: int,
-    repeat_threshold: int,
-    ratio_threshold: float,
-) -> bool:
-    """True if the last `window` lines look like degenerate repeated output."""
-    sample = [line.rstrip() for line in lines[-window:]]
-    if not sample:
-        return False
-    counts: dict[str, int] = {}
-    for line in sample:
-        counts[line] = counts.get(line, 0) + 1
-    if max(counts.values()) >= repeat_threshold:
-        return True
-    return len(counts) / len(sample) <= ratio_threshold
-
-
 def run_opencode(
     workspace: str | Path,
     agent: str | None,
@@ -177,7 +150,6 @@ def run_opencode(
     log_file: Path | None = None,
     model: str | None = None,
     variant: str | None = None,
-    detect_degenerate: bool = True,
 ) -> OpenCodeResult:
     """Run `opencode run [--agent <agent>] --auto` in the given workspace.
 
@@ -250,18 +222,6 @@ def run_opencode(
             if fh is not None:
                 fh.write(line)
                 fh.flush()
-            if detect_degenerate and len(lines) % int(os.environ.get("ORCHESTRATOR_LOOP_CHECK_INTERVAL", "25")) == 0 and detect_loop(
-                lines,
-                int(os.environ.get("ORCHESTRATOR_LOOP_REPEAT_WINDOW", "100")),
-                int(os.environ.get("ORCHESTRATOR_LOOP_REPEAT_THRESHOLD", "20")),
-                float(os.environ.get("ORCHESTRATOR_LOOP_RATIO_THRESHOLD", "0.1")),
-            ):
-                proc.kill()
-                proc.wait()
-                if fh is not None:
-                    fh.write("[orchestrator] degenerate output detected, killing\n")
-                    fh.flush()
-                raise DegenerateOutputError(f"degenerate output detected after {len(lines)} lines")
         proc.wait()
     except subprocess.TimeoutExpired as exc:
         proc.kill()

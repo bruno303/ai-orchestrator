@@ -1,13 +1,9 @@
 # Global model selection for opencode runs. Optional: if the model: section is
 # omitted, opencode's default model is used (no -m/--variant flags are passed).
 model:
-  fallback_enabled: false
   primary:
     name: openai/gpt-5.6-luna
     variant: medium
-  fallback:
-    name: xiaomi/mimo-v2.5
-    variant: high
 
 # Repositories allowed to trigger the orchestrator.
 # Only repos listed here can be processed (CLI, poll, and graph all enforce this).

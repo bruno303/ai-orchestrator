@@ -46,25 +46,16 @@ repositories:
     label: ai-agent
 ```
 
-Optional global model config (applies to all repositories). `primary` is used
-for the first attempt of each phase. When `fallback_enabled` is true, a phase
-that degenerates into a loop is retried once with `fallback`. Omitting the
-section keeps opencode's default model (no `-m`/`--variant` flags):
+Optional global model config applies to all repositories. `primary` is used
+for every execution and review. Omitting the section keeps opencode's default
+model (no `-m`/`--variant` flags):
 
 ```yaml
 model:
-  fallback_enabled: true
   primary:
     name: verboo/deepseek-v4-flash
     variant: high
-  fallback:
-    name: verboo/glm-4.7-flash
-    variant: high
 ```
-
-Set `fallback_enabled` to `false` (or omit it) to disable loop detection and
-fallback retries entirely. The environment override is
-`ORCHESTRATOR_MODEL_FALLBACK_ENABLED`.
 
 The planning phase must produce `.agents/plans/plan.md`. The read-only planning
 agent returns the plan in its response, and the orchestrator persists it. The
@@ -83,14 +74,6 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
 | `ORCHESTRATOR_MODEL_PRIMARY_NAME` | (none — opencode default) |
 | `ORCHESTRATOR_MODEL_PRIMARY_VARIANT` | (none — opencode default) |
-| `ORCHESTRATOR_MODEL_FALLBACK_NAME` | (none) |
-| `ORCHESTRATOR_MODEL_FALLBACK_VARIANT` | (none) |
-| `ORCHESTRATOR_MODEL_FALLBACK_ENABLED` | `false` |
-| `ORCHESTRATOR_PHASE_MAX_ATTEMPTS` | `2` |
-| `ORCHESTRATOR_LOOP_REPEAT_THRESHOLD` | `20` (identical lines within window) |
-| `ORCHESTRATOR_LOOP_REPEAT_WINDOW` | `100` (lines) |
-| `ORCHESTRATOR_LOOP_RATIO_THRESHOLD` | `0.1` (distinct-line ratio) |
-| `ORCHESTRATOR_LOOP_CHECK_INTERVAL` | `25` (lines) |
 
 ## Usage
 
@@ -261,12 +244,9 @@ Context namespace. Do not put service-specific values in generic fields.
   `subagent-plan-execution` skill. That skill may dispatch fresh implementer and
   reviewer subagents per task, then runs the quality gate. These are internal
   implementation passes, not a separate orchestrator phase.
-- **Model**: each phase runs opencode with the configured model — `primary`
-  for the first attempt, and if the phase degenerates into a loop (repetitive
-  output: identical-line flood or low distinct-line ratio), it is aborted and
-  retried once with `fallback`; after `ORCHESTRATOR_PHASE_MAX_ATTEMPTS` the
-  task fails. The model and variant are logged for every attempt of every
-  phase (visible via `orchestrator logs <task> --node <node>`).
+- **Model**: each phase runs opencode once with the configured `primary`
+  model. The model and variant are logged for each phase (visible via
+  `orchestrator logs <task> --node <node>`).
 - **Test**: a standalone opencode run executes the project's test suite; a
   non-zero exit fails the task.
 - **PR**: after the standalone test phase succeeds, changes are committed

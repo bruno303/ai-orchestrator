@@ -13,11 +13,9 @@ class RuntimeOperationError(Exception):
         message: str,
         *,
         context: Context | None = None,
-        attempts: int | None = None,
     ) -> None:
         super().__init__(message)
         self.context = context or Context()
-        self.attempts = attempts
 
 
 class WorkspacePreparationError(RuntimeOperationError):

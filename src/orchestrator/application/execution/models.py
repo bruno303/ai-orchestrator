@@ -62,7 +62,6 @@ class AgentRequest:
 @dataclass(frozen=True)
 class PhaseResult:
     execution: ExecutionResult
-    attempts: int
     context: Context
 
 @dataclass(frozen=True)

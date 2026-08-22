@@ -5,11 +5,10 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.main import config
-from orchestrator.infra.opencode import executor as opencode
 from orchestrator.domain import Context, PublishedChange, PublishedReview, ReviewOutcome, ReviewTarget, WorkItem
 from orchestrator.application.ports import ExecutionResult, WorkspaceResult
 from orchestrator.main.composition import compose_execution_runtime
-from orchestrator.application.execution.errors import ReviewExecutionError
+from orchestrator.application.execution.errors import AgentExecutionError, ReviewExecutionError
 from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
@@ -88,25 +87,21 @@ def test_execution_runtime_exposes_independent_steps(tmp_path, monkeypatch):
     assert executor.requests[1].context.namespace("opencode")["session"] == "s1"
 
 
-def test_execution_runtime_retries_degenerate_phase_with_fallback(monkeypatch, tmp_path):
-    monkeypatch.setattr(config, "MODEL_FALLBACK_ENABLED", True)
-    monkeypatch.setattr(config, "PHASE_MAX_ATTEMPTS", 2)
-
-    class FlakyExecutor:
+def test_execution_runtime_does_not_retry_executor_failures(tmp_path):
+    class FailingExecutor:
         def __init__(self):
             self.calls = 0
 
         def execute(self, request):
             self.calls += 1
-            if self.calls == 1:
-                raise opencode.DegenerateOutputError("loop")
-            return ExecutionResult(True, 0, stdout="ok")
+            raise RuntimeError("executor failed")
 
     runtime = compose_execution_runtime(
-        executor=FlakyExecutor(), workspace_manager=ExecutionWorkspace(str(tmp_path)), destination=object()
+        executor=FailingExecutor(), workspace_manager=ExecutionWorkspace(str(tmp_path)), destination=object()
     )
-    result = runtime.execute_phase(AgentRequest(_context(), "implement", "build", "prompt", str(tmp_path)))
-    assert result.attempts == 2
+    with pytest.raises(AgentExecutionError, match="executor failed"):
+        runtime.execute_phase(AgentRequest(_context(), "implement", "build", "prompt", str(tmp_path)))
+    assert runtime.agent.executor.calls == 1
 
 
 def test_execution_runtime_uses_requested_plan_path(tmp_path):

@@ -29,10 +29,7 @@ def _create(registry, provider):
     if registry in (INPUT_PROVIDERS, REVIEW_INPUT_PROVIDERS):
         settings["_config_module"] = config
     if registry is REVIEW_EXECUTOR_PROVIDERS:
-        settings.update(
-            model_config=config.MODEL_PRIMARY,
-            fallback_enabled=config.MODEL_FALLBACK_ENABLED,
-        )
+        settings["model_config"] = config.MODEL_PRIMARY
     return registry.create(
         provider.type,
         {
@@ -44,12 +41,7 @@ def _create(registry, provider):
 
 
 def _agent_settings() -> AgentSettings:
-    return AgentSettings(
-        config.MODEL_PRIMARY,
-        config.MODEL_FALLBACK,
-        config.MODEL_FALLBACK_ENABLED,
-        config.PHASE_MAX_ATTEMPTS,
-    )
+    return AgentSettings(config.MODEL_PRIMARY)
 
 
 def compose_execution_runtime(*, executor=None, workspace_manager=None, destination=None) -> ExecutionRuntime:
