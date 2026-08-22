@@ -1,6 +1,7 @@
 # Model selection is independent for issue execution and pull-request review.
 # Omit either section to use the selected provider's default model for that
-# workflow. Codex maps variant to model_reasoning_effort.
+# workflow. Codex maps variant to model_reasoning_effort; Claude exposes its
+# variant through CLAUDE_CODE_EFFORT_LEVEL.
 model:
   execution:
     name: openai/gpt-5.6-luna
@@ -13,7 +14,9 @@ model:
 # GitHub-facing and Git providers accept auth: bot (the default) or user.
 # This sample uses a local user for execution and the GitHub App bot for review.
 # Register new adapter types in main/providers.py before selecting them here.
-# Change either executor type to codex to use the Codex CLI provider.
+# Change either executor type to codex or claude to use that CLI provider.
+# Claude execution may set permission_mode (for example, acceptEdits); Claude
+# review defaults to its read-only plan mode.
 pipeline:
   execution:
     input_source: {type: github_polling, auth: user}

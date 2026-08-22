@@ -197,6 +197,24 @@ def test_pipeline_config_accepts_codex_for_execution_and_review(allowlist):
     assert pipeline.review.executor.options == {"sandbox": "read-only"}
 
 
+def test_pipeline_config_accepts_claude_for_execution_and_review(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    executor: {type: claude, permission_mode: acceptEdits}\n"
+        "  review:\n"
+        "    executor: {type: claude, permission_mode: plan}\n"
+    )
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+
+    assert pipeline.execution.executor.type == "claude"
+    assert pipeline.execution.executor.options == {"permission_mode": "acceptEdits"}
+    assert pipeline.review.executor.type == "claude"
+    assert pipeline.review.executor.options == {"permission_mode": "plan"}
+
+
 def test_pipeline_executor_environment_overrides_are_scoped_and_preserve_options(allowlist, monkeypatch):
     config.CONFIG_FILE.write_text(
         "pipeline:\n"
@@ -225,6 +243,17 @@ def test_pipeline_executor_environment_overrides_can_select_each_workflow(allowl
 
     assert pipeline.execution.executor.type == "codex"
     assert pipeline.review.executor.type == "opencode"
+
+
+def test_pipeline_executor_environment_overrides_can_select_claude(allowlist, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_EXECUTION", "claude")
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_REVIEW", "claude")
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+
+    assert pipeline.execution.executor.type == "claude"
+    assert pipeline.review.executor.type == "claude"
 
 
 def test_pipeline_executor_environment_override_rejects_unknown_provider(allowlist, monkeypatch):
