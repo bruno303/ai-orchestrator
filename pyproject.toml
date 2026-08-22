@@ -1,7 +1,7 @@
 [project]
 name = "orchestrator"
 version = "0.1.0"
-description = "LangGraph orchestrator: GitHub Issues -> agent plan/build -> tests -> PR"
+description = "LangGraph orchestrator: GitHub Issues -> agent plan/build-with-validation -> PR"
 readme = "README.md"
 authors = [
     { name = "Bruno Oliveira", email = "brunooliveira812@gmail.com" }

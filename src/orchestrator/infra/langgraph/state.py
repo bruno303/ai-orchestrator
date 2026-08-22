@@ -8,7 +8,6 @@ RECEIVED = "RECEIVED"
 PREPARING = "PREPARING"
 PLANNING = "PLANNING"
 IMPLEMENTING = "IMPLEMENTING"
-TESTING = "TESTING"
 CREATING_PR = "CREATING_PR"
 COMPLETED = "COMPLETED"
 FAILED = "FAILED"
@@ -18,7 +17,6 @@ ALL_STATUSES = (
     PREPARING,
     PLANNING,
     IMPLEMENTING,
-    TESTING,
     CREATING_PR,
     COMPLETED,
     FAILED,
@@ -38,7 +36,6 @@ class ProcessingState(TypedDict, total=False):
     plan_path: str
     plan_summary: str | None
     implementation_result: str | None
-    test_result: str | None
     context: dict[str, dict[str, Any]]
 
 

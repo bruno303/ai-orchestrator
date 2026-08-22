@@ -17,9 +17,7 @@ Create isolated git worktree + branch
     ↓
 OpenCode (plan)
     ↓
-OpenCode (build)
-    ↓
-Tests
+OpenCode (build, including tests and quality checks)
     ↓
 Create GitHub PR
     ↓
@@ -41,7 +39,6 @@ Ele deverá apenas orquestrar etapas como:
 - `prepare_workspace`
 - `plan`
 - `implement`
-- `test`
 - `create_pr`
 - `ask_human`
 - `cleanup`
@@ -58,9 +55,6 @@ LangGraph
     │
     ├── implement_node
     │      └── opencode run --agent build
-    │
-    └── test_node
-           └── opencode run --agent build
 ```
 
 ---
@@ -160,7 +154,6 @@ class TaskState(TypedDict):
 
     plan: str | None
     implementation_result: str | None
-    test_result: str | None
     status: str
     question: str | None
 
@@ -184,7 +177,6 @@ PREPARING
 PLANNING
 WAITING_FOR_HUMAN
 IMPLEMENTING
-TESTING
 CREATING_PR
 COMPLETED
 FAILED
@@ -200,8 +192,6 @@ PREPARING
 PLANNING
    ↓
 IMPLEMENTING
-   ↓
-TESTING
    ↓
 CREATING_PR
    ↓
@@ -419,17 +409,18 @@ O prompt deve incluir:
 - instrução para implementar;
 - instrução para usar `subagent-plan-execution`, que pode executar passes
   internos de implementação e revisão por subagentes, além do quality gate;
+- instrução para executar os testes e outras verificações de qualidade do
+  repositório durante a implementação, corrigindo qualquer falha;
 - instrução para não criar PR.
 
 O agente trabalha somente dentro do worktree daquela task.
 
 ---
 
-# 13. Testes
+# 13. Testes durante a implementação
 
-Após implementação, o orchestrator deve executar os testes apropriados.
-
-Na primeira versão, permitir que o próprio OpenCode determine e execute os testes:
+Durante a implementação, o próprio OpenCode deve determinar e executar os
+testes e verificações de qualidade apropriados:
 
 ```text
 opencode run --agent build
@@ -451,16 +442,14 @@ commands:
   lint: npm run lint
 ```
 
-O resultado deve ser salvo no estado.
-
 ---
 
 # 14. Validação da implementação
 
 Durante a implementação, `subagent-plan-execution` pode fazer passes internos
 com subagentes implementadores e revisores por tarefa e depois executar o
-quality gate. Isso faz parte da implementação, não de um node `review` separado
-do LangGraph. Em seguida, o orchestrator executa o node de testes standalone.
+quality gate. Isso faz parte da implementação, não de um node `review` ou
+`test` separado do LangGraph.
 
 ---
 
@@ -469,7 +458,7 @@ do LangGraph. Em seguida, o orchestrator executa o node de testes standalone.
 Somente depois de:
 
 - implementação concluída;
-- testes passando;
+- testes e verificações de qualidade passando durante a implementação;
 
 executar:
 
@@ -702,8 +691,7 @@ Estrutura:
 logs/
 └── task-123/
     ├── plan.log
-    ├── implementation.log
-    ├── test.log
+    └── implementation.log
 ```
 
 No futuro, migrar para logs estruturados.
@@ -721,9 +709,7 @@ Prepare workspace
     ↓
 OpenCode plan
     ↓
-OpenCode build
-     ↓
-Run tests
+OpenCode build (including tests and quality checks)
      ↓
 Push / create PR
      ↓
@@ -823,7 +809,7 @@ Arquitetura futura:
 1. Criar projeto Python com `uv`.
 2. Instalar LangGraph.
 3. Criar `TaskState`.
-4. Criar grafo `START → PLAN → BUILD → TEST → CREATE_PR → CLEANUP → END`.
+4. Criar grafo `START → PLAN → BUILD → CREATE_PR → CLEANUP → END`.
 5. Implementar wrapper `opencode.py`.
 6. Testar com um repositório local.
 7. Implementar gerenciamento de worktree.
@@ -861,9 +847,8 @@ GitHub Issue
     ├── cria workspace
     ├── cria branch
     ├── planeja
-    ├── implementa (inclui passes internos do subagent-plan-execution
-    │   e seu quality gate)
-    ├── testa (fase standalone do orchestrator)
+    ├── implementa e valida (inclui passes internos do
+    │   subagent-plan-execution e seu quality gate)
     └── publica PR e limpa o workspace
 ```
 

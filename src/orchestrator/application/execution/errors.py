@@ -30,10 +30,6 @@ class PlanValidationError(RuntimeOperationError):
     """The planning phase did not produce a usable plan artifact."""
 
 
-class QualityGateError(AgentExecutionError):
-    """The standalone test or quality-gate phase failed."""
-
-
 class PublicationError(RuntimeOperationError):
     """Issue-workflow publication failed."""
 

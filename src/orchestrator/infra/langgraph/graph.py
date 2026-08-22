@@ -14,14 +14,12 @@ from orchestrator.application.execution.errors import RuntimeOperationError
 from orchestrator.application.execution.service import ExecutionRuntime
 from orchestrator.application.execution.service import PLAN_FILE, implement_prompt as runtime_implement_prompt
 from orchestrator.application.execution.service import plan_prompt as runtime_plan_prompt
-from orchestrator.application.execution.service import test_prompt as runtime_test_prompt
 from orchestrator.application.execution.models import (
     CleanupRequest,
     ImplementationRequest,
     PlanRequest,
     PrepareExecutionRequest,
     PublishRequest,
-    TestRequest,
     WorkContext,
 )
 from orchestrator.infra.langgraph.state import TaskState
@@ -69,7 +67,7 @@ def _processing(state: TaskState, updates: dict[str, Any] | None = None) -> dict
     result = dict(state.get("processing") or {})
     if updates:
         result.update(updates)
-    for key in ("plan_path", "plan_summary", "implementation_result", "test_result"):
+    for key in ("plan_path", "plan_summary", "implementation_result"):
         if key not in result and state.get(key) is not None:
             result[key] = state[key]
     return result
@@ -164,19 +162,6 @@ def implement(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     }
 
 
-def test(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
-    try:
-        result = runtime.test(TestRequest(_work(state), _workspace(state)["path"], _context(state)))
-    except Exception as exc:
-        return _runtime_error(exc)
-    return {
-        "status": state_mod.TESTING,
-        "processing": _processing(state, {
-            "context": result.phase.context.to_dict(), "test_result": result.summary,
-        }),
-    }
-
-
 def create_pr(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     print(f"[{_now()}] publish: starting", flush=True)
     try:
@@ -221,10 +206,6 @@ def implement_prompt(state: TaskState) -> str:
     return runtime_implement_prompt(_work(state))
 
 
-def test_prompt(state: TaskState) -> str:
-    return runtime_test_prompt(_work(state))
-
-
 def _route(next_node: str) -> Callable[[TaskState], str]:
     return lambda state: "end" if state.get("status") == state_mod.FAILED else next_node
 
@@ -252,7 +233,6 @@ def build_graph(
         "prepare_workspace": lambda value: prepare_workspace(value, runtime=runtime),
         "plan": lambda value: plan(value, runtime=runtime),
         "implement": lambda value: implement(value, runtime=runtime),
-        "test": lambda value: test(value, runtime=runtime),
         "create_pr": lambda value: create_pr(value, runtime=runtime),
         "cleanup": lambda value: cleanup(value, runtime=runtime),
     }
@@ -261,8 +241,7 @@ def build_graph(
     builder.add_edge(START, "prepare_workspace")
     builder.add_conditional_edges("prepare_workspace", _route("plan"), {"plan": "plan", "end": END})
     builder.add_conditional_edges("plan", _route("implement"), {"implement": "implement", "end": END})
-    builder.add_conditional_edges("implement", _route("test"), {"test": "test", "end": END})
-    builder.add_conditional_edges("test", _route("create_pr"), {"create_pr": "create_pr", "end": END})
+    builder.add_conditional_edges("implement", _route("create_pr"), {"create_pr": "create_pr", "end": END})
     builder.add_conditional_edges("create_pr", _route("cleanup"), {"cleanup": "cleanup", "end": END})
     builder.add_edge("cleanup", END)
     # Execution is deliberately process-local. GitHub publication markers are
