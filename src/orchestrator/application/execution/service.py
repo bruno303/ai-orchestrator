@@ -75,8 +75,10 @@ Description:
 {work.body}
 {_extra_context(work)}
 The implementation plan is at {plan_path}. Execute it using the
-subagent-plan-execution skill. Work only in this workspace. Do not push or
-create a pull request.
+/plan-implementation skill to implement this work item. Do not stop after
+creating, revising, or saving a plan: modify the workspace to complete the
+implementation. Work only in this workspace. Do not push or create a pull
+request.
 """
 
 

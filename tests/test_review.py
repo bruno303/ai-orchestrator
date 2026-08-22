@@ -45,7 +45,7 @@ class FakeDestination:
         self.published.append((request, result))
 
 
-def test_review_application_cleans_up_and_publishes():
+def test_review_application_cleans_up_publishes_and_logs_completion(capsys):
     review_event = ReviewTarget(
         "review:company/backend#4", "company/backend", source_ref="feature",
         target_ref="main", revision="abc", context=Context({"github": {"pr_number": 4}}),
@@ -54,6 +54,7 @@ def test_review_application_cleans_up_and_publishes():
     app = ReviewApplication(FakeInput(review_event), FakeExecutor(ReviewOutcome(True, verdict="approve")), FakeWorkspace(), destination)
     assert app.poll_once() == [review_event]
     assert destination.published[0][0].id == "review:company/backend#4"
+    assert "[review] finished: repository=company/backend id=review:company/backend#4" in capsys.readouterr().out
 
 
 def test_github_destination_labels_only_after_publication(monkeypatch):

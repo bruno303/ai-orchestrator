@@ -67,6 +67,15 @@ class ReviewApplication:
                 execution = self.runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
                 self.runtime.publish_review(PublishReviewRequest(prepared, execution))
                 processed.append(target)
+                self.write_task_log(
+                    task_id,
+                    "review",
+                    f"[review] finished: repository={target.repository} id={target.id}",
+                )
+                print(
+                    f"[review] finished: repository={target.repository} id={target.id}",
+                    flush=True,
+                )
             except Exception as exc:
                 print(f"[review] {target.id}: {exc}", flush=True)
             finally:

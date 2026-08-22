@@ -9,6 +9,7 @@ from orchestrator.domain import Context, PublishedChange, PublishedReview, Revie
 from orchestrator.application.ports import ExecutionResult, WorkspaceResult
 from orchestrator.main.composition import compose_execution_runtime
 from orchestrator.application.execution.errors import AgentExecutionError, ReviewExecutionError
+from orchestrator.application.execution.service import implement_prompt
 from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
@@ -114,6 +115,15 @@ def test_execution_runtime_uses_requested_plan_path(tmp_path):
     requested = ".agents/plans/custom.md"
     runtime.implement(ImplementationRequest(_context(), str(tmp_path), plan_path=requested))
     assert requested in executor.requests[0].prompt
+
+
+def test_implementation_prompt_requires_execution_with_plan_skill():
+    prompt = implement_prompt(_context())
+
+    assert "/plan-implementation" in prompt
+    assert ".agents/plans/plan.md" in prompt
+    assert "Do not stop after" in prompt
+    assert "subagent-plan-execution" not in prompt
 
 
 def test_cleanup_preserves_custom_workspace_context(tmp_path):

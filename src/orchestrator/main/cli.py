@@ -175,6 +175,8 @@ def _poll_reviews(application) -> None:
         application.poll_once()
     except Exception as exc:
         print(f"[{_now()}] review poll error (continuing): {exc}", flush=True)
+    finally:
+        print(f"[{_now()}] review poll: finished", flush=True)
 
 
 def cmd_review(args: argparse.Namespace) -> None:
@@ -224,7 +226,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         args.func(args)
     except KeyboardInterrupt:
-        print("\ninterrupted: work is not checkpointed; unlabeled issues can retry from the beginning.")
+        print("\nprocess stopped.")
         sys.exit(130)
 
 

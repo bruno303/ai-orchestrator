@@ -240,10 +240,9 @@ Context namespace. Do not put service-specific values in generic fields.
   created from a shared base clone in `~/agent-repos/`.
 - **Plan**: `opencode run --agent plan` analyzes the issue and writes the plan
   to `.agents/plans/plan.md` (skill `plan-implementation`).
-- **Implement**: `opencode run --agent build` explicitly invokes the
-  `subagent-plan-execution` skill. That skill may dispatch fresh implementer and
-  reviewer subagents per task, then runs the quality gate. These are internal
-  implementation passes, not a separate orchestrator phase.
+- **Implement**: `opencode run --agent build` explicitly uses the
+  `plan-implementation` skill to execute `.agents/plans/plan.md` and modify the
+  workspace. The agent must not stop after creating, revising, or saving a plan.
 - **Model**: each phase runs opencode once with the configured `primary`
   model. The model and variant are logged for each phase (visible via
   `orchestrator logs <task> --node <node>`).
