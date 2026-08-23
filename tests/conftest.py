@@ -47,9 +47,13 @@ for _name in _ORCHESTRATOR_ENVIRONMENT:
 
 
 @pytest.fixture(autouse=True, scope="session")
-def _git_identity():
-    subprocess.run(["git", "config", "--global", "user.email", "test@test"], check=True, capture_output=True)
-    subprocess.run(["git", "config", "--global", "user.name", "test"], check=True, capture_output=True)
+def _git_identity(tmp_path_factory):
+    git_config = tmp_path_factory.mktemp("git-config") / "config"
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(git_config))
+        subprocess.run(["git", "config", "--global", "user.email", "test@test"], check=True, capture_output=True)
+        subprocess.run(["git", "config", "--global", "user.name", "test"], check=True, capture_output=True)
+        yield
 
 _TMP = Path(tempfile.mkdtemp(prefix="orchestrator-test-"))
 os.environ["ORCHESTRATOR_DATA_DIR"] = str(_TMP / "data")

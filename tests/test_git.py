@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -9,6 +10,25 @@ import pytest
 
 from orchestrator.infra.git import client as git
 from orchestrator.infra.github import auth as github_auth
+
+
+def test_git_identity_uses_isolated_global_config():
+    global_config = Path(os.environ["GIT_CONFIG_GLOBAL"])
+
+    assert global_config.exists()
+    assert global_config != Path.home() / ".gitconfig"
+    assert subprocess.run(
+        ["git", "config", "--global", "user.email"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == "test@test"
+    assert subprocess.run(
+        ["git", "config", "--global", "user.name"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == "test"
 
 
 def test_git_environment_path_expands_home_directory(monkeypatch):
