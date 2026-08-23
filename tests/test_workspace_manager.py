@@ -53,6 +53,47 @@ def test_prepare_derives_branch_and_workspace_from_task_id(remote_repo):
     manager.cleanup(result)
 
 
+def test_prepare_recreates_existing_execution_workspace(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    request = WorkspaceRequest(
+        "company/backend#8", "company/backend", "ai/issue-8", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    )
+
+    first = manager.prepare(request)
+    sentinel = workspace_path / "dirty.txt"
+    sentinel.write_text("stale workspace\n")
+
+    second = manager.prepare(request)
+
+    assert second.workspace == first.workspace
+    assert not sentinel.exists()
+    assert workspace_path.exists()
+    assert (workspace_path / ".git").exists()
+    manager.cleanup(second)
+    assert not workspace_path.exists()
+
+
+def test_prepare_removes_existing_plain_directory(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    (workspace_path / "stale.txt").write_text("stale workspace\n")
+
+    result = manager.prepare(WorkspaceRequest(
+        "company/backend#9", "company/backend", "ai/issue-9", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+
+    assert result.workspace == str(workspace_path)
+    assert not (workspace_path / "stale.txt").exists()
+    assert (workspace_path / ".git").exists()
+    manager.cleanup(result)
+
+
 def test_prepare_requires_explicit_repository_url(monkeypatch):
     cloned = False
 
