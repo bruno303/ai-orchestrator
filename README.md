@@ -319,7 +319,8 @@ Context namespace. Do not put service-specific values in generic fields.
   never enter the commit.
 - **Cleanup**: after a successful PR, the task worktree and local branch are
   removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging.
+  worktree for debugging until a rerun starts; reruns discard and recreate the
+  task workspace from the base branch.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use a comment command or direct `run` to rerun interrupted

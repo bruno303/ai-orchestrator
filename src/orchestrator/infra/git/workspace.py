@@ -60,6 +60,13 @@ class GitWorkspaceManager:
             )
             self.git_client.create_detached_worktree(repo_dir, workspace_path, commit)
         else:
+            if workspace_path.exists() or workspace_path.is_symlink():
+                self.git_client.remove_worktree(repo_dir, workspace_path, branch)
+                if workspace_path.exists() or workspace_path.is_symlink():
+                    if workspace_path.is_dir() and not workspace_path.is_symlink():
+                        shutil.rmtree(workspace_path)
+                    else:
+                        workspace_path.unlink()
             self.git_client.create_worktree(repo_dir, workspace_path, branch, base_branch)
         result_context = request.context.merge_namespace("git", {
             **dict(request.context.namespace("git")),
