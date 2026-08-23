@@ -101,19 +101,25 @@ class PollingApplication:
                 continue
             started.add(task_id)
             if is_comment:
-                self._run_comment(event)
+                did_start = self._run_comment(event)
             else:
-                self._run_issue(event)
-            if once:
+                did_start = self._run_issue(event)
+            if once and did_start:
                 return
 
-    def _run_issue(self, event: InputEvent) -> None:
+    def _run_issue(self, event: InputEvent) -> bool:
         task_id = event.work_item.id
+        try:
+            self.feedback.mark_started(event)
+        except Exception as exc:
+            print(f"[{self.now()}] new issue {task_id}: start failed: {exc}", flush=True)
+            return False
         seed = _input_seed(event, task_id, provider=self.input_provider or _input_provider(self.input_source))
         print(f"[{self.now()}] new issue: {task_id} - {event.work_item.title}")
         self.report_result(self.run_graph(seed, task_id))
+        return True
 
-    def _run_comment(self, event: InputEvent) -> None:
+    def _run_comment(self, event: InputEvent) -> bool:
         task_id = event.work_item.id
         self.feedback.mark_started(event)
         self.reset_task(event)
@@ -139,6 +145,7 @@ class PollingApplication:
         except Exception as exc:
             self.feedback.mark_failed(event, str(exc))
             raise
+        return True
 
 ApplicationService = PollingApplication
 
