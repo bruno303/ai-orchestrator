@@ -87,7 +87,7 @@ def test_github_triage_source_uses_repository_ready_label():
     assert [item.id for item in source.poll()] == ["triage:owner/repo#2"]
 
 
-def test_github_triage_destination_adds_agent_only_when_ready():
+def test_github_triage_destination_adds_no_ready_label_when_repository_label_is_omitted():
     class Client:
         def __init__(self): self.calls = []
         def add_issue_label(self, *args): self.calls.append(("add", *args))
@@ -96,10 +96,7 @@ def test_github_triage_destination_adds_agent_only_when_ready():
     client = Client()
     GitHubTriageDestination(github_client=client).publish(target(), outcome(True))
 
-    assert client.calls == [
-        ("add", "owner/repo", 1, "ai-agent"),
-        ("remove", "owner/repo", 1, "ai-triage"),
-    ]
+    assert client.calls == [("remove", "owner/repo", 1, "ai-triage")]
 
 
 def test_github_triage_destination_uses_repository_ready_label():
@@ -143,6 +140,17 @@ def test_github_triage_destination_does_not_label_when_comment_fails():
 
     with pytest.raises(RuntimeError, match="comment failed"):
         GitHubTriageDestination(github_client=Client()).publish(target(), outcome())
+
+
+def test_github_triage_destination_does_not_label_failed_outcome():
+    class Client:
+        def add_issue_label(self, *args): raise AssertionError("failed triage must not add a label")
+        def remove_issue_label(self, *args): raise AssertionError("failed triage must not remove a label")
+        def add_issue_comment(self, *args): raise AssertionError("failed triage must not comment")
+
+    failed = TriageOutcome(False, summary="agent failed")
+
+    GitHubTriageDestination(github_client=Client()).publish(target(), failed)
 
 
 def test_github_triage_destination_does_not_duplicate_identical_comment():

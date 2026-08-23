@@ -105,7 +105,7 @@ Paths, limits, model and loop detection (env overrides):
 |---|---|
 | `ORCHESTRATOR_REPOS_DIR` | `~/agent-repos` (base clones) |
 | `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task worktrees) |
-| `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll lock) |
+| `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
@@ -182,12 +182,13 @@ support arbitrary unchanged-file locations.
 ## Issue triage
 
 The triage workflow examines open issues in configured repositories that do not
-have the repository's configured execution label (default `ai-agent`),
-`ai-triage`, or `ai-developed`. It asks the configured agent for JSON containing
+have the repository's configured execution label, `ai-triage`, or
+`ai-developed`. It asks the configured agent for JSON containing
 `enough_context`, a `confidence` (`low`, `medium`, or `high`), a summary, and any
 missing context. Only `enough_context: true` with `confidence: high` adds the
-repository's configured execution label, making the issue eligible for
-execution.
+repository's configured execution label. If no execution label is configured,
+no ready label is added; the issue remains eligible for execution unless it has
+`ai-triage`.
 
 Other valid assessments receive a comment with the conclusion and missing
 context, followed by `ai-triage`. When the author adds the missing details,

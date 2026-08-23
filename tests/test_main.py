@@ -151,6 +151,22 @@ def test_review_logs_wait_before_next_poll(monkeypatch, capsys):
     assert closed == [True]
 
 
+def test_triage_uses_a_separate_poll_lock(monkeypatch):
+    lock_names = []
+
+    class Lock:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_acquire_poll_lock", lambda name="poll": lock_names.append(name) or Lock())
+    monkeypatch.setattr(cli, "compose_triage_runtime", lambda: object())
+    monkeypatch.setattr(cli, "_poll_triage", lambda _triage: None)
+
+    cli.cmd_triage(SimpleNamespace(once=True))
+
+    assert lock_names == ["triage"]
+
+
 def test_execute_does_not_run_triage(monkeypatch):
     calls = []
 

@@ -177,8 +177,8 @@ def cmd_logs(args: argparse.Namespace) -> None:
         print(f"  {path.stem:<12} {path.stat().st_size:>9,} bytes")
 
 
-def _acquire_poll_lock():
-    path = config.STATE_DIR / "poll.lock"
+def _acquire_poll_lock(lock_name: str = "poll"):
+    path = config.STATE_DIR / f"{lock_name}.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("w")
     try:
@@ -207,7 +207,7 @@ def _poll_triage(application) -> None:
 
 
 def cmd_triage(args: argparse.Namespace) -> None:
-    lock = _acquire_poll_lock()
+    lock = _acquire_poll_lock("triage")
     try:
         triage = compose_triage_runtime()
         while True:

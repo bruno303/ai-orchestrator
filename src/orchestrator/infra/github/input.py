@@ -76,6 +76,10 @@ class GitHubPollingInputSource:
         return str(self.options.get("developed_label", "ai-developed"))
 
     @property
+    def triage_label(self) -> str:
+        return str(self.options.get("triage_label", "ai-triage"))
+
+    @property
     def bot_login(self) -> str:
         configured = self.options.get("bot_login")
         if configured:
@@ -131,7 +135,7 @@ class GitHubPollingInputSource:
                 print(f"[poll] {repository}: unassigned issues: {exc}", flush=True)
                 continue
             for issue in issues:
-                if self.developed_label in issue.labels:
+                if self.developed_label in issue.labels or self.triage_label in issue.labels:
                     continue
                 task_id = f"{repository}#{issue.number}"
                 context = Context({

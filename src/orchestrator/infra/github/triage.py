@@ -11,13 +11,18 @@ from orchestrator.domain import Context, PublishedTriage, TriageOutcome, TriageT
 from orchestrator.infra.github import client as github
 
 
-def _repository_ready_label(config_module: Any, repository: str, options: dict[str, Any]) -> str:
+def _repository_ready_label(
+    config_module: Any,
+    repository: str,
+    options: dict[str, Any],
+) -> str | None:
     repository_label = getattr(config_module, "repository_label", None)
     if callable(repository_label):
         configured = repository_label(repository)
         if configured:
             return str(configured)
-    return str(options.get("ready_label", "ai-agent"))
+    configured = options.get("ready_label")
+    return str(configured) if configured else None
 
 
 @dataclass
@@ -33,10 +38,11 @@ class GitHubTriageInputSource:
         targets: list[TriageTarget] = []
         for repository in self.config_module.allowed_repositories():
             excluded = {
-                _repository_ready_label(self.config_module, repository, self.options),
                 self.options.get("triage_label", "ai-triage"),
                 self.options.get("developed_label", "ai-developed"),
             }
+            ready_label = _repository_ready_label(self.config_module, repository, self.options)
+            excluded.add(ready_label or str(self.options.get("ready_label", "ai-agent")))
             try:
                 issues = self.github_client.list_open_issues(repository)
             except self.github_client.GitHubError as exc:
@@ -95,10 +101,11 @@ class GitHubTriageDestination:
             raise ValueError("GitHub triage context is missing issue number")
         ready_label = _repository_ready_label(self.config_module, target.repository, self.options)
         triage_label = str(self.options.get("triage_label", "ai-triage"))
-        if outcome.ready:
-            self.github_client.add_issue_label(target.repository, number, ready_label)
+        if outcome.success and outcome.ready:
+            if ready_label:
+                self.github_client.add_issue_label(target.repository, number, ready_label)
             self.github_client.remove_issue_label(target.repository, number, triage_label)
-        else:
+        elif outcome.success:
             marker = _marker(target, outcome)
             comments = getattr(self.github_client, "list_issue_comments", None)
             already_published = False

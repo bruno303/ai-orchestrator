@@ -52,6 +52,7 @@ class Client:
         self.reactions = reactions
         self.issues = issues or [
             SimpleNamespace(number=1, title="eligible", body="", labels=[]),
+            SimpleNamespace(number=3, title="triage", body="", labels=["ai-triage"]),
             SimpleNamespace(number=2, title="done", body="", labels=["ai-developed"]),
         ]
         self.issue_queries = []
