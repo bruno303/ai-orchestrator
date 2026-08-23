@@ -272,10 +272,14 @@ def test_composed_github_source_records_configured_provider_name(allowlist, tmp_
             pass
 
         @staticmethod
-        def list_open_issues(repository):
+        def list_open_issues(repository, label=None, assignee=None):
             from orchestrator.infra.github.client import Issue
 
             return [Issue(7, "Fix bug", "details", "https://example.test/7")]
+
+        @staticmethod
+        def assign_issue_to_authenticated_user(repository, number):
+            return None
 
         @staticmethod
         def list_open_pull_requests(repository):
@@ -292,6 +296,7 @@ def test_composed_github_source_records_configured_provider_name(allowlist, tmp_
     config.load_pipeline_config.cache_clear()
     runtime = compose_runtime()
     runtime.input_source.github_client = FakeGitHub
+    runtime.input_source.feedback.github_client = FakeGitHub
     seeds = []
     app = PollingApplication(
         runtime.input_source,

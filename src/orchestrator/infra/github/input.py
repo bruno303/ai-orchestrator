@@ -29,7 +29,7 @@ def _pr_context_block(pr: github.PullRequestDetail) -> str:
 
 
 class GitHubSourceFeedback:
-    """Translate semantic input lifecycle events to GitHub comment behavior."""
+    """Translate semantic input lifecycle events to GitHub behavior."""
 
     def __init__(self, github_client: Any = github) -> None:
         self.github_client = github_client
@@ -44,6 +44,14 @@ class GitHubSourceFeedback:
             pass
 
     def mark_started(self, event: InputEvent) -> None:
+        if event.trigger == "new" and event.metadata.get("kind") == "issue":
+            issue_number = event.work_item.context.namespace("github").get("issue_number")
+            if issue_number is None:
+                raise ValueError(f"new issue event {event.event_id} is missing github.issue_number")
+            self.github_client.assign_issue_to_authenticated_user(
+                event.work_item.repository, int(issue_number)
+            )
+            return
         self._reaction(event, "eyes")
 
     def mark_succeeded(self, event: InputEvent) -> None:
@@ -115,12 +123,17 @@ class GitHubPollingInputSource:
                     )
 
             label = self.config_module.repository_label(repository)
-            if label:
-                issues = [issue for issue in issues if label in issue.labels]
+            try:
+                issues = self.github_client.list_open_issues(
+                    repository, label=label, assignee="none",
+                )
+            except self.github_client.GitHubError as exc:
+                print(f"[poll] {repository}: unassigned issues: {exc}", flush=True)
+                continue
             for issue in issues:
-                task_id = f"{repository}#{issue.number}"
                 if self.developed_label in issue.labels:
                     continue
+                task_id = f"{repository}#{issue.number}"
                 context = Context({
                     "github": {"issue_number": issue.number},
                     "git": {

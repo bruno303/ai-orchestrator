@@ -13,6 +13,7 @@ from pathlib import Path
 from orchestrator.main import config
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.git import client as git
+from orchestrator.infra.github import assignees as github_assignees
 from orchestrator.infra.github import client as github
 from orchestrator.infra.langgraph import state as state_mod
 from orchestrator.application import PollingApplication, _input_seed
@@ -147,8 +148,18 @@ def cmd_reset(args: argparse.Namespace) -> None:
         except git.GitError as exc:
             print(f"[{_now()}] reset: warning: could not remove worktree: {exc}", flush=True)
     runtime = compose_execution_runtime()
-    runtime.destination.github_client.remove_issue_label(repository, number, _developed_label())
-    print(f"[{_now()}] reset {task_id}: marker removed; issue is eligible on the next poll", flush=True)
+    github_client = runtime.destination.github_client
+    assignment_cleared = github_assignees.clear_authenticated_issue_assignee(
+        github_client, repository, number
+    )
+    github_client.remove_issue_label(repository, number, _developed_label())
+    if assignment_cleared:
+        print(
+            f"[{_now()}] reset {task_id}: marker and assignee removed; issue is eligible on the next poll",
+            flush=True,
+        )
+    else:
+        print(f"[{_now()}] reset {task_id}: marker removed", flush=True)
 
 
 def cmd_logs(args: argparse.Namespace) -> None:

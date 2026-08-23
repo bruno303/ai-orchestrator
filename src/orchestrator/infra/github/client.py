@@ -117,8 +117,12 @@ def get_issue(repository: str, number: int) -> Issue:
     )
 
 
-def list_open_issues(repository: str, label: str | None = None) -> list[Issue]:
-    """List open issues (pull requests excluded), optionally filtered by label.
+def list_open_issues(
+    repository: str,
+    label: str | None = None,
+    assignee: str | None = None,
+) -> list[Issue]:
+    """List open issues, optionally filtered by label and assignee.
 
     Uses --paginate without --jq: gh merges each page's raw JSON array, which
     we parse here. (--paginate + --jq is broken for list endpoints: jq is
@@ -127,6 +131,8 @@ def list_open_issues(repository: str, label: str | None = None) -> list[Issue]:
     url = f"repos/{repository}/issues?state=open&per_page=100"
     if label:
         url += f"&labels={label}"
+    if assignee:
+        url += f"&assignee={assignee}"
     out = _api(url, paginate=True)
     return [
         Issue(
@@ -208,6 +214,19 @@ def find_open_pr(repository: str, head_branch: str) -> int | None:
 
 def add_issue_comment(repository: str, number: int, body: str) -> None:
     _run_gh(["api", f"repos/{repository}/issues/{number}/comments", "-f", f"body={body}"])
+
+
+def assign_issue_to_authenticated_user(repository: str, number: int) -> None:
+    """Assign an issue to the currently authenticated GitHub login."""
+    assign_issue(repository, number, get_authenticated_user_login())
+
+
+def assign_issue(repository: str, number: int, assignee: str) -> None:
+    """Assign an issue to one GitHub login."""
+    _run_gh(
+        ["api", "--method", "PATCH", f"repos/{repository}/issues/{number}", "--input", "-"],
+        input_text=json.dumps({"assignees": [assignee]}),
+    )
 
 
 @dataclass
@@ -312,11 +331,15 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
 
 
 def get_authenticated_user_login() -> str:
-    """Return the configured GitHub App bot login.
+    """Return the login for the identity selected for the current GitHub call.
 
     Installation tokens do not support the user-authentication ``/user``
-    endpoint, so the bot identity must come from the App configuration.
+    endpoint, so the bot identity comes from the App configuration. A user
+    identity resolves its login through the host's authenticated ``gh`` CLI.
     """
+    identity = _identity.get()
+    if identity is not None and identity.mode == "user":
+        return _api("user", ".login").strip()
     return github_auth.BOT_LOGIN
 
 
