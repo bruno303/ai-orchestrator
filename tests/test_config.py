@@ -109,6 +109,24 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.triage.destination.type == "github"
 
 
+def test_triage_destination_label_is_shared_with_input_source(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  triage:\n"
+        "    destination:\n"
+        "      type: github\n"
+        "      triage_label: needs-context\n"
+    )
+    _clear_pipeline_cache()
+
+    from orchestrator.main.composition import compose_triage_runtime
+
+    runtime = compose_triage_runtime()
+
+    assert runtime.input_source.options["triage_label"] == "needs-context"
+    assert runtime.destination.options["triage_label"] == "needs-context"
+
+
 def test_omitted_workspace_auth_remains_bot_compatible(allowlist):
     from orchestrator.main.composition import compose_runtime
 

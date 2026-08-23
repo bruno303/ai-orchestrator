@@ -28,7 +28,7 @@ from orchestrator.main.providers import (
 )
 
 
-def _create(registry, provider):
+def _create(registry, provider, *, overrides: dict | None = None):
     settings = {}
     if registry in (INPUT_PROVIDERS, REVIEW_INPUT_PROVIDERS, TRIAGE_INPUT_PROVIDERS):
         settings["_config_module"] = config
@@ -38,6 +38,7 @@ def _create(registry, provider):
         settings["model_config"] = config.load_review_model_config()
     if registry is TRIAGE_EXECUTOR_PROVIDERS:
         settings["model_config"] = config.load_triage_model_config()
+    settings.update(overrides or {})
     return registry.create(
         provider.type,
         {
@@ -112,7 +113,12 @@ def compose_triage_runtime() -> TriageApplication:
     from orchestrator.infra.filesystem import workspace
 
     pipeline = config.load_triage_pipeline_config()
-    source = _create(TRIAGE_INPUT_PROVIDERS, pipeline.input_source)
+    triage_label = str(pipeline.destination.options.get("triage_label") or "ai-triage")
+    source = _create(
+        TRIAGE_INPUT_PROVIDERS,
+        pipeline.input_source,
+        overrides={"triage_label": triage_label},
+    )
     return TriageApplication(
         source,
         _create(TRIAGE_EXECUTOR_PROVIDERS, pipeline.executor),
