@@ -296,6 +296,7 @@ def test_composed_github_source_records_configured_provider_name(allowlist, tmp_
     config.load_pipeline_config.cache_clear()
     runtime = compose_runtime()
     runtime.input_source.github_client = FakeGitHub
+    runtime.input_source.feedback.github_client = FakeGitHub
     seeds = []
     app = PollingApplication(
         runtime.input_source,
