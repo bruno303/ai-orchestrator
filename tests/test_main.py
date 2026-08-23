@@ -151,6 +151,43 @@ def test_review_logs_wait_before_next_poll(monkeypatch, capsys):
     assert closed == [True]
 
 
+def test_execute_does_not_run_triage(monkeypatch):
+    calls = []
+
+    class Lock:
+        def close(self):
+            calls.append("close")
+
+    class Application:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def poll_once(self, once):
+            calls.append("execute")
+
+    runtime = SimpleNamespace(
+        input_source=object(),
+        executor=object(),
+        workspace_manager=object(),
+        destination=object(),
+        execution_runtime=object(),
+        input_provider="github_polling",
+        feedback=None,
+    )
+    monkeypatch.setattr(cli, "_acquire_poll_lock", lambda: Lock())
+    monkeypatch.setattr(cli, "compose_runtime", lambda: runtime)
+    monkeypatch.setattr(cli, "compose_review_runtime", lambda: object())
+    monkeypatch.setattr(cli, "compose_triage_runtime", lambda: (_ for _ in ()).throw(
+        AssertionError("execute must not compose triage")
+    ))
+    monkeypatch.setattr(cli, "PollingApplication", Application)
+    monkeypatch.setattr(cli, "_poll_reviews", lambda _reviews: calls.append("review"))
+
+    cli.cmd_execute(SimpleNamespace(once=True))
+
+    assert calls == ["execute", "review", "close"]
+
+
 def test_keyboard_interrupt_prints_generic_stop_message(monkeypatch, capsys):
     def interrupt(_args):
         raise KeyboardInterrupt

@@ -238,14 +238,15 @@ def cmd_review(args: argparse.Namespace) -> None:
 def cmd_execute(args: argparse.Namespace) -> None:
     lock = _acquire_poll_lock()
     try:
-        runtime, reviews, triage = compose_runtime(), compose_review_runtime(), compose_triage_runtime()
+        runtime, reviews = compose_runtime(), compose_review_runtime()
         application = PollingApplication(runtime.input_source,
             lambda seed, task_id: _run_graph(seed, task_id, executor=runtime.executor,
                 workspace_manager=runtime.workspace_manager, destination=runtime.destination, runtime=runtime.execution_runtime),
             _report_result, _remove_event_workspace, now=_now, input_provider=runtime.input_provider,
             feedback=runtime.feedback)
         while True:
-            _poll_triage(triage); application.poll_once(args.once); _poll_reviews(reviews)
+            application.poll_once(args.once)
+            _poll_reviews(reviews)
             if args.once: return
             print(f"[{_now()}] execute: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
             time.sleep(config.POLL_INTERVAL_SECONDS)

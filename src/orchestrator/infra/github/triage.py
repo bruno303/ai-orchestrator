@@ -11,6 +11,15 @@ from orchestrator.domain import Context, PublishedTriage, TriageOutcome, TriageT
 from orchestrator.infra.github import client as github
 
 
+def _repository_ready_label(config_module: Any, repository: str, options: dict[str, Any]) -> str:
+    repository_label = getattr(config_module, "repository_label", None)
+    if callable(repository_label):
+        configured = repository_label(repository)
+        if configured:
+            return str(configured)
+    return str(options.get("ready_label", "ai-agent"))
+
+
 @dataclass
 class GitHubTriageInputSource:
     github_client: Any = github
@@ -21,13 +30,13 @@ class GitHubTriageInputSource:
     def poll(self) -> list[TriageTarget]:
         if self.config_module is None:
             raise RuntimeError("GitHubTriageInputSource requires an allowlist configuration")
-        excluded = {
-            self.options.get("ready_label", "ai-agent"),
-            self.options.get("triage_label", "ai-triage"),
-            self.options.get("developed_label", "ai-developed"),
-        }
         targets: list[TriageTarget] = []
         for repository in self.config_module.allowed_repositories():
+            excluded = {
+                _repository_ready_label(self.config_module, repository, self.options),
+                self.options.get("triage_label", "ai-triage"),
+                self.options.get("developed_label", "ai-developed"),
+            }
             try:
                 issues = self.github_client.list_open_issues(repository)
             except self.github_client.GitHubError as exc:
@@ -69,16 +78,22 @@ def _comment(outcome: TriageOutcome, marker: str) -> str:
 
 
 class GitHubTriageDestination:
-    def __init__(self, options: dict[str, Any] | None = None, github_client: Any = github) -> None:
+    def __init__(
+        self,
+        options: dict[str, Any] | None = None,
+        github_client: Any = github,
+        config_module: Any = None,
+    ) -> None:
         self.options = dict(options or {})
         self.github_client = github_client
+        self.config_module = config_module
         self.provider_type = "github"
 
     def publish(self, target: TriageTarget, outcome: TriageOutcome) -> PublishedTriage:
         number = target.context.namespace("github").get("issue_number")
         if not isinstance(number, int) or isinstance(number, bool):
             raise ValueError("GitHub triage context is missing issue number")
-        ready_label = str(self.options.get("ready_label", "ai-agent"))
+        ready_label = _repository_ready_label(self.config_module, target.repository, self.options)
         triage_label = str(self.options.get("triage_label", "ai-triage"))
         if outcome.ready:
             self.github_client.add_issue_label(target.repository, number, ready_label)

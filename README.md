@@ -3,7 +3,7 @@
 Local orchestrator (LangGraph + OpenCode, Codex, or Claude Code) that turns input events into published changes:
 
 ```
-GitHub Issue → triage → workspace (git worktree) → agent plan → agent build with tests and quality checks
+GitHub Issue → triage (`make triage`) → workspace (git worktree) → agent plan → agent build with tests and quality checks
              (subagent-plan-execution) → push / PR publication → cleanup
 ```
 
@@ -132,7 +132,7 @@ orchestrator run company/backend#123
 # Triage open issues (loop, or --once)
 orchestrator triage --once
 
-# Execute triage, issue, and review workflows for allowed repos (loop, or --once)
+# Execute issue and review workflows for allowed repos (loop, or --once)
 orchestrator execute --once
 
 # Poll open pull requests for provider-neutral AI reviews (loop, or --once)
@@ -182,10 +182,12 @@ support arbitrary unchanged-file locations.
 ## Issue triage
 
 The triage workflow examines open issues in configured repositories that do not
-have `ai-agent`, `ai-triage`, or `ai-developed`. It asks the configured agent
-for JSON containing `enough_context`, a `confidence` (`low`, `medium`, or
-`high`), a summary, and any missing context. Only `enough_context: true` with
-`confidence: high` adds `ai-agent`, making the issue eligible for execution.
+have the repository's configured execution label (default `ai-agent`),
+`ai-triage`, or `ai-developed`. It asks the configured agent for JSON containing
+`enough_context`, a `confidence` (`low`, `medium`, or `high`), a summary, and any
+missing context. Only `enough_context: true` with `confidence: high` adds the
+repository's configured execution label, making the issue eligible for
+execution.
 
 Other valid assessments receive a comment with the conclusion and missing
 context, followed by `ai-triage`. When the author adds the missing details,

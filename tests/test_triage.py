@@ -68,6 +68,25 @@ def test_github_triage_source_filters_workflow_labels_without_assigning():
     assert [item.id for item in source.poll()] == ["triage:owner/repo#1"]
 
 
+def test_github_triage_source_uses_repository_ready_label():
+    class Client:
+        class GitHubError(Exception):
+            pass
+
+        def list_open_issues(self, repository):
+            return [
+                Issue(1, "ready", "body", "url", ["ready-for-dev"]),
+                Issue(2, "pending", "body", "url", []),
+            ]
+
+    source = GitHubTriageInputSource(Client(), config_module=SimpleNamespace(
+        allowed_repositories=lambda: ["owner/repo"],
+        repository_label=lambda _repository: "ready-for-dev",
+    ))
+
+    assert [item.id for item in source.poll()] == ["triage:owner/repo#2"]
+
+
 def test_github_triage_destination_adds_agent_only_when_ready():
     class Client:
         def __init__(self): self.calls = []
@@ -79,6 +98,24 @@ def test_github_triage_destination_adds_agent_only_when_ready():
 
     assert client.calls == [
         ("add", "owner/repo", 1, "ai-agent"),
+        ("remove", "owner/repo", 1, "ai-triage"),
+    ]
+
+
+def test_github_triage_destination_uses_repository_ready_label():
+    class Client:
+        def __init__(self): self.calls = []
+        def add_issue_label(self, *args): self.calls.append(("add", *args))
+        def remove_issue_label(self, *args): self.calls.append(("remove", *args))
+
+    client = Client()
+    GitHubTriageDestination(
+        github_client=client,
+        config_module=SimpleNamespace(repository_label=lambda _repository: "ready-for-dev"),
+    ).publish(target(), outcome(True))
+
+    assert client.calls == [
+        ("add", "owner/repo", 1, "ready-for-dev"),
         ("remove", "owner/repo", 1, "ai-triage"),
     ]
 
@@ -95,6 +132,7 @@ def test_github_triage_destination_comments_before_blocking_label():
 
     assert [call[0] for call in client.calls] == ["comment", "label"]
     assert "**Confidence:** medium" in client.calls[0][3]
+    assert "- acceptance criteria" in client.calls[0][3]
 
 
 def test_github_triage_destination_does_not_label_when_comment_fails():

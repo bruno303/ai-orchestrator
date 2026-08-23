@@ -32,6 +32,8 @@ def _create(registry, provider):
     settings = {}
     if registry in (INPUT_PROVIDERS, REVIEW_INPUT_PROVIDERS, TRIAGE_INPUT_PROVIDERS):
         settings["_config_module"] = config
+    if registry is TRIAGE_DESTINATION_PROVIDERS:
+        settings["_config_module"] = config
     if registry is REVIEW_EXECUTOR_PROVIDERS:
         settings["model_config"] = config.load_review_model_config()
     if registry is TRIAGE_EXECUTOR_PROVIDERS:
