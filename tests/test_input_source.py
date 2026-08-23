@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from orchestrator.application import PollingApplication
 from orchestrator.domain import Context, WorkItem
-from orchestrator.infra.github.input import GitHubPollingInputSource
+from orchestrator.infra.github.input import GitHubPollingInputSource, GitHubSourceFeedback
 from orchestrator.application.ports import InputEvent
 
 
@@ -16,6 +16,16 @@ class Source:
 def event(task_id, kind="issue"):
     return InputEvent(f"{kind}:{task_id}", WorkItem(task_id, "owner/repo", "Title", context=Context()),
                       trigger="rerun" if kind == "comment" else "new", metadata={"kind": kind})
+
+
+def github_issue_event(number):
+    task_id = f"owner/repo#{number}"
+    return InputEvent(
+        f"issue:{task_id}",
+        WorkItem(task_id, "owner/repo", f"Issue {number}", context=Context({"github": {"issue_number": number}})),
+        trigger="new",
+        metadata={"kind": "issue"},
+    )
 
 
 def test_polling_prefers_comment_over_ordinary_issue():
@@ -83,22 +93,45 @@ def test_polling_uses_unassigned_filter_with_repository_label():
     ]
 
 
-def test_polling_assigns_before_emitting_new_issue():
+def test_polling_does_not_assign_during_discovery():
     client = Client()
     source = GitHubPollingInputSource(client, config_module=config_module())
 
     events = source.poll()
 
-    assert client.assignments == [("owner/repo", 1)]
+    assert client.assignments == []
     assert [item.work_item.id for item in events if item.metadata["kind"] == "issue"] == ["owner/repo#1"]
 
 
-def test_assignment_failure_is_logged_and_next_issue_is_polled(capsys):
-    issues = [
-        SimpleNamespace(number=1, title="fails", body="", labels=[]),
-        SimpleNamespace(number=2, title="works", body="", labels=[]),
-    ]
-    client = Client(issues=issues)
+def test_github_feedback_assigns_new_issue_when_execution_starts():
+    client = Client()
+    feedback = GitHubSourceFeedback(client)
+
+    feedback.mark_started(github_issue_event(1))
+
+    assert client.assignments == [("owner/repo", 1)]
+
+
+def test_once_assigns_only_the_issue_that_runs():
+    client = Client()
+    started = []
+    app = PollingApplication(
+        Source([github_issue_event(1), github_issue_event(2)]),
+        lambda seed, task_id: started.append(task_id) or {"task_id": task_id, "status": "COMPLETED"},
+        lambda result: None,
+        lambda current: None,
+        feedback=GitHubSourceFeedback(client),
+    )
+
+    app.poll_once(once=True)
+
+    assert started == ["owner/repo#1"]
+    assert client.assignments == [("owner/repo", 1)]
+
+
+def test_assignment_failure_is_logged_and_next_issue_is_started_in_once_mode(capsys):
+    client = Client()
+    started = []
 
     def assign(repository, number):
         if number == 1:
@@ -106,13 +139,20 @@ def test_assignment_failure_is_logged_and_next_issue_is_polled(capsys):
         client.assignments.append((repository, number))
 
     client.assign_issue_to_authenticated_user = assign
-    source = GitHubPollingInputSource(client, config_module=config_module())
+    app = PollingApplication(
+        Source([github_issue_event(1), github_issue_event(2)]),
+        lambda seed, task_id: started.append(task_id) or {"task_id": task_id, "status": "COMPLETED"},
+        lambda result: None,
+        lambda current: None,
+        feedback=GitHubSourceFeedback(client),
+        now=lambda: "12:00:00",
+    )
 
-    events = source.poll()
+    app.poll_once(once=True)
 
-    assert [item.work_item.id for item in events if item.metadata["kind"] == "issue"] == ["owner/repo#2"]
+    assert started == ["owner/repo#2"]
     assert client.assignments == [("owner/repo", 2)]
-    assert "[poll] owner/repo#1: assignment: permission denied" in capsys.readouterr().out
+    assert "[12:00:00] new issue owner/repo#1: start failed: permission denied" in capsys.readouterr().out
 
 
 def test_comment_terminal_reactions_are_filtered_only_for_bot():
