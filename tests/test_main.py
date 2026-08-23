@@ -1,5 +1,6 @@
 """CLI stateless behavior."""
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -50,16 +51,75 @@ def test_run_uses_the_configured_input_client_for_issue_metadata(allowlist, monk
     assert calls == [("issue", "company/backend", 8), ("issue", "company/backend", 8), ("repository", "company/backend")]
 
 
-def test_reset_uses_the_configured_destination_client(allowlist, monkeypatch):
+def test_reset_clears_issue_assignee_before_marker(allowlist, monkeypatch):
     calls = []
-    destination = SimpleNamespace(github_client=SimpleNamespace(
-        remove_issue_label=lambda repository, number, label: calls.append((repository, number, label))
-    ))
+
+    class Client:
+        GitHubError = github.GitHubError
+
+        def get_issue(self, repository, number):
+            calls.append(("get_issue", repository, number))
+            return github.Issue(number, "title", "body", "url", [])
+
+        def get_authenticated_user_login(self):
+            calls.append(("get_login",))
+            return "app/bruno303-ai-agent-bot"
+
+        def _run_gh(self, args, input_text=None):
+            calls.append(("run_gh", args, json.loads(input_text)))
+            return ""
+
+        def remove_issue_label(self, repository, number, label):
+            calls.append(("remove_label", repository, number, label))
+
+    destination = SimpleNamespace(github_client=Client())
     monkeypatch.setattr(cli, "compose_execution_runtime", lambda: SimpleNamespace(destination=destination))
 
     cli.cmd_reset(SimpleNamespace(issue_ref="company/backend#8"))
 
-    assert calls == [("company/backend", 8, "ai-developed")]
+    assert calls == [
+        ("get_issue", "company/backend", 8),
+        ("get_login",),
+        (
+            "run_gh",
+            [
+                "api", "--method", "DELETE",
+                "repos/company/backend/issues/8/assignees", "--input", "-",
+            ],
+            {"assignees": ["app/bruno303-ai-agent-bot"]},
+        ),
+        ("remove_label", "company/backend", 8, "ai-developed"),
+    ]
+
+
+def test_reset_does_not_change_pr_assignees(allowlist, monkeypatch):
+    calls = []
+
+    class Client:
+        GitHubError = github.GitHubError
+
+        def get_issue(self, repository, number):
+            calls.append(("get_issue", repository, number))
+            raise github.GitHubError(f"#{number} in {repository} is a pull request, not an issue")
+
+        def get_authenticated_user_login(self):
+            raise AssertionError("PR reset must not resolve an assignee")
+
+        def _run_gh(self, args, input_text=None):
+            raise AssertionError("PR reset must not remove assignees")
+
+        def remove_issue_label(self, repository, number, label):
+            calls.append(("remove_label", repository, number, label))
+
+    destination = SimpleNamespace(github_client=Client())
+    monkeypatch.setattr(cli, "compose_execution_runtime", lambda: SimpleNamespace(destination=destination))
+
+    cli.cmd_reset(SimpleNamespace(issue_ref="company/backend#8"))
+
+    assert calls == [
+        ("get_issue", "company/backend", 8),
+        ("remove_label", "company/backend", 8, "ai-developed"),
+    ]
 
 
 def test_review_poll_logs_completion_after_success(capsys):
