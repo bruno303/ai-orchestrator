@@ -9,6 +9,9 @@ model:
   review:
     name: openai/gpt-5.6-luna
     variant: medium
+  triage:
+    name: openai/gpt-5.6-luna
+    variant: medium
 
 # Providers for the current GitHub -> agent -> Git -> GitHub workflow.
 # GitHub-facing and Git providers accept auth: bot (the default) or user.
@@ -27,6 +30,10 @@ pipeline:
     input_source: {type: github_polling, auth: bot}
     executor: {type: opencode}
     workspace_manager: {type: git, auth: bot}
+    destination: {type: github, auth: bot}
+  triage:
+    input_source: {type: github_polling, auth: bot}
+    executor: {type: opencode}
     destination: {type: github, auth: bot}
 
 # Repositories allowed to trigger the orchestrator.

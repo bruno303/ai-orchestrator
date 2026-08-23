@@ -1,4 +1,4 @@
-.PHONY: help test run execute review logs smoke
+.PHONY: help test run execute review triage logs smoke
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | sort
@@ -14,6 +14,9 @@ execute:
 
 review:
 	uv run orchestrator review
+
+triage:
+	uv run orchestrator triage
 
 logs:
 	uv run orchestrator logs $(TASK) $(if $(NODE),--node $(NODE),)

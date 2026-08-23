@@ -55,6 +55,15 @@ def test_review_model_config_parses_independently(model_config):
     assert model.variant == "medium"
 
 
+def test_triage_model_config_parses_independently(allowlist):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "model:\n  triage:\n    name: provider/triage\n    variant: low\n"
+    )
+    config.load_triage_model_config.cache_clear()
+    assert config.load_triage_model_config() == config.ModelConfig("provider/triage", "low")
+
+
 def test_model_config_sections_do_not_inherit(allowlist):
     config.CONFIG_FILE.write_text(
         "model:\n"
@@ -95,6 +104,9 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.execution.destination.type == "github"
     assert pipeline.review.workspace_manager.type == "git"
     assert pipeline.review.workspace_manager.options == {}
+    assert pipeline.triage.input_source.type == "github_polling"
+    assert pipeline.triage.executor.type == "opencode"
+    assert pipeline.triage.destination.type == "github"
 
 
 def test_omitted_workspace_auth_remains_bot_compatible(allowlist):
@@ -243,6 +255,13 @@ def test_pipeline_executor_environment_overrides_can_select_each_workflow(allowl
 
     assert pipeline.execution.executor.type == "codex"
     assert pipeline.review.executor.type == "opencode"
+
+
+def test_pipeline_triage_executor_environment_override(allowlist, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_TRIAGE", "codex")
+    _clear_pipeline_cache()
+
+    assert config.load_pipeline_config().triage.executor.type == "codex"
 
 
 def test_pipeline_executor_environment_overrides_can_select_claude(allowlist, monkeypatch):

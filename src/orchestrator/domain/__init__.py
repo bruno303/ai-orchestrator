@@ -9,6 +9,11 @@ from orchestrator.domain.review import (
     ReviewOutcome,
     ReviewTarget,
 )
+from orchestrator.domain.triage import (
+    PublishedTriage,
+    TriageOutcome,
+    TriageTarget,
+)
 from orchestrator.domain.work import WorkItem, ensure_task_id
 
 __all__ = [
@@ -21,6 +26,9 @@ __all__ = [
     "ReviewFinding",
     "ReviewOutcome",
     "ReviewTarget",
+    "PublishedTriage",
+    "TriageOutcome",
+    "TriageTarget",
     "WorkItem",
     "ensure_task_id",
 ]

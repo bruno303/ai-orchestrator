@@ -6,7 +6,10 @@ from dataclasses import asdict, dataclass, field
 import json
 from typing import Any, Protocol, runtime_checkable
 
-from orchestrator.domain import ChangeRequest, Context, PublishedChange, PublishedReview, ReviewOutcome, ReviewTarget, WorkItem
+from orchestrator.domain import (
+    ChangeRequest, Context, PublishedChange, PublishedReview, PublishedTriage,
+    ReviewOutcome, ReviewTarget, TriageOutcome, TriageTarget, WorkItem,
+)
 
 
 def _json_value(value: Any) -> Any:
@@ -113,3 +116,33 @@ class ReviewExecutor(Protocol):
 @runtime_checkable
 class ReviewDestination(Protocol):
     def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview: ...
+
+
+@dataclass
+class TriageRequest:
+    task_id: str
+    repository: str
+    workspace: str
+    prompt: str
+    model: str | None = None
+    variant: str | None = None
+    context: Context = field(default_factory=Context)
+    log_file: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return _json_dict(self)
+
+
+@runtime_checkable
+class TriageInputSource(Protocol):
+    def poll(self) -> list[TriageTarget]: ...
+
+
+@runtime_checkable
+class TriageExecutor(Protocol):
+    def execute(self, request: TriageRequest) -> TriageOutcome: ...
+
+
+@runtime_checkable
+class TriageDestination(Protocol):
+    def publish(self, target: TriageTarget, outcome: TriageOutcome) -> PublishedTriage: ...

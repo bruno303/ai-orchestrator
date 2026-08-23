@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.domain import ReviewOutcome
-from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest
+from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, TriageRequest
 from orchestrator.infra.review.parser import extract_review_json, parse_review_output
+from orchestrator.infra.triage.parser import parse_triage_output
 
 
 _extract_review_json = extract_review_json
@@ -95,6 +96,29 @@ class OpenCodeReviewExecutor:
             return ReviewOutcome(False, summary=result.stdout or result.stderr,
                                  context=request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
         return parse_review_output(result.stdout, request.context)
+
+
+class OpenCodeTriageExecutor:
+    """Run a triage prompt in an ephemeral workspace."""
+
+    provider_type = "opencode"
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = dict(options or {})
+
+    def execute(self, request: TriageRequest):
+        options = {**self.options, **dict(request.context.namespace("opencode"))}
+        model_config = options.get("model_config")
+        result = run_opencode(
+            request.workspace, None, request.prompt,
+            log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
+            model=options.get("model") or (model_config.name if model_config else request.model),
+            variant=options.get("variant") or (model_config.variant if model_config else request.variant),
+            timeout=options.get("timeout"),
+        )
+        if result.exit_code != 0:
+            return parse_triage_output("", request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
+        return parse_triage_output(result.stdout, request.context)
 
 
 def run_opencode(

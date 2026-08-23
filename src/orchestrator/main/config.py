@@ -21,6 +21,9 @@ from orchestrator.main.providers import (
     REVIEW_EXECUTOR_PROVIDERS,
     REVIEW_INPUT_PROVIDERS,
     REVIEW_WORKSPACE_PROVIDERS,
+    TRIAGE_DESTINATION_PROVIDERS,
+    TRIAGE_EXECUTOR_PROVIDERS,
+    TRIAGE_INPUT_PROVIDERS,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -89,6 +92,7 @@ class ProviderConfig:
 class PipelineConfig:
     execution: "ExecutionPipelineConfig"
     review: "ReviewPipelineConfig"
+    triage: "TriagePipelineConfig"
 
 
 @dataclass(frozen=True)
@@ -104,6 +108,13 @@ class ReviewPipelineConfig:
     input_source: ProviderConfig
     executor: ProviderConfig
     workspace_manager: ProviderConfig
+    destination: ProviderConfig
+
+
+@dataclass(frozen=True)
+class TriagePipelineConfig:
+    input_source: ProviderConfig
+    executor: ProviderConfig
     destination: ProviderConfig
 
 
@@ -161,6 +172,14 @@ def _review_pipeline_config(pipeline: dict[str, Any]) -> ReviewPipelineConfig:
     )
 
 
+def _triage_pipeline_config(pipeline: dict[str, Any]) -> TriagePipelineConfig:
+    return TriagePipelineConfig(
+        input_source=_provider_config("input_source", pipeline, TRIAGE_INPUT_PROVIDERS),
+        executor=_provider_config("executor", pipeline, TRIAGE_EXECUTOR_PROVIDERS, "ORCHESTRATOR_EXECUTOR_TRIAGE"),
+        destination=_provider_config("destination", pipeline, TRIAGE_DESTINATION_PROVIDERS),
+    )
+
+
 @lru_cache(maxsize=1)
 def load_pipeline_config() -> PipelineConfig:
     """Load provider selections from the optional ``pipeline`` config section."""
@@ -173,6 +192,7 @@ def load_pipeline_config() -> PipelineConfig:
     return PipelineConfig(
         execution=_execution_pipeline_config(pipeline.get("execution") or {}),
         review=_review_pipeline_config(pipeline.get("review") or {}),
+        triage=_triage_pipeline_config(pipeline.get("triage") or {}),
     )
 
 
@@ -184,6 +204,14 @@ def load_review_pipeline_config() -> ReviewPipelineConfig:
 # Both sections are cached together, so preserve a review-specific cache-clear
 # hook without allowing a stale review configuration.
 load_review_pipeline_config.cache_clear = load_pipeline_config.cache_clear  # type: ignore[attr-defined]
+
+
+def load_triage_pipeline_config() -> TriagePipelineConfig:
+    """Return the triage provider configuration from the main pipeline config."""
+    return load_pipeline_config().triage
+
+
+load_triage_pipeline_config.cache_clear = load_pipeline_config.cache_clear  # type: ignore[attr-defined]
 
 
 def _load_model_config(section: str) -> ModelConfig | None:
@@ -208,6 +236,11 @@ def load_execution_model_config() -> ModelConfig | None:
 @lru_cache(maxsize=1)
 def load_review_model_config() -> ModelConfig | None:
     return _load_model_config("review")
+
+
+@lru_cache(maxsize=1)
+def load_triage_model_config() -> ModelConfig | None:
+    return _load_model_config("triage")
 
 
 @lru_cache(maxsize=1)

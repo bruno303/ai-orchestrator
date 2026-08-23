@@ -11,6 +11,7 @@ from orchestrator.application.polling import Runtime
 from orchestrator.application.ports import NoopContextPresenter
 from orchestrator.application.review import ReviewApplication
 from orchestrator.application.review.service import ReviewRuntime
+from orchestrator.application.triage import TriageApplication
 from orchestrator.main import config
 from orchestrator.main.providers import (
     DESTINATION_PROVIDERS,
@@ -20,16 +21,21 @@ from orchestrator.main.providers import (
     REVIEW_EXECUTOR_PROVIDERS,
     REVIEW_INPUT_PROVIDERS,
     REVIEW_WORKSPACE_PROVIDERS,
+    TRIAGE_DESTINATION_PROVIDERS,
+    TRIAGE_EXECUTOR_PROVIDERS,
+    TRIAGE_INPUT_PROVIDERS,
     WORKSPACE_PROVIDERS,
 )
 
 
 def _create(registry, provider):
     settings = {}
-    if registry in (INPUT_PROVIDERS, REVIEW_INPUT_PROVIDERS):
+    if registry in (INPUT_PROVIDERS, REVIEW_INPUT_PROVIDERS, TRIAGE_INPUT_PROVIDERS):
         settings["_config_module"] = config
     if registry is REVIEW_EXECUTOR_PROVIDERS:
         settings["model_config"] = config.load_review_model_config()
+    if registry is TRIAGE_EXECUTOR_PROVIDERS:
+        settings["model_config"] = config.load_triage_model_config()
     return registry.create(
         provider.type,
         {
@@ -96,5 +102,20 @@ def compose_review_runtime() -> ReviewApplication:
             _create(REVIEW_DESTINATION_PROVIDERS, pipeline.destination),
             task_log_path=workspace.task_log_path,
         ),
+        write_task_log=workspace.write_task_log,
+    )
+
+
+def compose_triage_runtime() -> TriageApplication:
+    from orchestrator.infra.filesystem import workspace
+
+    pipeline = config.load_triage_pipeline_config()
+    source = _create(TRIAGE_INPUT_PROVIDERS, pipeline.input_source)
+    return TriageApplication(
+        source,
+        _create(TRIAGE_EXECUTOR_PROVIDERS, pipeline.executor),
+        _create(TRIAGE_DESTINATION_PROVIDERS, pipeline.destination),
+        context_presenter=getattr(source, "context_presenter", NoopContextPresenter()),
+        task_log_path=workspace.task_log_path,
         write_task_log=workspace.write_task_log,
     )

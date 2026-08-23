@@ -18,11 +18,15 @@ from orchestrator.application.ports import (
     ReviewInputSource,
     ReviewExecutor,
     ReviewDestination,
+    TriageDestination,
+    TriageExecutor,
+    TriageInputSource,
 )
 from orchestrator.application import PollingApplication
 from orchestrator.main.providers import (
     DESTINATION_PROVIDERS, EXECUTOR_PROVIDERS, INPUT_PROVIDERS,
     REVIEW_DESTINATION_PROVIDERS, REVIEW_EXECUTOR_PROVIDERS, REVIEW_INPUT_PROVIDERS,
+    TRIAGE_DESTINATION_PROVIDERS, TRIAGE_EXECUTOR_PROVIDERS, TRIAGE_INPUT_PROVIDERS,
     UnknownProviderError, WORKSPACE_PROVIDERS,
 )
 from orchestrator.main import config
@@ -99,6 +103,15 @@ def test_provider_registries_reserve_current_provider_names():
     assert REVIEW_INPUT_PROVIDERS.names() == ("github_polling",)
     assert REVIEW_EXECUTOR_PROVIDERS.names() == ("claude", "codex", "opencode")
     assert REVIEW_DESTINATION_PROVIDERS.names() == ("github",)
+    assert TRIAGE_INPUT_PROVIDERS.names() == ("github_polling",)
+    assert TRIAGE_EXECUTOR_PROVIDERS.names() == ("claude", "codex", "opencode")
+    assert TRIAGE_DESTINATION_PROVIDERS.names() == ("github",)
+
+
+def test_triage_registries_return_protocol_implementations():
+    assert isinstance(TRIAGE_INPUT_PROVIDERS.create("github_polling"), TriageInputSource)
+    assert isinstance(TRIAGE_EXECUTOR_PROVIDERS.create("opencode"), TriageExecutor)
+    assert isinstance(TRIAGE_DESTINATION_PROVIDERS.create("github"), TriageDestination)
 
 
 def test_review_registries_return_protocol_implementations():
