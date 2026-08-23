@@ -92,7 +92,7 @@ def test_reset_clears_issue_assignee_before_marker(allowlist, monkeypatch):
     ]
 
 
-def test_reset_does_not_change_pr_assignees(allowlist, monkeypatch):
+def test_reset_does_nothing_for_pull_requests(allowlist, monkeypatch):
     calls = []
 
     class Client:
@@ -116,10 +116,7 @@ def test_reset_does_not_change_pr_assignees(allowlist, monkeypatch):
 
     cli.cmd_reset(SimpleNamespace(issue_ref="company/backend#8"))
 
-    assert calls == [
-        ("get_issue", "company/backend", 8),
-        ("remove_label", "company/backend", 8, "ai-developed"),
-    ]
+    assert calls == [("get_issue", "company/backend", 8)]
 
 
 def test_review_poll_logs_completion_after_success(capsys):
