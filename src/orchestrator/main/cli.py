@@ -152,14 +152,14 @@ def cmd_reset(args: argparse.Namespace) -> None:
     assignment_cleared = github_assignees.clear_authenticated_issue_assignee(
         github_client, repository, number
     )
-    github_client.remove_issue_label(repository, number, _developed_label())
     if assignment_cleared:
+        github_client.remove_issue_label(repository, number, _developed_label())
         print(
             f"[{_now()}] reset {task_id}: marker and assignee removed; issue is eligible on the next poll",
             flush=True,
         )
     else:
-        print(f"[{_now()}] reset {task_id}: marker removed", flush=True)
+        print(f"[{_now()}] reset {task_id}: skipped; target is a pull request", flush=True)
 
 
 def cmd_logs(args: argparse.Namespace) -> None:
