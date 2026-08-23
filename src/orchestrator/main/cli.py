@@ -238,7 +238,7 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("issue_ref"); run.add_argument("--force", action="store_true", help="run even if ai-developed is present"); run.set_defaults(func=cmd_run)
     execute = sub.add_parser("execute", help="execute issue and review workflows")
     execute.add_argument("--once", action="store_true"); execute.set_defaults(func=cmd_execute)
-    review = sub.add_parser("review", help="poll configured pull requests for provider-neutral AI reviews")
+    review = sub.add_parser("review", help="poll configured pull requests for reviews")
     review.add_argument("--once", action="store_true"); review.set_defaults(func=cmd_review)
     reset = sub.add_parser("reset", help="remove local workspace and ai-developed marker")
     reset.add_argument("issue_ref"); reset.set_defaults(func=cmd_reset)
