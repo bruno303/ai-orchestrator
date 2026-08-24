@@ -183,6 +183,23 @@ def test_commit_all_with_repo_gitignore_ignoring_agents(repo_dir, tmp_path):
     assert ".agents" not in proc.stdout
 
 
+def test_create_worktree_reuses_existing_remote_branch(repo_dir, remote_repo, tmp_path):
+    # First run: push ai/issue-11 to the remote (e.g. an open PR already exists).
+    ws1 = tmp_path / "ws1"
+    git.create_worktree(repo_dir, ws1, "ai/issue-11", "main")
+    (ws1 / "work.txt").write_text("hello\nv1\n")
+    git.commit_all(ws1, "feat: v1")
+    git.push_branch(ws1, "ai/issue-11")
+    git.remove_worktree(repo_dir, ws1, "ai/issue-11")
+    git.fetch(repo_dir)  # GitWorkspaceManager.prepare always re-fetches before checkout
+
+    # Re-run (e.g. a comment-triggered follow-up): must build on the existing
+    # branch/PR rather than forking a fresh one from base_branch.
+    ws2 = tmp_path / "ws2"
+    git.create_worktree(repo_dir, ws2, "ai/issue-11", "main")
+    assert (ws2 / "work.txt").read_text() == "hello\nv1\n"
+
+
 def test_push_branch_force_overwrites_stale_remote(repo_dir, remote_repo, tmp_path):
     # First run: push ai/issue-10 to the remote.
     ws1 = tmp_path / "ws1"
@@ -190,16 +207,16 @@ def test_push_branch_force_overwrites_stale_remote(repo_dir, remote_repo, tmp_pa
     (ws1 / "work.txt").write_text("hello\nv1\n")
     git.commit_all(ws1, "feat: v1")
     git.push_branch(ws1, "ai/issue-10")
-
-    # Clean up locally (as a re-run would), leaving the stale remote branch behind.
     git.remove_worktree(repo_dir, ws1, "ai/issue-10")
+    git.fetch(repo_dir)  # GitWorkspaceManager.prepare always re-fetches before checkout
 
-    # Re-run: fresh worktree on the same branch name, different history -> plain
-    # push is a non-fast-forward and must be recovered by force-with-lease.
+    # Re-run on the same branch: amending its history (as a follow-up build
+    # might) makes a plain push a non-fast-forward that must be recovered by
+    # force-with-lease.
     ws2 = tmp_path / "ws2"
     git.create_worktree(repo_dir, ws2, "ai/issue-10", "main")
     (ws2 / "work.txt").write_text("hello\nv2\n")
-    git.commit_all(ws2, "feat: v2")
+    subprocess.run(["git", "commit", "-a", "--amend", "-m", "feat: v2"], cwd=ws2, check=True)
     proc = subprocess.run(["git", "push", "origin", "ai/issue-10"], cwd=ws2, capture_output=True, text=True)
     assert proc.returncode != 0  # rejected: non-fast-forward
 

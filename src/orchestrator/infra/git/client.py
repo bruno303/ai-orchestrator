@@ -139,11 +139,33 @@ def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
             _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
 
 
+def remote_branch_exists(repo_dir: Path, branch: str) -> bool:
+    proc = _run(
+        ["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+        cwd=repo_dir,
+        check=False,
+    )
+    return proc.returncode == 0
+
+
 def create_worktree(repo_dir: Path, workspace: Path, branch: str, base_branch: str) -> None:
-    """Create an isolated worktree at `workspace` on a new `branch` from base_branch."""
+    """Create an isolated worktree at `workspace` on `branch`.
+
+    Reuses `origin/{branch}` when it already exists — a comment-triggered
+    re-run on a task that already has an open PR should keep building on that
+    branch, not silently discard it by forking a fresh one from base_branch.
+    """
     if workspace.exists():
         raise GitError(f"workspace already exists: {workspace}")
     workspace.parent.mkdir(parents=True, exist_ok=True)
+    if remote_branch_exists(repo_dir, branch):
+        proc = _run(
+            ["git", "worktree", "add", "-B", branch, str(workspace), f"origin/{branch}"],
+            cwd=repo_dir,
+            check=False,
+        )
+        if proc.returncode == 0:
+            return
     base_ref = f"origin/{base_branch}"
     proc = _run(
         ["git", "worktree", "add", "-b", branch, str(workspace), base_ref],
