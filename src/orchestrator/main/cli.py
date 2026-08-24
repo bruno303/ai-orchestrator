@@ -17,7 +17,7 @@ from orchestrator.infra.github import assignees as github_assignees
 from orchestrator.infra.github import client as github
 from orchestrator.infra.langgraph import state as state_mod
 from orchestrator.application import PollingApplication, _input_seed
-from orchestrator.main.composition import compose_execution_runtime, compose_review_runtime, compose_runtime
+from orchestrator.main.composition import compose_execution_runtime, compose_review_runtime, compose_runtime, compose_triage_runtime
 from orchestrator.domain import Context, WorkItem
 from orchestrator.infra.langgraph.graph import build_graph
 from orchestrator.application.ports import InputEvent
@@ -114,11 +114,9 @@ def _remove_event_workspace(event: InputEvent) -> None:
 
 
 def _developed_label() -> str:
-    """Return the GitHub adapter's configured publication marker."""
+    """Return the execution stage's completion marker."""
     pipeline = config.load_pipeline_config().execution
-    return str(pipeline.destination.options.get(
-        "developed_label", pipeline.input_source.options.get("developed_label", "ai-developed")
-    ))
+    return pipeline.labels.output.add[0] if pipeline.labels.output.add else config.EXECUTION_COMPLETED_LABEL
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -177,8 +175,8 @@ def cmd_logs(args: argparse.Namespace) -> None:
         print(f"  {path.stem:<12} {path.stat().st_size:>9,} bytes")
 
 
-def _acquire_poll_lock():
-    path = config.STATE_DIR / "poll.lock"
+def _acquire_poll_lock(lock_name: str = "poll"):
+    path = config.STATE_DIR / f"{lock_name}.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = path.open("w")
     try:
@@ -195,6 +193,28 @@ def _poll_reviews(application) -> None:
         print(f"[{_now()}] review poll error (continuing): {exc}", flush=True)
     finally:
         print(f"[{_now()}] review poll: finished", flush=True)
+
+
+def _poll_triage(application) -> None:
+    try:
+        application.poll_once()
+    except Exception as exc:
+        print(f"[{_now()}] triage poll error (continuing): {exc}", flush=True)
+    finally:
+        print(f"[{_now()}] triage poll: finished", flush=True)
+
+
+def cmd_triage(args: argparse.Namespace) -> None:
+    lock = _acquire_poll_lock("triage")
+    try:
+        triage = compose_triage_runtime()
+        while True:
+            _poll_triage(triage)
+            if args.once: return
+            print(f"[{_now()}] triage: next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
+            time.sleep(config.POLL_INTERVAL_SECONDS)
+    finally:
+        lock.close()
 
 
 def cmd_review(args: argparse.Namespace) -> None:
@@ -223,7 +243,8 @@ def cmd_execute(args: argparse.Namespace) -> None:
             _report_result, _remove_event_workspace, now=_now, input_provider=runtime.input_provider,
             feedback=runtime.feedback)
         while True:
-            application.poll_once(args.once); _poll_reviews(reviews)
+            application.poll_once(args.once)
+            _poll_reviews(reviews)
             if args.once: return
             print(f"[{_now()}] execute: no new issues, next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
             time.sleep(config.POLL_INTERVAL_SECONDS)
@@ -240,6 +261,8 @@ def main(argv: list[str] | None = None) -> None:
     execute.add_argument("--once", action="store_true"); execute.set_defaults(func=cmd_execute)
     review = sub.add_parser("review", help="poll configured pull requests for reviews")
     review.add_argument("--once", action="store_true"); review.set_defaults(func=cmd_review)
+    triage = sub.add_parser("triage", help="triage open issues for execution")
+    triage.add_argument("--once", action="store_true"); triage.set_defaults(func=cmd_triage)
     reset = sub.add_parser("reset", help="remove local workspace and ai-developed marker")
     reset.add_argument("issue_ref"); reset.set_defaults(func=cmd_reset)
     logs = sub.add_parser("logs", help="list a task's node logs")

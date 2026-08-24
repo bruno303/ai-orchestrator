@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import select
 import subprocess
 import time
@@ -12,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.domain import ReviewOutcome
-from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest
+from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, TriageRequest
 from orchestrator.infra.review.parser import extract_review_json, parse_review_output
+from orchestrator.infra.triage.parser import parse_triage_output
 
 
 _extract_review_json = extract_review_json
@@ -21,6 +23,34 @@ _extract_review_json = extract_review_json
 
 class OpenCodeError(ExecutorError):
     pass
+
+
+# Triage receives issue text and returns JSON; it never needs to modify the
+# temporary directory or invoke tools with side effects.  The explicit deny
+# rules remain effective when ``run_opencode`` uses ``--auto``.
+OPENCODE_TRIAGE_CONFIG_CONTENT = json.dumps(
+    {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {
+            "*": "deny",
+            "read": "allow",
+            "glob": "allow",
+            "grep": "allow",
+            "lsp": "allow",
+            "bash": "deny",
+            "edit": "deny",
+            "task": "deny",
+            "skill": "deny",
+            "webfetch": "deny",
+            "websearch": "deny",
+            "external_directory": "deny",
+            "question": "deny",
+            "doom_loop": "deny",
+        },
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+)
 
 
 @dataclass
@@ -97,6 +127,30 @@ class OpenCodeReviewExecutor:
         return parse_review_output(result.stdout, request.context)
 
 
+class OpenCodeTriageExecutor:
+    """Run a triage prompt in an ephemeral workspace."""
+
+    provider_type = "opencode"
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = dict(options or {})
+
+    def execute(self, request: TriageRequest):
+        options = {**self.options, **dict(request.context.namespace("opencode"))}
+        model_config = options.get("model_config")
+        result = run_opencode(
+            request.workspace, None, request.prompt,
+            log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
+            model=options.get("model") or (model_config.name if model_config else request.model),
+            variant=options.get("variant") or (model_config.variant if model_config else request.variant),
+            timeout=options.get("timeout"),
+            config_content=OPENCODE_TRIAGE_CONFIG_CONTENT,
+        )
+        if result.exit_code != 0:
+            return parse_triage_output("", request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
+        return parse_triage_output(result.stdout, request.context)
+
+
 def run_opencode(
     workspace: str | Path,
     agent: str | None,
@@ -106,6 +160,7 @@ def run_opencode(
     log_file: Path | None = None,
     model: str | None = None,
     variant: str | None = None,
+    config_content: str | None = None,
 ) -> OpenCodeResult:
     """Run `opencode run [--agent <agent>] --auto` in the given workspace.
 
@@ -132,6 +187,9 @@ def run_opencode(
     timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
     start = time.monotonic()
     try:
+        child_environment = os.environ.copy()
+        if config_content is not None:
+            child_environment["OPENCODE_CONFIG_CONTENT"] = config_content
         proc = subprocess.Popen(
             cmd,
             cwd=workspace,
@@ -139,6 +197,7 @@ def run_opencode(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=child_environment,
         )
     except FileNotFoundError as exc:
         raise OpenCodeError(f"opencode binary not found: {cmd[0]}") from exc

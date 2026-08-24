@@ -16,6 +16,7 @@ _ORCHESTRATOR_ENVIRONMENT = (
     "ORCHESTRATOR_DATA_DIR",
     "ORCHESTRATOR_EXECUTOR_EXECUTION",
     "ORCHESTRATOR_EXECUTOR_REVIEW",
+    "ORCHESTRATOR_EXECUTOR_TRIAGE",
     "ORCHESTRATOR_GITHUB_APP_ID",
     "ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID",
     "ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE",
@@ -26,6 +27,8 @@ _ORCHESTRATOR_ENVIRONMENT = (
     "ORCHESTRATOR_MODEL_EXECUTION_VARIANT",
     "ORCHESTRATOR_MODEL_REVIEW_NAME",
     "ORCHESTRATOR_MODEL_REVIEW_VARIANT",
+    "ORCHESTRATOR_MODEL_TRIAGE_NAME",
+    "ORCHESTRATOR_MODEL_TRIAGE_VARIANT",
     "ORCHESTRATOR_OPENCODE_BIN",
     "ORCHESTRATOR_OPENCODE_TIMEOUT",
     "ORCHESTRATOR_CODEX_BIN",
@@ -106,6 +109,9 @@ if [[ -n "$FAKE_OPCODE_SLEEP" ]]; then sleep "$FAKE_OPCODE_SLEEP"; fi
 if [[ -n "$FAKE_OPCODE_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
 cd "$DIR"
 case "$PROMPT" in
+  *"enough_context"*)
+    echo '{"enough_context":true,"confidence":"high","summary":"ready","missing_context":[]}'
+    ;;
   *"planning the implementation"*|*"planning work item"*)
     mkdir -p .agents/plans
     cat > .agents/plans/plan.md <<'EOF'
@@ -175,6 +181,9 @@ if [[ -n "$FAKE_CODEX_SLEEP" ]]; then sleep "$FAKE_CODEX_SLEEP"; fi
 if [[ -n "$FAKE_CODEX_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
 cd "$DIR"
 case "$PROMPT" in
+  *"enough_context"*)
+    echo '{"enough_context":true,"confidence":"high","summary":"ready","missing_context":[]}'
+    ;;
   *"ONLY valid JSON"*)
     echo '{"verdict":"comment","summary":"ok","findings":[],"checks":[]}'
     ;;
@@ -241,6 +250,9 @@ fi
 if [[ -n "$FAKE_CLAUDE_SLEEP" ]]; then sleep "$FAKE_CLAUDE_SLEEP"; fi
 if [[ -n "$FAKE_CLAUDE_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
 case "$PROMPT" in
+  *"enough_context"*)
+    echo '{"enough_context":true,"confidence":"high","summary":"ready","missing_context":[]}'
+    ;;
   *"ONLY valid JSON"*)
     echo '{"verdict":"comment","summary":"ok","findings":[],"checks":[]}'
     ;;
@@ -308,11 +320,13 @@ def clear_config_cache():
     config.load_repository_config.cache_clear()
     config.load_execution_model_config.cache_clear()
     config.load_review_model_config.cache_clear()
+    config.load_triage_model_config.cache_clear()
     config.load_pipeline_config.cache_clear()
     yield
     config.load_repository_config.cache_clear()
     config.load_execution_model_config.cache_clear()
     config.load_review_model_config.cache_clear()
+    config.load_triage_model_config.cache_clear()
     config.load_pipeline_config.cache_clear()
 
 

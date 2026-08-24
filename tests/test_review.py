@@ -194,6 +194,24 @@ def test_github_input_skips_broken_pr_metadata_and_continues():
     assert [event.context.namespace("github")["pr_number"] for event in events] == [2]
 
 
+def test_github_review_input_excludes_completed_reviews():
+    class Client:
+        def list_open_pull_requests(self, repository):
+            return [SimpleNamespace(number=1), SimpleNamespace(number=2)]
+
+        def get_pull_request(self, repository, number):
+            return github.PullRequestDetail(
+                number, "title", "body", f"https://example/{number}",
+                "main", "head", [], ["ai-reviewed"] if number == 1 else [],
+            )
+
+    source = GitHubReviewInputSource(
+        Client(), SimpleNamespace(allowed_repositories=lambda: ["r"])
+    )
+
+    assert [target.context.namespace("github")["pr_number"] for target in source.poll()] == [2]
+
+
 def test_github_review_input_uses_https_repository_url():
     class Client:
         def get_repository(self, repository):

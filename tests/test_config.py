@@ -55,6 +55,15 @@ def test_review_model_config_parses_independently(model_config):
     assert model.variant == "medium"
 
 
+def test_triage_model_config_parses_independently(allowlist):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "model:\n  triage:\n    name: provider/triage\n    variant: low\n"
+    )
+    config.load_triage_model_config.cache_clear()
+    assert config.load_triage_model_config() == config.ModelConfig("provider/triage", "low")
+
+
 def test_model_config_sections_do_not_inherit(allowlist):
     config.CONFIG_FILE.write_text(
         "model:\n"
@@ -95,6 +104,64 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.execution.destination.type == "github"
     assert pipeline.review.workspace_manager.type == "git"
     assert pipeline.review.workspace_manager.options == {}
+    assert pipeline.triage.input_source.type == "github_polling"
+    assert pipeline.triage.executor.type == "opencode"
+    assert pipeline.triage.destination.type == "github"
+    assert pipeline.execution.labels.select == ("ai-agent",)
+    assert pipeline.execution.labels.suppress == ("ai-developed",)
+    assert pipeline.execution.labels.output.add == ("ai-developed",)
+    assert pipeline.review.labels.suppress == ("ai-reviewed",)
+    assert pipeline.review.labels.output.add == ("ai-reviewed",)
+    assert pipeline.triage.labels.suppress == ("ai-agent", "ai-triage", "ai-developed")
+    assert pipeline.triage.labels.output.ready.add == ("ai-agent",)
+    assert pipeline.triage.labels.output.ready.remove == ("ai-triage",)
+    assert pipeline.triage.labels.output.blocked.add == ("ai-triage",)
+
+
+def test_stage_label_contracts_are_translated_to_provider_options(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  triage:\n"
+        "    labels:\n"
+        "      select: []\n"
+        "      suppress: [ready, blocked, developed]\n"
+        "      output:\n"
+        "        ready: {add: [ready], remove: [blocked]}\n"
+        "        blocked: {add: [blocked]}\n"
+    )
+    _clear_pipeline_cache()
+
+    from orchestrator.main.composition import compose_triage_runtime
+
+    runtime = compose_triage_runtime()
+
+    assert runtime.input_source.options["select_labels"] == []
+    assert runtime.input_source.options["suppress_labels"] == ["ready", "blocked", "developed"]
+    assert runtime.destination.options["ready_output"] == {
+        "add": ["ready"], "remove": ["blocked"],
+    }
+    assert runtime.destination.options["blocked_output"] == {
+        "add": ["blocked"], "remove": [],
+    }
+
+
+def test_legacy_ai_agent_repository_label_is_a_noop(allowlist):
+    config.CONFIG_FILE.write_text("repositories:\n  - name: company/backend\n    label: ai-agent\n")
+
+    assert config.load_repository_config() == {"company/backend": {}}
+
+
+def test_nonstandard_legacy_repository_label_is_rejected(allowlist):
+    config.CONFIG_FILE.write_text("repositories:\n  - name: company/backend\n    label: ready-for-dev\n")
+
+    try:
+        config.load_repository_config()
+    except ValueError as exc:
+        assert "repository 'company/backend'" in str(exc)
+        assert "label: 'ai-agent'" in str(exc)
+        assert "pipeline.*.labels" in str(exc)
+    else:
+        raise AssertionError("expected unsupported repository label error")
 
 
 def test_omitted_workspace_auth_remains_bot_compatible(allowlist):
@@ -243,6 +310,13 @@ def test_pipeline_executor_environment_overrides_can_select_each_workflow(allowl
 
     assert pipeline.execution.executor.type == "codex"
     assert pipeline.review.executor.type == "opencode"
+
+
+def test_pipeline_triage_executor_environment_override(allowlist, monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_EXECUTOR_TRIAGE", "codex")
+    _clear_pipeline_cache()
+
+    assert config.load_pipeline_config().triage.executor.type == "codex"
 
 
 def test_pipeline_executor_environment_overrides_can_select_claude(allowlist, monkeypatch):

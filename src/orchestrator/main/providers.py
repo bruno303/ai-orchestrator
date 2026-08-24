@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from orchestrator.application.ports import *  # noqa: F403
-from orchestrator.domain import Context, PublishedChange, PublishedReview, ReviewOutcome, ReviewTarget
+from orchestrator.domain import Context, PublishedChange, PublishedReview, PublishedTriage, ReviewOutcome, ReviewTarget, TriageOutcome, TriageTarget
 
 
 class UnknownProviderError(ValueError):
@@ -171,6 +171,74 @@ class _PlaceholderReviewDestination:
 
     def publish(self, target, outcome):
         return PublishedReview(provider="placeholder", context=target.context)
+
+
+@dataclass
+class _PlaceholderTriageInputSource:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def poll(self) -> list[TriageTarget]:
+        return []
+
+
+@dataclass
+class _PlaceholderTriageExecutor:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def execute(self, request: TriageRequest) -> TriageOutcome:
+        return TriageOutcome(False, summary="triage executor provider is not wired", context=request.context)
+
+
+@dataclass
+class _PlaceholderTriageDestination:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def publish(self, target, outcome):
+        return PublishedTriage(provider="placeholder", context=target.context)
+
+
+def _triage_input_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+    identity = github_auth.identity_from_options(options)
+    if not options.pop("_runtime", False):
+        return _PlaceholderTriageInputSource(options)
+    from orchestrator.infra.github.client import GitHubClient
+    from orchestrator.infra.github.triage import GitHubTriageInputSource
+    config_module = options.pop("_config_module")
+    options.pop("auth", None)
+    return GitHubTriageInputSource(GitHubClient(identity), config_module=config_module, options=options)
+
+
+def _triage_executor_factory(provider_name, class_name):
+    def factory(options):
+        if not options.pop("_runtime", False):
+            return _PlaceholderTriageExecutor(options)
+        module = __import__(f"orchestrator.infra.{provider_name}.executor", fromlist=[class_name])
+        return getattr(module, class_name)(options=options)
+    return factory
+
+
+def _triage_destination_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+    identity = github_auth.identity_from_options(options)
+    if not options.pop("_runtime", False):
+        return _PlaceholderTriageDestination(options)
+    from orchestrator.infra.github.client import GitHubClient
+    from orchestrator.infra.github.triage import GitHubTriageDestination
+    options.pop("auth", None)
+    return GitHubTriageDestination(
+        options=options,
+        github_client=GitHubClient(identity),
+    )
+
+
+TRIAGE_INPUT_PROVIDERS = ProviderRegistry({"github_polling": _triage_input_factory}, TriageInputSource)
+TRIAGE_EXECUTOR_PROVIDERS = ProviderRegistry({
+    "claude": _triage_executor_factory("claude", "ClaudeTriageExecutor"),
+    "codex": _triage_executor_factory("codex", "CodexTriageExecutor"),
+    "opencode": _triage_executor_factory("opencode", "OpenCodeTriageExecutor"),
+}, TriageExecutor)
+TRIAGE_DESTINATION_PROVIDERS = ProviderRegistry({"github": _triage_destination_factory}, TriageDestination)
 
 
 def _review_input_factory(options):

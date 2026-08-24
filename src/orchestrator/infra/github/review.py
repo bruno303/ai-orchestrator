@@ -36,6 +36,20 @@ class GitHubReviewInputSource:
     provider_type: str = "github_polling"
     context_presenter: GitHubContextPresenter = field(default_factory=GitHubContextPresenter)
 
+    @property
+    def select_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("select_labels", ())
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
+    @property
+    def suppress_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("suppress_labels", ("ai-reviewed",))
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
     def poll(self) -> list[ReviewTarget]:
         if self.config_module is None:
             raise RuntimeError("GitHubReviewInputSource requires an allowlist configuration")
@@ -50,7 +64,10 @@ class GitHubReviewInputSource:
                     except Exception as exc:
                         print(f"[review] {repository}#{pr.number} metadata: {exc}", flush=True)
                         continue
-                    if self.options.get("processed_label", "ai-reviewed") in detail.labels:
+                    labels = set(detail.labels)
+                    if not set(self.select_labels).issubset(labels):
+                        continue
+                    if set(self.suppress_labels).intersection(labels):
                         continue
                     target_id = f"review:{repository}#{pr.number}"
                     targets.append(ReviewTarget(
@@ -113,6 +130,22 @@ class GitHubReviewDestination:
         self.github_client = github_client
         self.provider_type = "github"
 
+    @property
+    def output_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("output_labels")
+        if configured is None:
+            configured = (self.options.get("processed_label", "ai-reviewed"),)
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
+    @property
+    def remove_output_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("remove_output_labels", ())
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
     def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview:
         values = target.context.namespace("github")
         number = values.get("pr_number")
@@ -159,7 +192,8 @@ class GitHubReviewDestination:
             event,
             commit_id=target.revision or None,
         )
-        self.github_client.add_pull_request_label(
-            target.repository, number, self.options.get("processed_label", "ai-reviewed")
-        )
+        for label in self.output_labels:
+            self.github_client.add_pull_request_label(target.repository, number, label)
+        for label in self.remove_output_labels:
+            self.github_client.remove_pull_request_label(target.repository, number, label)
         return PublishedReview(str(number), values.get("url"), self.provider_type, target.context)

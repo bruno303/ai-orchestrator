@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest
+from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, TriageRequest
 from orchestrator.domain import ReviewOutcome
 from orchestrator.infra.review.parser import parse_review_output
+from orchestrator.infra.triage.parser import parse_triage_output
 
 
 class CodexError(ExecutorError):
@@ -112,6 +113,31 @@ class CodexReviewExecutor:
                 context=request.context.merge_namespace("codex", {"exit_code": result.exit_code}),
             )
         return parse_review_output(result.stdout, request.context)
+
+
+class CodexTriageExecutor:
+    """Run a read-only Codex triage assessment."""
+
+    provider_type = "codex"
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = dict(options or {})
+
+    def execute(self, request: TriageRequest):
+        options = {**self.options, **dict(request.context.namespace("codex"))}
+        model_config = options.get("model_config")
+        result = run_codex(
+            request.workspace, None, request.prompt,
+            log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
+            model=options.get("model") or (model_config.name if model_config else request.model),
+            variant=options.get("variant") or (model_config.variant if model_config else request.variant),
+            timeout=options.get("timeout"),
+            sandbox=options.get("sandbox", "read-only"),
+            approval_policy=options.get("approval_policy", "never"),
+        )
+        if result.exit_code != 0:
+            return parse_triage_output("", request.context.merge_namespace("codex", {"exit_code": result.exit_code}))
+        return parse_triage_output(result.stdout, request.context)
 
 
 def run_codex(
