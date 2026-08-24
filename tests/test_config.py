@@ -107,15 +107,27 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.triage.input_source.type == "github_polling"
     assert pipeline.triage.executor.type == "opencode"
     assert pipeline.triage.destination.type == "github"
+    assert pipeline.execution.labels.select == ("ai-agent",)
+    assert pipeline.execution.labels.suppress == ("ai-developed",)
+    assert pipeline.execution.labels.output.add == ("ai-developed",)
+    assert pipeline.review.labels.suppress == ("ai-reviewed",)
+    assert pipeline.review.labels.output.add == ("ai-reviewed",)
+    assert pipeline.triage.labels.suppress == ("ai-agent", "ai-triage", "ai-developed")
+    assert pipeline.triage.labels.output.ready.add == ("ai-agent",)
+    assert pipeline.triage.labels.output.ready.remove == ("ai-triage",)
+    assert pipeline.triage.labels.output.blocked.add == ("ai-triage",)
 
 
-def test_triage_destination_label_is_shared_with_input_source(allowlist):
+def test_stage_label_contracts_are_translated_to_provider_options(allowlist):
     config.CONFIG_FILE.write_text(
         "pipeline:\n"
         "  triage:\n"
-        "    destination:\n"
-        "      type: github\n"
-        "      triage_label: needs-context\n"
+        "    labels:\n"
+        "      select: []\n"
+        "      suppress: [ready, blocked, developed]\n"
+        "      output:\n"
+        "        ready: {add: [ready], remove: [blocked]}\n"
+        "        blocked: {add: [blocked]}\n"
     )
     _clear_pipeline_cache()
 
@@ -123,8 +135,33 @@ def test_triage_destination_label_is_shared_with_input_source(allowlist):
 
     runtime = compose_triage_runtime()
 
-    assert runtime.input_source.options["triage_label"] == "needs-context"
-    assert runtime.destination.options["triage_label"] == "needs-context"
+    assert runtime.input_source.options["select_labels"] == []
+    assert runtime.input_source.options["suppress_labels"] == ["ready", "blocked", "developed"]
+    assert runtime.destination.options["ready_output"] == {
+        "add": ["ready"], "remove": ["blocked"],
+    }
+    assert runtime.destination.options["blocked_output"] == {
+        "add": ["blocked"], "remove": [],
+    }
+
+
+def test_legacy_ai_agent_repository_label_is_a_noop(allowlist):
+    config.CONFIG_FILE.write_text("repositories:\n  - name: company/backend\n    label: ai-agent\n")
+
+    assert config.load_repository_config() == {"company/backend": {}}
+
+
+def test_nonstandard_legacy_repository_label_is_rejected(allowlist):
+    config.CONFIG_FILE.write_text("repositories:\n  - name: company/backend\n    label: ready-for-dev\n")
+
+    try:
+        config.load_repository_config()
+    except ValueError as exc:
+        assert "repository 'company/backend'" in str(exc)
+        assert "label: 'ai-agent'" in str(exc)
+        assert "pipeline.*.labels" in str(exc)
+    else:
+        raise AssertionError("expected unsupported repository label error")
 
 
 def test_omitted_workspace_auth_remains_bot_compatible(allowlist):

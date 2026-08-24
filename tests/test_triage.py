@@ -1,6 +1,7 @@
 """Tests for issue triage contracts and GitHub behavior."""
 
 from types import SimpleNamespace
+import json
 
 import pytest
 
@@ -68,26 +69,25 @@ def test_github_triage_source_filters_workflow_labels_without_assigning():
     assert [item.id for item in source.poll()] == ["triage:owner/repo#1"]
 
 
-def test_github_triage_source_uses_repository_ready_label():
+def test_github_triage_source_uses_fixed_stage_suppression_labels():
     class Client:
         class GitHubError(Exception):
             pass
 
         def list_open_issues(self, repository):
             return [
-                Issue(1, "ready", "body", "url", ["ready-for-dev"]),
+                Issue(1, "ready", "body", "url", ["ai-agent"]),
                 Issue(2, "pending", "body", "url", []),
             ]
 
     source = GitHubTriageInputSource(Client(), config_module=SimpleNamespace(
         allowed_repositories=lambda: ["owner/repo"],
-        repository_label=lambda _repository: "ready-for-dev",
     ))
 
     assert [item.id for item in source.poll()] == ["triage:owner/repo#2"]
 
 
-def test_github_triage_destination_adds_no_ready_label_when_repository_label_is_omitted():
+def test_github_triage_destination_applies_ready_stage_output():
     class Client:
         def __init__(self): self.calls = []
         def add_issue_label(self, *args): self.calls.append(("add", *args))
@@ -96,23 +96,23 @@ def test_github_triage_destination_adds_no_ready_label_when_repository_label_is_
     client = Client()
     GitHubTriageDestination(github_client=client).publish(target(), outcome(True))
 
-    assert client.calls == [("remove", "owner/repo", 1, "ai-triage")]
+    assert client.calls == [
+        ("add", "owner/repo", 1, "ai-agent"),
+        ("remove", "owner/repo", 1, "ai-triage"),
+    ]
 
 
-def test_github_triage_destination_uses_repository_ready_label():
+def test_github_triage_destination_uses_fixed_ready_label():
     class Client:
         def __init__(self): self.calls = []
         def add_issue_label(self, *args): self.calls.append(("add", *args))
         def remove_issue_label(self, *args): self.calls.append(("remove", *args))
 
     client = Client()
-    GitHubTriageDestination(
-        github_client=client,
-        config_module=SimpleNamespace(repository_label=lambda _repository: "ready-for-dev"),
-    ).publish(target(), outcome(True))
+    GitHubTriageDestination(github_client=client).publish(target(), outcome(True))
 
     assert client.calls == [
-        ("add", "owner/repo", 1, "ready-for-dev"),
+        ("add", "owner/repo", 1, "ai-agent"),
         ("remove", "owner/repo", 1, "ai-triage"),
     ]
 
@@ -207,3 +207,12 @@ def test_opencode_triage_uses_model_and_parses_result(monkeypatch, tmp_path):
     assert captured["args"][1] is None
     assert captured["model"] == "model/x"
     assert captured["variant"] == "fast"
+    permissions = json.loads(captured["config_content"])["permission"]
+    assert permissions["*"] == "deny"
+    assert permissions["read"] == "allow"
+    assert permissions["glob"] == "allow"
+    assert permissions["grep"] == "allow"
+    assert permissions["bash"] == "deny"
+    assert permissions["edit"] == "deny"
+    assert permissions["task"] == "deny"
+    assert permissions["external_directory"] == "deny"

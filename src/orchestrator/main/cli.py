@@ -114,11 +114,9 @@ def _remove_event_workspace(event: InputEvent) -> None:
 
 
 def _developed_label() -> str:
-    """Return the GitHub adapter's configured publication marker."""
+    """Return the execution stage's completion marker."""
     pipeline = config.load_pipeline_config().execution
-    return str(pipeline.destination.options.get(
-        "developed_label", pipeline.input_source.options.get("developed_label", "ai-developed")
-    ))
+    return pipeline.labels.output.add[0] if pipeline.labels.output.add else config.EXECUTION_COMPLETED_LABEL
 
 
 def cmd_run(args: argparse.Namespace) -> None:

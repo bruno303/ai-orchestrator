@@ -225,12 +225,10 @@ def _triage_destination_factory(options):
         return _PlaceholderTriageDestination(options)
     from orchestrator.infra.github.client import GitHubClient
     from orchestrator.infra.github.triage import GitHubTriageDestination
-    config_module = options.pop("_config_module", None)
     options.pop("auth", None)
     return GitHubTriageDestination(
         options=options,
         github_client=GitHubClient(identity),
-        config_module=config_module,
     )
 
 

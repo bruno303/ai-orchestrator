@@ -45,8 +45,28 @@ class GitHubDestination:
         self.provider_type = "github"
 
     @property
-    def developed_label(self) -> str:
-        return str(self.options.get("developed_label", "ai-developed"))
+    def output_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("output_labels")
+        if configured is None:
+            # Keep direct adapter construction compatible with the historical
+            # option while composition now supplies the stage contract.
+            configured = (self.options.get("developed_label", "ai-developed"),)
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
+    @property
+    def remove_output_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("remove_output_labels", ())
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
+    def _apply_output_labels(self, repository: str, issue_number: int) -> None:
+        for label in self.output_labels:
+            self.github_client.add_issue_label(repository, issue_number, label)
+        for label in self.remove_output_labels:
+            self.github_client.remove_issue_label(repository, issue_number, label)
 
     def publish(self, request: ChangeRequest) -> PublishedChange:
         github_context = request.context.namespace("github")
@@ -75,12 +95,12 @@ class GitHubDestination:
             body = _body(issue_number, current)
             if body != current:
                 self.github_client.update_pull_request_body(repository, existing_pr, body)
-            self.github_client.add_issue_label(repository, issue_number, self.developed_label)
+            self._apply_output_labels(repository, issue_number)
             return PublishedChange(str(existing_pr), None, self.provider_type, context)
 
         number = self.github_client.create_pull_request(
             repository, title, _body(issue_number, description),
             head=source_ref, base=target_ref,
         )
-        self.github_client.add_issue_label(repository, issue_number, self.developed_label)
+        self._apply_output_labels(repository, issue_number)
         return PublishedChange(str(number), provider=self.provider_type, context=context)

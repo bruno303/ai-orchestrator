@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import select
 import subprocess
 import time
@@ -22,6 +23,34 @@ _extract_review_json = extract_review_json
 
 class OpenCodeError(ExecutorError):
     pass
+
+
+# Triage receives issue text and returns JSON; it never needs to modify the
+# temporary directory or invoke tools with side effects.  The explicit deny
+# rules remain effective when ``run_opencode`` uses ``--auto``.
+OPENCODE_TRIAGE_CONFIG_CONTENT = json.dumps(
+    {
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {
+            "*": "deny",
+            "read": "allow",
+            "glob": "allow",
+            "grep": "allow",
+            "lsp": "allow",
+            "bash": "deny",
+            "edit": "deny",
+            "task": "deny",
+            "skill": "deny",
+            "webfetch": "deny",
+            "websearch": "deny",
+            "external_directory": "deny",
+            "question": "deny",
+            "doom_loop": "deny",
+        },
+    },
+    separators=(",", ":"),
+    sort_keys=True,
+)
 
 
 @dataclass
@@ -115,6 +144,7 @@ class OpenCodeTriageExecutor:
             model=options.get("model") or (model_config.name if model_config else request.model),
             variant=options.get("variant") or (model_config.variant if model_config else request.variant),
             timeout=options.get("timeout"),
+            config_content=OPENCODE_TRIAGE_CONFIG_CONTENT,
         )
         if result.exit_code != 0:
             return parse_triage_output("", request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
@@ -130,6 +160,7 @@ def run_opencode(
     log_file: Path | None = None,
     model: str | None = None,
     variant: str | None = None,
+    config_content: str | None = None,
 ) -> OpenCodeResult:
     """Run `opencode run [--agent <agent>] --auto` in the given workspace.
 
@@ -156,6 +187,9 @@ def run_opencode(
     timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
     start = time.monotonic()
     try:
+        child_environment = os.environ.copy()
+        if config_content is not None:
+            child_environment["OPENCODE_CONFIG_CONTENT"] = config_content
         proc = subprocess.Popen(
             cmd,
             cwd=workspace,
@@ -163,6 +197,7 @@ def run_opencode(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
+            env=child_environment,
         )
     except FileNotFoundError as exc:
         raise OpenCodeError(f"opencode binary not found: {cmd[0]}") from exc

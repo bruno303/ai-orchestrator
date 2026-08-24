@@ -5,25 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import hashlib
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from orchestrator.domain import Context, PublishedTriage, TriageOutcome, TriageTarget
 from orchestrator.infra.github import client as github
-
-
-def _repository_ready_label(
-    config_module: Any,
-    repository: str,
-    options: dict[str, Any],
-) -> str | None:
-    repository_label = getattr(config_module, "repository_label", None)
-    if callable(repository_label):
-        configured = repository_label(repository)
-        if configured:
-            return str(configured)
-    configured = options.get("ready_label")
-    return str(configured) if configured else None
-
 
 @dataclass
 class GitHubTriageInputSource:
@@ -32,24 +17,40 @@ class GitHubTriageInputSource:
     options: dict[str, Any] = field(default_factory=dict)
     provider_type: str = "github_polling"
 
+    @property
+    def select_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("select_labels", ())
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
+    @property
+    def suppress_labels(self) -> tuple[str, ...]:
+        configured = self.options.get(
+            "suppress_labels", ("ai-agent", "ai-triage", "ai-developed")
+        )
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
+
     def poll(self) -> list[TriageTarget]:
         if self.config_module is None:
             raise RuntimeError("GitHubTriageInputSource requires an allowlist configuration")
         targets: list[TriageTarget] = []
         for repository in self.config_module.allowed_repositories():
-            excluded = {
-                self.options.get("triage_label", "ai-triage"),
-                self.options.get("developed_label", "ai-developed"),
-            }
-            ready_label = _repository_ready_label(self.config_module, repository, self.options)
-            excluded.add(ready_label or str(self.options.get("ready_label", "ai-agent")))
             try:
-                issues = self.github_client.list_open_issues(repository)
+                query = {}
+                if len(self.select_labels) == 1:
+                    query["label"] = self.select_labels[0]
+                issues = self.github_client.list_open_issues(repository, **query)
             except self.github_client.GitHubError as exc:
                 print(f"[triage] {repository}: {exc}", flush=True)
                 continue
             for issue in issues:
-                if excluded.intersection(issue.labels):
+                labels = set(issue.labels)
+                if not set(self.select_labels).issubset(labels):
+                    continue
+                if set(self.suppress_labels).intersection(labels):
                     continue
                 targets.append(TriageTarget(
                     id=f"triage:{repository}#{issue.number}",
@@ -88,23 +89,41 @@ class GitHubTriageDestination:
         self,
         options: dict[str, Any] | None = None,
         github_client: Any = github,
-        config_module: Any = None,
     ) -> None:
         self.options = dict(options or {})
         self.github_client = github_client
-        self.config_module = config_module
         self.provider_type = "github"
+
+    def _output(self, name: str, default: Mapping[str, tuple[str, ...]]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        configured = self.options.get(name, default)
+        if not isinstance(configured, Mapping):
+            raise ValueError(f"GitHub triage {name} must be a mapping with add/remove labels")
+        add = configured.get("add", default["add"])
+        remove = configured.get("remove", default["remove"])
+        if isinstance(add, str):
+            add = (add,)
+        if isinstance(remove, str):
+            remove = (remove,)
+        return tuple(str(label) for label in add), tuple(str(label) for label in remove)
+
+    def _apply_output(self, repository: str, number: int, name: str, default: Mapping[str, tuple[str, ...]]) -> None:
+        add, remove = self._output(name, default)
+        for label in add:
+            self.github_client.add_issue_label(repository, number, label)
+        for label in remove:
+            self.github_client.remove_issue_label(repository, number, label)
 
     def publish(self, target: TriageTarget, outcome: TriageOutcome) -> PublishedTriage:
         number = target.context.namespace("github").get("issue_number")
         if not isinstance(number, int) or isinstance(number, bool):
             raise ValueError("GitHub triage context is missing issue number")
-        ready_label = _repository_ready_label(self.config_module, target.repository, self.options)
-        triage_label = str(self.options.get("triage_label", "ai-triage"))
         if outcome.success and outcome.ready:
-            if ready_label:
-                self.github_client.add_issue_label(target.repository, number, ready_label)
-            self.github_client.remove_issue_label(target.repository, number, triage_label)
+            self._apply_output(
+                target.repository,
+                number,
+                "ready_output",
+                {"add": ("ai-agent",), "remove": ("ai-triage",)},
+            )
         elif outcome.success:
             marker = _marker(target, outcome)
             comments = getattr(self.github_client, "list_issue_comments", None)
@@ -113,7 +132,12 @@ class GitHubTriageDestination:
                 already_published = any(marker in comment.body for comment in comments(target.repository, number))
             if not already_published:
                 self.github_client.add_issue_comment(target.repository, number, _comment(outcome, marker))
-            self.github_client.add_issue_label(target.repository, number, triage_label)
+            self._apply_output(
+                target.repository,
+                number,
+                "blocked_output",
+                {"add": ("ai-triage",), "remove": ()},
+            )
         return PublishedTriage(
             str(number), target.context.namespace("github").get("url"), self.provider_type,
             target.context.merged(outcome.context),

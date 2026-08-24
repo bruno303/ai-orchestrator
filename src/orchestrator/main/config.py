@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -101,6 +101,7 @@ class ExecutionPipelineConfig:
     executor: ProviderConfig
     workspace_manager: ProviderConfig
     destination: ProviderConfig
+    labels: "StageLabelConfig" = field(default_factory=lambda: _default_stage_labels("execution"))
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ class ReviewPipelineConfig:
     executor: ProviderConfig
     workspace_manager: ProviderConfig
     destination: ProviderConfig
+    labels: "StageLabelConfig" = field(default_factory=lambda: _default_stage_labels("review"))
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ class TriagePipelineConfig:
     input_source: ProviderConfig
     executor: ProviderConfig
     destination: ProviderConfig
+    labels: "TriageLabelConfig" = field(default_factory=lambda: _default_triage_labels())
 
 
 _PROVIDER_DEFAULTS = {
@@ -124,6 +127,147 @@ _PROVIDER_DEFAULTS = {
     "workspace_manager": "git",
     "destination": "github",
 }
+
+
+# These labels are workflow contracts, rather than repository-specific
+# settings.  Keep the names in one place so every provider receives the same
+# durable hand-off semantics.
+EXECUTION_READY_LABEL = "ai-agent"
+TRIAGE_BLOCKED_LABEL = "ai-triage"
+EXECUTION_COMPLETED_LABEL = "ai-developed"
+REVIEW_COMPLETED_LABEL = "ai-reviewed"
+
+# More descriptive aliases for callers that prefer the stage terminology.
+DEFAULT_EXECUTION_READY_LABEL = EXECUTION_READY_LABEL
+DEFAULT_TRIAGE_BLOCKED_LABEL = TRIAGE_BLOCKED_LABEL
+DEFAULT_EXECUTION_COMPLETED_LABEL = EXECUTION_COMPLETED_LABEL
+DEFAULT_REVIEW_COMPLETED_LABEL = REVIEW_COMPLETED_LABEL
+
+
+@dataclass(frozen=True)
+class LabelOutputConfig:
+    """Labels added and removed after a stage publishes its result."""
+
+    add: tuple[str, ...] = ()
+    remove: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class StageLabelConfig:
+    """Input and successful-output label contract for one stage."""
+
+    select: tuple[str, ...] = ()
+    suppress: tuple[str, ...] = ()
+    output: LabelOutputConfig = field(default_factory=LabelOutputConfig)
+
+
+@dataclass(frozen=True)
+class TriageOutputConfig:
+    ready: LabelOutputConfig = field(default_factory=LabelOutputConfig)
+    blocked: LabelOutputConfig = field(default_factory=LabelOutputConfig)
+
+
+@dataclass(frozen=True)
+class TriageLabelConfig:
+    select: tuple[str, ...] = ()
+    suppress: tuple[str, ...] = ()
+    output: TriageOutputConfig = field(default_factory=TriageOutputConfig)
+
+
+def _default_stage_labels(stage: str) -> StageLabelConfig:
+    if stage == "execution":
+        return StageLabelConfig(
+            select=(EXECUTION_READY_LABEL,),
+            suppress=(EXECUTION_COMPLETED_LABEL,),
+            output=LabelOutputConfig(add=(EXECUTION_COMPLETED_LABEL,)),
+        )
+    if stage == "review":
+        return StageLabelConfig(
+            suppress=(REVIEW_COMPLETED_LABEL,),
+            output=LabelOutputConfig(add=(REVIEW_COMPLETED_LABEL,)),
+        )
+    raise ValueError(f"unknown stage label defaults: {stage}")
+
+
+def _default_triage_labels() -> TriageLabelConfig:
+    return TriageLabelConfig(
+        suppress=(
+            EXECUTION_READY_LABEL,
+            TRIAGE_BLOCKED_LABEL,
+            EXECUTION_COMPLETED_LABEL,
+        ),
+        output=TriageOutputConfig(
+            ready=LabelOutputConfig(
+                add=(EXECUTION_READY_LABEL,),
+                remove=(TRIAGE_BLOCKED_LABEL,),
+            ),
+            blocked=LabelOutputConfig(add=(TRIAGE_BLOCKED_LABEL,)),
+        ),
+    )
+
+
+def _labels(value: Any, *, path: str) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{path} must be a list of label names")
+    labels: list[str] = []
+    for label in value:
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(f"{path} must contain only non-empty label names")
+        labels.append(label.strip())
+    return tuple(dict.fromkeys(labels))
+
+
+def _label_output(value: Any, default: LabelOutputConfig, *, path: str) -> LabelOutputConfig:
+    if value is None:
+        return default
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be a mapping with add/remove label lists")
+    return LabelOutputConfig(
+        add=_labels(value.get("add", default.add), path=f"{path}.add"),
+        remove=_labels(value.get("remove", default.remove), path=f"{path}.remove"),
+    )
+
+
+def _stage_labels(pipeline: dict[str, Any], stage: str) -> StageLabelConfig:
+    default = _default_stage_labels(stage)
+    raw = pipeline.get("labels") or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"pipeline.{stage}.labels must be a mapping")
+    return StageLabelConfig(
+        select=_labels(raw.get("select", default.select), path=f"pipeline.{stage}.labels.select"),
+        suppress=_labels(raw.get("suppress", default.suppress), path=f"pipeline.{stage}.labels.suppress"),
+        output=_label_output(
+            raw.get("output"), default.output, path=f"pipeline.{stage}.labels.output"
+        ),
+    )
+
+
+def _triage_labels(pipeline: dict[str, Any]) -> TriageLabelConfig:
+    default = _default_triage_labels()
+    raw = pipeline.get("labels") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("pipeline.triage.labels must be a mapping")
+    output = raw.get("output") or {}
+    if not isinstance(output, dict):
+        raise ValueError("pipeline.triage.labels.output must be a mapping")
+    return TriageLabelConfig(
+        select=_labels(raw.get("select", default.select), path="pipeline.triage.labels.select"),
+        suppress=_labels(raw.get("suppress", default.suppress), path="pipeline.triage.labels.suppress"),
+        output=TriageOutputConfig(
+            ready=_label_output(
+                output.get("ready"), default.output.ready,
+                path="pipeline.triage.labels.output.ready",
+            ),
+            blocked=_label_output(
+                output.get("blocked"), default.output.blocked,
+                path="pipeline.triage.labels.output.blocked",
+            ),
+        ),
+    )
 
 
 def _provider_config(
@@ -155,6 +299,7 @@ def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineCon
         ),
         workspace_manager=_provider_config("workspace_manager", pipeline, WORKSPACE_PROVIDERS),
         destination=_provider_config("destination", pipeline, DESTINATION_PROVIDERS),
+        labels=_stage_labels(pipeline, "execution"),
     )
 
 
@@ -169,6 +314,7 @@ def _review_pipeline_config(pipeline: dict[str, Any]) -> ReviewPipelineConfig:
         ),
         workspace_manager=_provider_config("workspace_manager", pipeline, REVIEW_WORKSPACE_PROVIDERS),
         destination=_provider_config("destination", pipeline, REVIEW_DESTINATION_PROVIDERS),
+        labels=_stage_labels(pipeline, "review"),
     )
 
 
@@ -177,6 +323,7 @@ def _triage_pipeline_config(pipeline: dict[str, Any]) -> TriagePipelineConfig:
         input_source=_provider_config("input_source", pipeline, TRIAGE_INPUT_PROVIDERS),
         executor=_provider_config("executor", pipeline, TRIAGE_EXECUTOR_PROVIDERS, "ORCHESTRATOR_EXECUTOR_TRIAGE"),
         destination=_provider_config("destination", pipeline, TRIAGE_DESTINATION_PROVIDERS),
+        labels=_triage_labels(pipeline),
     )
 
 
@@ -254,17 +401,24 @@ def load_repository_config() -> dict[str, dict]:
     for entry in data.get("repositories", []):
         name = entry.get("name")
         if name:
-            result[name] = {k: v for k, v in entry.items() if k != "name"}
+            legacy_label = entry.get("label")
+            if legacy_label not in (None, EXECUTION_READY_LABEL):
+                raise ValueError(
+                    f"repository {name!r} has unsupported legacy label {legacy_label!r}; "
+                    f"remove it or set label: {EXECUTION_READY_LABEL!r}. "
+                    "Stage labels belong under pipeline.*.labels."
+                )
+            # ``label: ai-agent`` was the old repository filter.  Accept it
+            # while intentionally dropping it so it cannot override the
+            # execution stage contract.
+            result[name] = {
+                k: v for k, v in entry.items() if k not in {"name", "label"}
+            }
     return result
 
 
 def is_repository_allowed(repository: str) -> bool:
     return repository in load_repository_config()
-
-
-def repository_label(repository: str) -> str | None:
-    """Label filter for the repo (issues must carry it to be picked up by poll)."""
-    return load_repository_config().get(repository, {}).get("label")
 
 
 def repository_command(repository: str) -> str:

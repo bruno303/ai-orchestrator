@@ -206,10 +206,18 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
     assert isinstance(runtime.executor, OpenCodeExecutor)
     assert isinstance(runtime.workspace_manager, GitWorkspaceManager)
     assert isinstance(runtime.destination, GitHubDestination)
-    assert runtime.input_source.options == {"interval": 30}
+    assert runtime.input_source.options == {
+        "interval": 30,
+        "select_labels": ["ai-agent"],
+        "suppress_labels": ["ai-developed"],
+    }
     assert runtime.executor.options == {"timeout": 10}
     assert runtime.workspace_manager.options == {"root": "/tmp/workspaces"}
-    assert runtime.destination.options == {"draft": True}
+    assert runtime.destination.options == {
+        "draft": True,
+        "output_labels": ["ai-developed"],
+        "remove_output_labels": [],
+    }
 
 
 def test_compose_runtime_builds_codex_executor(allowlist):
@@ -288,7 +296,7 @@ def test_composed_github_source_records_configured_provider_name(allowlist, tmp_
         def list_open_issues(repository, label=None, assignee=None):
             from orchestrator.infra.github.client import Issue
 
-            return [Issue(7, "Fix bug", "details", "https://example.test/7")]
+            return [Issue(7, "Fix bug", "details", "https://example.test/7", ["ai-agent"])]
 
         @staticmethod
         def assign_issue_to_authenticated_user(repository, number):

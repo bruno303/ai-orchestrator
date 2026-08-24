@@ -72,12 +72,22 @@ class GitHubPollingInputSource:
     feedback: Any = None
 
     @property
-    def developed_label(self) -> str:
-        return str(self.options.get("developed_label", "ai-developed"))
+    def select_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("select_labels")
+        if configured is None:
+            return ("ai-agent",)
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
 
     @property
-    def triage_label(self) -> str:
-        return str(self.options.get("triage_label", "ai-triage"))
+    def suppress_labels(self) -> tuple[str, ...]:
+        configured = self.options.get("suppress_labels")
+        if configured is None:
+            return ("ai-developed",)
+        if isinstance(configured, str):
+            return (configured,)
+        return tuple(str(label) for label in configured)
 
     @property
     def bot_login(self) -> str:
@@ -126,16 +136,20 @@ class GitHubPollingInputSource:
                         )
                     )
 
-            label = self.config_module.repository_label(repository)
             try:
                 issues = self.github_client.list_open_issues(
-                    repository, label=label, assignee="none",
+                    repository,
+                    label=self.select_labels[0] if len(self.select_labels) == 1 else None,
+                    assignee="none",
                 )
             except self.github_client.GitHubError as exc:
                 print(f"[poll] {repository}: unassigned issues: {exc}", flush=True)
                 continue
             for issue in issues:
-                if self.developed_label in issue.labels or self.triage_label in issue.labels:
+                labels = set(issue.labels)
+                if not set(self.select_labels).issubset(labels):
+                    continue
+                if set(self.suppress_labels).intersection(labels):
                     continue
                 task_id = f"{repository}#{issue.number}"
                 context = Context({

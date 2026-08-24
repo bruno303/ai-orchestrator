@@ -51,9 +51,10 @@ class Client:
     def __init__(self, reactions=(), issues=None):
         self.reactions = reactions
         self.issues = issues or [
-            SimpleNamespace(number=1, title="eligible", body="", labels=[]),
+            SimpleNamespace(number=1, title="eligible", body="", labels=["ai-agent"]),
             SimpleNamespace(number=3, title="triage", body="", labels=["ai-triage"]),
             SimpleNamespace(number=2, title="done", body="", labels=["ai-developed"]),
+            SimpleNamespace(number=4, title="unlabelled", body="", labels=[]),
         ]
         self.issue_queries = []
         self.assignments = []
@@ -72,8 +73,8 @@ class Client:
     def find_open_pr(self, repository, branch): return None
 
 
-def config_module(label=None):
-    return SimpleNamespace(allowed_repositories=lambda: ["owner/repo"], repository_label=lambda repo: label,
+def config_module():
+    return SimpleNamespace(allowed_repositories=lambda: ["owner/repo"],
                            repository_command=lambda repo: "/ai-agent")
 
 
@@ -82,9 +83,9 @@ def test_developed_issue_is_not_returned_as_new_work():
     assert [item.work_item.id for item in source.poll() if item.metadata["kind"] == "issue"] == ["owner/repo#1"]
 
 
-def test_polling_uses_unassigned_filter_with_repository_label():
+def test_polling_uses_unassigned_filter_with_stage_selection_label():
     client = Client()
-    source = GitHubPollingInputSource(client, config_module=config_module("ai-agent"))
+    source = GitHubPollingInputSource(client, config_module=config_module())
 
     source.poll()
 
@@ -102,6 +103,15 @@ def test_polling_does_not_assign_during_discovery():
 
     assert client.assignments == []
     assert [item.work_item.id for item in events if item.metadata["kind"] == "issue"] == ["owner/repo#1"]
+
+
+def test_comment_command_bypasses_stage_label_filter():
+    client = Client(issues=[SimpleNamespace(number=4, title="unlabelled", body="", labels=[])])
+    source = GitHubPollingInputSource(client, config_module=config_module())
+
+    comments = [event for event in source.poll() if event.metadata["kind"] == "comment"]
+
+    assert [event.work_item.id for event in comments] == ["owner/repo#4"]
 
 
 def test_github_feedback_assigns_new_issue_when_execution_starts():

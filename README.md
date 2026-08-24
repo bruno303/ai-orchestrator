@@ -44,11 +44,14 @@ orchestrator (enforced by the CLI, the executor, and the graph itself):
 ```yaml
 repositories:
   - name: company/backend
-
-  # Optional: poll only picks up issues carrying this label
   - name: company/frontend
-    label: ai-agent
 ```
+
+Workflow labels are configured per pipeline stage, not per repository. The
+default hand-off contract is `ai-agent` for execution readiness, `ai-triage`
+for blocked triage, `ai-developed` after PR publication, and `ai-reviewed`
+after review publication. A legacy repository entry with `label: ai-agent` is
+accepted as a no-op; other repository label values are rejected.
 
 Configure agent models independently for issue execution, pull-request review,
 and issue triage. Omitting a section keeps the selected provider's default model:
@@ -170,9 +173,9 @@ otherwise inherits the configured providers. Run it continuously with
 `make review` or once with `orchestrator review --once`. `orchestrator execute`
 also runs one review pass on every poll iteration.
 
-The GitHub input source skips pull requests carrying the processed label
-(`ai-reviewed` by default). The label is added only after the review comment
-has been published, so a failed review or publication is retried on the next
+The GitHub input source skips pull requests carrying the stage's suppressed
+labels (`ai-reviewed` by default). The completion label is added only after
+the review comment has been published, so a failed review or publication is retried on the next
 poll. Remove that label to request a fresh review. Reviews publish one
 standard comment containing the verdict, summary, findings, and checks; valid
 findings on changed diff lines may also be published as inline comments.
@@ -181,14 +184,11 @@ support arbitrary unchanged-file locations.
 
 ## Issue triage
 
-The triage workflow examines open issues in configured repositories that do not
-have the repository's configured execution label, `ai-triage`, or
-`ai-developed`. It asks the configured agent for JSON containing
+The triage workflow examines all open issues in configured repositories that do
+not have `ai-agent`, `ai-triage`, or `ai-developed`. It asks the configured agent for JSON containing
 `enough_context`, a `confidence` (`low`, `medium`, or `high`), a summary, and any
-missing context. Only `enough_context: true` with `confidence: high` adds the
-repository's configured execution label. If no execution label is configured,
-no ready label is added; the issue remains eligible for execution unless it has
-`ai-triage`.
+missing context. Only `enough_context: true` with `confidence: high` adds
+`ai-agent` and removes `ai-triage`.
 
 Other valid assessments receive a comment with the conclusion and missing
 context, followed by `ai-triage`. When the author adds the missing details,
@@ -281,12 +281,14 @@ reuse, inline review validation, and processed labels. None of that behavior is
 owned by the generic runtime.
 
 The default pipeline is GitHub input polling, OpenCode, Git workspaces, and the
-GitHub destination. Set an executor to `type: codex` or `type: claude` to use
-that CLI provider instead.
+GitHub destination. Triage OpenCode runs receive a fixed read-only permission
+configuration even though the wrapper uses `--auto`; shell, edits, subagents,
+external directories, and network tools remain denied. Set an executor to
+`type: codex` or `type: claude` to use that CLI provider instead.
 New seeds and graph updates use only the `input`, `processing`,
 `workspace`, and `output` state namespaces. GitHub supplies durable execution
-state: polling selects open, unassigned issues (while preserving the
-configured repository label filter), assigns the authenticated GitHub user
+state: polling selects open, unassigned issues matching the execution stage
+contract, assigns the authenticated GitHub user
 before execution, and successful publication adds `ai-developed` to the source
 issue. Assignment failures are logged and skipped so polling can continue;
 issues assigned before an interruption are no longer selected as new work.
@@ -328,7 +330,7 @@ Context namespace. Do not put service-specific values in generic fields.
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,
   created from a shared base clone in `~/agent-repos/`.
 - **Assignment**: polling selects only unassigned issues matching the
-  repository's configured label and assigns the authenticated GitHub user
+  execution stage's labels and assigns the authenticated GitHub user
   before starting work. A failed assignment is logged and the issue is skipped
   for that poll.
 - **Plan**: the selected provider analyzes the issue and writes the plan
