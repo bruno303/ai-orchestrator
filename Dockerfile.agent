@@ -1,0 +1,27 @@
+# Build the image used by the mandatory agent sandbox.
+# This image contains no credentials. Pass provider credentials at runtime via
+# sandbox.environment_allowlist, not through Docker build arguments or ENV.
+FROM python:3.11-slim-bookworm
+
+ARG INSTALL_OPENCODE=1
+ARG INSTALL_CODEX=0
+ARG INSTALL_CLAUDE=0
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y build-essential ca-certificates curl git nodejs npm \
+    && python -m pip install --no-cache-dir uv \
+    && if [ "$INSTALL_OPENCODE" = "1" ]; then npm install --global opencode-ai; fi \
+    && if [ "$INSTALL_CODEX" = "1" ]; then npm install --global @openai/codex; fi \
+    && if [ "$INSTALL_CLAUDE" = "1" ]; then npm install --global @anthropic-ai/claude-code; fi \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
+
+WORKDIR /workspace
+
+# Runtime maps the invoking host uid/gid, so keep CLI state on the writable
+# workspace mount rather than relying on an image user's home directory.
+ENV HOME=/workspace/.home \
+    XDG_CONFIG_HOME=/workspace/.config \
+    XDG_CACHE_HOME=/workspace/.cache \
+    XDG_DATA_HOME=/workspace/.local/share
+
+# The orchestrator supplies the command and matching host uid/gid at runtime.

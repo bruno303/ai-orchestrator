@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from orchestrator.application.ports import (
     Destination,
@@ -15,6 +16,7 @@ from orchestrator.application.ports import (
     WorkspaceRequest,
     WorkspaceResult,
     ReviewRequest,
+    TriageRequest,
     ReviewInputSource,
     ReviewExecutor,
     ReviewDestination,
@@ -37,9 +39,10 @@ from orchestrator.infra.github.destination import GitHubDestination
 from orchestrator.infra.github.client import GitHubClient
 from orchestrator.infra.github.input import GitHubPollingInputSource
 from orchestrator.infra.git.workspace import GitWorkspaceManager
-from orchestrator.infra.opencode.executor import OpenCodeExecutor
-from orchestrator.infra.codex.executor import CodexExecutor, CodexReviewExecutor
-from orchestrator.infra.claude.executor import ClaudeExecutor, ClaudeReviewExecutor
+from orchestrator.infra.opencode.executor import OpenCodeResult, OpenCodeExecutor, OpenCodeReviewExecutor, OpenCodeTriageExecutor
+from orchestrator.infra.codex.executor import CodexResult, CodexExecutor, CodexReviewExecutor, CodexTriageExecutor
+from orchestrator.infra.claude.executor import ClaudeResult, ClaudeExecutor, ClaudeReviewExecutor, ClaudeTriageExecutor
+from orchestrator.infra.sandbox.runner import SandboxResult
 
 
 def test_provider_models_are_json_serializable():
@@ -120,6 +123,69 @@ def test_review_registries_return_protocol_implementations():
     assert isinstance(REVIEW_EXECUTOR_PROVIDERS.create("codex"), ReviewExecutor)
     assert isinstance(REVIEW_EXECUTOR_PROVIDERS.create("claude"), ReviewExecutor)
     assert isinstance(REVIEW_DESTINATION_PROVIDERS.create("github"), ReviewDestination)
+
+
+@pytest.mark.parametrize(
+    ("provider", "executor_type", "result_type"),
+    [
+        ("opencode", OpenCodeExecutor, OpenCodeResult),
+        ("codex", CodexExecutor, CodexResult),
+        ("claude", ClaudeExecutor, ClaudeResult),
+    ],
+)
+@pytest.mark.parametrize("workflow", ["execution", "review", "triage"])
+def test_provider_workflows_use_injected_sandbox_runner(
+    provider, executor_type, result_type, workflow, tmp_path
+):
+    calls = []
+
+    class Runner:
+        def run(self, command, workspace, **options):
+            calls.append((list(command), workspace, options))
+            if workflow == "review":
+                output = '{"verdict":"comment","summary":"ok","findings":[],"checks":[]}'
+            elif workflow == "triage":
+                output = '{"enough_context":true,"confidence":"high","summary":"ok","missing_context":[]}'
+            else:
+                output = "completed"
+            return SandboxResult(0, output, "", 0.1)
+
+    review_types = {
+        "opencode": OpenCodeReviewExecutor,
+        "codex": CodexReviewExecutor,
+        "claude": ClaudeReviewExecutor,
+    }
+    triage_types = {
+        "opencode": OpenCodeTriageExecutor,
+        "codex": CodexTriageExecutor,
+        "claude": ClaudeTriageExecutor,
+    }
+    executor_class = {
+        "execution": executor_type,
+        "review": review_types[provider],
+        "triage": triage_types[provider],
+    }[workflow]
+    executor = executor_class({"sandbox_runner": Runner()})
+    context = Context()
+    if workflow == "execution":
+        result = executor.execute(
+            ExecutionRequest("task", str(tmp_path), "implementing GitHub issue #1", "build", context=context)
+        )
+    elif workflow == "review":
+        result = executor.execute(ReviewRequest("review", "repo", str(tmp_path), "review ONLY valid JSON", context))
+    else:
+        result = executor.execute(TriageRequest("triage", "repo", str(tmp_path), "triage", context=context, model="m", variant="high"))
+
+    assert result.success if workflow != "triage" else result.ready
+    command, workspace, options = calls[0]
+    assert str(workspace) == str(tmp_path)
+    assert "implementing GitHub issue #1" in command or "review ONLY valid JSON" in command or "triage" in command
+    assert str(tmp_path) not in command
+    if provider == "opencode" and workflow == "triage":
+        assert options["environment_allowlist_extra"] == ("OPENCODE_CONFIG_CONTENT",)
+    if provider == "claude" and workflow == "triage":
+        assert options["environment"] == {"CLAUDE_CODE_EFFORT_LEVEL": "high"}
+        assert options["environment_allowlist_extra"] == ("CLAUDE_CODE_EFFORT_LEVEL",)
 
 
 def test_unknown_provider_fails_clearly():
