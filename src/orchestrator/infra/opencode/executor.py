@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 import json
-import select
-import subprocess
-import time
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,6 +12,7 @@ from orchestrator.domain import ReviewOutcome
 from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, TriageRequest
 from orchestrator.infra.review.parser import extract_review_json, parse_review_output
 from orchestrator.infra.triage.parser import parse_triage_output
+from orchestrator.infra.sandbox import SandboxError, SandboxRunner
 
 
 _extract_review_json = extract_review_json
@@ -61,16 +58,6 @@ class OpenCodeResult:
     duration_seconds: float
 
 
-def _find_opencode() -> str:
-    found = shutil.which("opencode")
-    if found:
-        return found
-    for candidate in (Path.home() / ".opencode" / "bin" / "opencode", Path.home() / ".local" / "bin" / "opencode"):
-        if candidate.is_file():
-            return str(candidate)
-    return "opencode"
-
-
 class OpenCodeExecutor:
     """Executor implementation backed by the existing OpenCode wrapper."""
 
@@ -78,6 +65,7 @@ class OpenCodeExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         options = {**self.options, **dict(request.context.namespace("opencode"))}
@@ -90,6 +78,7 @@ class OpenCodeExecutor:
                 model=request.model,
                 variant=request.variant,
                 timeout=options.get("timeout"),
+                runner=self.sandbox_runner or options.get("sandbox_runner"),
             )
         except OpenCodeError as exc:
             raise ExecutorError(str(exc)) from exc
@@ -110,6 +99,7 @@ class OpenCodeReviewExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: ReviewRequest) -> ReviewOutcome:
         options = {**self.options, **dict(request.context.namespace("opencode"))}
@@ -120,6 +110,7 @@ class OpenCodeReviewExecutor:
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
             timeout=options.get("timeout"),
+            runner=self.sandbox_runner or options.get("sandbox_runner"),
         )
         if result.exit_code != 0:
             return ReviewOutcome(False, summary=result.stdout or result.stderr,
@@ -134,6 +125,7 @@ class OpenCodeTriageExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: TriageRequest):
         options = {**self.options, **dict(request.context.namespace("opencode"))}
@@ -145,6 +137,7 @@ class OpenCodeTriageExecutor:
             variant=options.get("variant") or (model_config.variant if model_config else request.variant),
             timeout=options.get("timeout"),
             config_content=OPENCODE_TRIAGE_CONFIG_CONTENT,
+            runner=self.sandbox_runner or options.get("sandbox_runner"),
         )
         if result.exit_code != 0:
             return parse_triage_output("", request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
@@ -161,6 +154,7 @@ def run_opencode(
     model: str | None = None,
     variant: str | None = None,
     config_content: str | None = None,
+    runner: SandboxRunner | None = None,
 ) -> OpenCodeResult:
     """Run `opencode run [--agent <agent>] --auto` in the given workspace.
 
@@ -171,11 +165,11 @@ def run_opencode(
     if not workspace.exists():
         raise OpenCodeError(f"workspace does not exist: {workspace}")
     cmd = [
-        os.environ.get("ORCHESTRATOR_OPENCODE_BIN") or _find_opencode(),
+        "opencode",
         "run",
         "--auto",
         "--dir",
-        str(workspace),
+        "/workspace",
     ]
     if agent is not None:
         cmd[2:2] = ["--agent", agent]
@@ -185,28 +179,11 @@ def run_opencode(
         cmd += ["--variant", variant]
     cmd.append(prompt)
     timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
-    start = time.monotonic()
+    if config_content is not None:
+        environment = {"OPENCODE_CONFIG_CONTENT": config_content}
+    else:
+        environment = None
     try:
-        child_environment = os.environ.copy()
-        if config_content is not None:
-            child_environment["OPENCODE_CONFIG_CONTENT"] = config_content
-        proc = subprocess.Popen(
-            cmd,
-            cwd=workspace,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=child_environment,
-        )
-    except FileNotFoundError as exc:
-        raise OpenCodeError(f"opencode binary not found: {cmd[0]}") from exc
-
-    lines: list[str] = []
-    fh = None
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = log_file.open("a")
         header = "[orchestrator] opencode run"
         if agent is not None:
             header += f" --agent {agent}"
@@ -214,44 +191,15 @@ def run_opencode(
             header += f" --model {model}"
         if variant is not None:
             header += f" --variant {variant}"
-        fh.write(header + "\n")
-        fh.flush()
-    deadline = time.monotonic() + timeout
-    try:
-        assert proc.stdout is not None
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                proc.kill()
-                proc.wait()
-                raise OpenCodeError(f"opencode run timed out after {timeout}s")
-            readable, _, _ = select.select([proc.stdout], [], [], remaining)
-            if not readable:
-                proc.kill()
-                proc.wait()
-                raise OpenCodeError(f"opencode run timed out after {timeout}s")
-            line = proc.stdout.readline()
-            if not line:
-                break
-            lines.append(line)
-            if fh is not None:
-                fh.write(line)
-                fh.flush()
-        proc.wait()
-    except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
-        raise OpenCodeError(f"opencode run timed out after {timeout}s") from exc
-    except KeyboardInterrupt:
-        proc.kill()
-        proc.wait()
-        raise
-    finally:
-        if fh is not None:
-            fh.close()
+        result = (runner or SandboxRunner()).run(
+            cmd, workspace, timeout=timeout, log_file=log_file,
+            environment=environment,
+            environment_allowlist_extra=("OPENCODE_CONFIG_CONTENT",) if config_content else (),
+            log_header=header,
+        )
+    except SandboxError as exc:
+        raise OpenCodeError(str(exc)) from exc
     return OpenCodeResult(
-        exit_code=proc.returncode,
-        stdout="".join(lines),
-        stderr="",
-        duration_seconds=time.monotonic() - start,
+        exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr,
+        duration_seconds=result.duration_seconds,
     )

@@ -9,7 +9,8 @@ GitHub Issue → triage (`make triage`) → workspace (git worktree) → agent p
 
 ## Requirements
 
-- `uv`, `git`, `gh`, and the CLI for the selected agent provider (`opencode` >= 1.18, `codex`, or `claude`)
+- `uv`, `git`, `gh`, and Docker or Podman
+- The selected sandbox image, with its provider CLI installed (`opencode` >= 1.18, `codex`, or `claude`)
 
 ## Setup
 
@@ -74,6 +75,57 @@ Set `ORCHESTRATOR_MODEL_EXECUTION_NAME` / `ORCHESTRATOR_MODEL_EXECUTION_VARIANT`
 `ORCHESTRATOR_MODEL_TRIAGE_NAME` / `ORCHESTRATOR_MODEL_TRIAGE_VARIANT` to
 override the corresponding `config.yaml` values through the environment.
 
+### Agent sandbox
+
+Agent commands always run through the configured container sandbox. The default
+is Docker with image `orchestrator-agent:latest`, bridge networking, and one
+read-write bind mount: the task workspace at `/workspace`. Setting
+`sandbox.enabled: false` fails closed; it does not permit execution on the host.
+
+Install Docker Engine or Podman and make the selected runtime available on
+`PATH`. Build the included image before the first run. The provider CLIs are
+installed in this image; provider binaries installed on the host are not used
+for sandbox execution:
+
+```bash
+docker build -f Dockerfile.agent -t orchestrator-agent:latest .
+```
+
+`Dockerfile.agent` includes Python 3.11, build tools, git, uv, Node.js, and npm.
+It installs OpenCode by default. Codex and Claude Code are optional build hooks:
+
+```bash
+docker build -f Dockerfile.agent -t orchestrator-agent:latest . \
+  --build-arg INSTALL_CODEX=1 --build-arg INSTALL_CLAUDE=1
+```
+
+The corresponding npm packages are `opencode-ai`, `@openai/codex`, and
+`@anthropic-ai/claude-code`. Alternatively, build a compatible custom image
+with the selected CLI already on `PATH`, then set `sandbox.image` and, if
+needed, `sandbox.runtime: podman` in `config/config.yaml`.
+
+Network access is available by default so agents can reach their provider and
+fetch dependencies. The `sandbox.network` value is passed directly to Docker
+or Podman and can include unsafe modes such as `host`; choose an appropriate
+mode deliberately. Set `sandbox.network: none` for an offline run, noting that
+provider authentication and dependency downloads will then fail. No host
+environment variables are copied by default. Add only required variable names
+to `sandbox.environment_allowlist`; values remain supplied at runtime and must
+never be placed in the Dockerfile, image, `.env.example`, or committed config.
+
+On Linux, the Docker/Podman daemon and the workspace path must be accessible to
+the invoking user. On WSL2, use Docker Desktop's WSL integration or a working
+Linux Docker/Podman installation and keep the workspace in an accessible mount.
+On macOS, enable the workspace parent in Docker Desktop File Sharing; bind mount
+performance can be lower than Linux. Podman Docker-API compatibility is not
+assumed: select `runtime: podman` explicitly and test the image locally.
+
+The sandbox is not a complete security boundary. The agent has the configured
+network, can modify every file in the mounted workspace, and runs with the host
+uid/gid where supported by the runtime. Do not mount the Docker socket or put
+secrets in the workspace. Runtime availability, image presence, and bind-mount
+permissions are checked before execution.
+
 Select the executor independently for issue execution, pull-request review,
 and triage with `ORCHESTRATOR_EXECUTOR_EXECUTION`,
 `ORCHESTRATOR_EXECUTOR_REVIEW`, and `ORCHESTRATOR_EXECUTOR_TRIAGE`.
@@ -111,10 +163,7 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
-| `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
-| `ORCHESTRATOR_CODEX_BIN` | `codex` |
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
-| `ORCHESTRATOR_CLAUDE_BIN` | `claude` |
 | `ORCHESTRATOR_CLAUDE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_EXECUTOR_EXECUTION` | `pipeline.execution.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_REVIEW` | `pipeline.review.executor.type` |

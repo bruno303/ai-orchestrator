@@ -26,6 +26,7 @@ from orchestrator.main.providers import (
     TRIAGE_INPUT_PROVIDERS,
     WORKSPACE_PROVIDERS,
 )
+from orchestrator.infra.sandbox import SandboxRunner
 
 
 def _create(registry, provider, *, overrides: dict | None = None):
@@ -36,6 +37,15 @@ def _create(registry, provider, *, overrides: dict | None = None):
         settings["model_config"] = config.load_review_model_config()
     if registry is TRIAGE_EXECUTOR_PROVIDERS:
         settings["model_config"] = config.load_triage_model_config()
+    if registry in (EXECUTOR_PROVIDERS, REVIEW_EXECUTOR_PROVIDERS, TRIAGE_EXECUTOR_PROVIDERS):
+        sandbox = config.load_sandbox_config()
+        settings["sandbox_runner"] = SandboxRunner(
+            enabled=sandbox.enabled,
+            runtime=sandbox.runtime,
+            image=sandbox.image,
+            network=sandbox.network,
+            environment_allowlist=sandbox.environment_allowlist,
+        )
     settings.update(overrides or {})
     return registry.create(
         provider.type,

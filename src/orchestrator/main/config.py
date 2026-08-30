@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -52,21 +51,6 @@ REPOS_DIR = _environment_path("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-rep
 WORKSPACES_DIR = _environment_path("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces")
 
 
-def _find_opencode() -> str:
-    """Resolve the opencode binary: PATH lookup first, then known install locations."""
-    found = shutil.which("opencode")
-    if found:
-        return found
-    for candidate in (
-        Path.home() / ".opencode" / "bin" / "opencode",
-        Path.home() / ".local" / "bin" / "opencode",
-    ):
-        if candidate.is_file():
-            return str(candidate)
-    return "opencode"
-
-
-OPENCODE_BIN = os.environ.get("ORCHESTRATOR_OPENCODE_BIN") or _find_opencode()
 OPENCODE_TIMEOUT_SECONDS = int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
 POLL_INTERVAL_SECONDS = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", str(5 * 60)))
 MAX_CONCURRENT_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_CONCURRENT", "1"))
@@ -80,6 +64,54 @@ class ModelConfig:
 
     name: str | None
     variant: str | None
+
+
+@dataclass(frozen=True)
+class SandboxConfig:
+    """Container settings used by agent executors."""
+
+    enabled: bool = True
+    runtime: str = "docker"
+    image: str = "orchestrator-agent:latest"
+    network: str = "bridge"
+    environment_allowlist: tuple[str, ...] = ()
+
+    @property
+    def environment(self) -> tuple[str, ...]:
+        return self.environment_allowlist
+
+
+def _sandbox_config(data: dict[str, Any]) -> SandboxConfig:
+    raw = data.get("sandbox") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("sandbox must be a mapping")
+    values = {"enabled": True, "runtime": "docker", "image": "orchestrator-agent:latest", "network": "bridge"}
+    values.update({key: raw[key] for key in values if key in raw})
+    allowlist = raw.get("environment_allowlist", raw.get("environment", ()))
+    if isinstance(allowlist, str):
+        allowlist = [allowlist]
+    if not isinstance(allowlist, (list, tuple)) or any(not isinstance(item, str) or not item.strip() for item in allowlist):
+        raise ValueError("sandbox.environment_allowlist must contain non-empty variable names")
+    for key in ("enabled",):
+        if not isinstance(values[key], bool):
+            raise ValueError(f"sandbox.{key} must be a boolean")
+    for key in ("runtime", "image", "network"):
+        if not isinstance(values[key], str) or not values[key].strip():
+            raise ValueError(f"sandbox.{key} must be a non-empty string")
+    return SandboxConfig(**values, environment_allowlist=tuple(dict.fromkeys(item.strip() for item in allowlist)))
+
+
+@lru_cache(maxsize=1)
+def load_sandbox_config() -> SandboxConfig:
+    """Load the mandatory container sandbox settings."""
+    if not CONFIG_FILE.exists():
+        data = {}
+    else:
+        with CONFIG_FILE.open() as fh:
+            data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ValueError("configuration must be a mapping")
+    return _sandbox_config(data)
 
 
 @dataclass(frozen=True)

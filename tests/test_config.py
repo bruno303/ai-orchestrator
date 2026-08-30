@@ -118,6 +118,26 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.triage.labels.output.blocked.add == ("ai-triage",)
 
 
+def test_sandbox_config_defaults(allowlist):
+    config.load_sandbox_config.cache_clear()
+    sandbox = config.load_sandbox_config()
+    assert sandbox.enabled is True
+    assert sandbox.runtime == "docker"
+    assert sandbox.image == "orchestrator-agent:latest"
+    assert sandbox.network == "bridge"
+    assert sandbox.environment_allowlist == ()
+
+
+def test_sandbox_config_parses_options(allowlist):
+    config.CONFIG_FILE.write_text(
+        "sandbox:\n  runtime: podman\n  image: custom:dev\n  network: none\n"
+        "  environment_allowlist: [OPENAI_API_KEY, HOME]\n"
+    )
+    config.load_sandbox_config.cache_clear()
+    sandbox = config.load_sandbox_config()
+    assert sandbox == config.SandboxConfig(True, "podman", "custom:dev", "none", ("OPENAI_API_KEY", "HOME"))
+
+
 def test_stage_label_contracts_are_translated_to_provider_options(allowlist):
     config.CONFIG_FILE.write_text(
         "pipeline:\n"
