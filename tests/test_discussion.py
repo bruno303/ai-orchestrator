@@ -122,7 +122,9 @@ def test_discussion_runtime_is_read_only_and_publishes_only_response(tmp_path):
     class Executor:
         def execute(self, request):
             captured["request"] = request
-            return DiscussionResult(True, "The abstraction still holds.", context=request.context)
+            return DiscussionResult(
+                True, "The abstraction still holds.", stderr="provider diagnostic", context=request.context
+            )
 
     class Destination:
         def publish(self, request):
@@ -138,6 +140,7 @@ def test_discussion_runtime_is_read_only_and_publishes_only_response(tmp_path):
     assert "Do not modify files" in captured["request"].prompt
     assert "/plan-implementation" in discussion_prompt(_work())
     assert captured["publication"].response == result.response
+    assert "provider diagnostic" not in captured["publication"].response
     assert captured["publication"].context.namespace("github")["conversation_number"] == 42
     assert captured["cleaned"] is True
 

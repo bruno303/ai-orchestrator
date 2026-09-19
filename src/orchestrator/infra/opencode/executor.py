@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import io
 import json
 import select
 import subprocess
@@ -27,6 +29,19 @@ from orchestrator.infra.triage.parser import parse_triage_output
 
 
 _extract_review_json = extract_review_json
+
+
+def _failure_diagnostic(stdout: str, stderr: str, fallback: str = "") -> str:
+    """Keep both provider streams available without treating failure output as a response."""
+    return "\n".join(stream for stream in (stdout, stderr) if stream) or fallback
+
+
+def _drain_pipe(pipe, decoder: io.IncrementalNewlineDecoder) -> tuple[str, bool]:
+    """Read bytes currently available without waiting for a line delimiter."""
+    chunk = os.read(pipe.fileno(), 65536)
+    if chunk:
+        return decoder.decode(chunk), False
+    return decoder.decode(b"", final=True), True
 
 
 class OpenCodeError(ExecutorError):
@@ -142,7 +157,8 @@ class OpenCodeDiscussionExecutor:
             raise ExecutorError(str(exc)) from exc
         return DiscussionResult(
             success=result.exit_code == 0,
-            response=result.stdout,
+            response=result.stdout if result.exit_code == 0 else "",
+            stderr=result.stderr if result.exit_code == 0 else _failure_diagnostic(result.stdout, result.stderr),
             duration_seconds=result.duration_seconds,
             context=request.context,
         )
@@ -167,7 +183,7 @@ class OpenCodeReviewExecutor:
             timeout=options.get("timeout"),
         )
         if result.exit_code != 0:
-            return ReviewOutcome(False, summary=result.stdout or result.stderr,
+            return ReviewOutcome(False, summary=_failure_diagnostic(result.stdout, result.stderr),
                                  context=request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
         return parse_review_output(result.stdout, request.context)
 
@@ -195,7 +211,7 @@ class OpenCodeTriageExecutor:
             context = request.context.merge_namespace("opencode", {"exit_code": result.exit_code})
             return TriageOutcome(
                 False,
-                summary=result.stdout or result.stderr or "OpenCode triage executor failed",
+                summary=_failure_diagnostic(result.stdout, result.stderr, "OpenCode triage executor failed"),
                 context=context,
             )
         return parse_triage_output(result.stdout, request.context)
@@ -247,7 +263,7 @@ def run_opencode(
             cmd,
             cwd=workspace,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=child_environment,
@@ -255,7 +271,7 @@ def run_opencode(
     except FileNotFoundError as exc:
         raise OpenCodeError(f"opencode binary not found: {cmd[0]}") from exc
 
-    lines: list[str] = []
+    streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
     fh = None
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -269,25 +285,40 @@ def run_opencode(
         fh.flush()
     deadline = time.monotonic() + timeout
     try:
-        assert proc.stdout is not None
+        assert proc.stdout is not None and proc.stderr is not None
+        pipes = {proc.stdout: "stdout", proc.stderr: "stderr"}
+        decoders = {
+            pipe: io.IncrementalNewlineDecoder(
+                codecs.getincrementaldecoder(pipe.encoding or "utf-8")(
+                    errors=pipe.errors or "strict"
+                ),
+                translate=True,
+            )
+            for pipe in pipes
+        }
+        active = list(pipes)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 proc.kill()
                 proc.wait()
                 raise OpenCodeError(f"opencode run timed out after {timeout}s")
-            readable, _, _ = select.select([proc.stdout], [], [], remaining)
+            readable, _, _ = select.select(active, [], [], remaining)
             if not readable:
                 proc.kill()
                 proc.wait()
                 raise OpenCodeError(f"opencode run timed out after {timeout}s")
-            line = proc.stdout.readline()
-            if not line:
+            for pipe in readable:
+                chunk, eof = _drain_pipe(pipe, decoders[pipe])
+                if chunk:
+                    streams[pipes[pipe]].append(chunk)
+                    if fh is not None:
+                        fh.write(chunk)
+                        fh.flush()
+                if eof:
+                    active.remove(pipe)
+            if not active:
                 break
-            lines.append(line)
-            if fh is not None:
-                fh.write(line)
-                fh.flush()
         proc.wait()
     except subprocess.TimeoutExpired as exc:
         proc.kill()
@@ -302,7 +333,7 @@ def run_opencode(
             fh.close()
     return OpenCodeResult(
         exit_code=proc.returncode,
-        stdout="".join(lines),
-        stderr="",
+        stdout="".join(streams["stdout"]),
+        stderr="".join(streams["stderr"]),
         duration_seconds=time.monotonic() - start,
     )

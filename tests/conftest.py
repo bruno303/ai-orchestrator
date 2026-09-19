@@ -109,7 +109,8 @@ if [[ -n "$MODEL_FILE" ]]; then
   echo "model=$MODEL_NAME variant=$VARIANT reference=$MODEL" >> "$MODEL_FILE"
 fi
 if [[ -n "$FAKE_OPCODE_SLEEP" ]]; then sleep "$FAKE_OPCODE_SLEEP"; fi
-if [[ -n "$FAKE_OPCODE_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
+if [[ -n "$FAKE_OPCODE_FAIL" ]]; then echo "simulated stdout failure"; echo "simulated stderr failure" >&2; exit 1; fi
+echo "diagnostic from stderr" >&2
 case "$PROMPT" in
   *"enough_context"*)
     echo '{"enough_context":true,"confidence":"high","summary":"ready","missing_context":[]}'
@@ -180,7 +181,8 @@ if [[ -n "$MODEL_FILE" ]]; then
   echo "model=$MODEL reasoning=$REASONING" >> "$MODEL_FILE"
 fi
 if [[ -n "$FAKE_CODEX_SLEEP" ]]; then sleep "$FAKE_CODEX_SLEEP"; fi
-if [[ -n "$FAKE_CODEX_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
+if [[ -n "$FAKE_CODEX_FAIL" ]]; then echo "simulated stdout failure"; echo "simulated stderr failure" >&2; exit 1; fi
+echo "diagnostic from stderr" >&2
 cd "$DIR"
 case "$PROMPT" in
   *"enough_context"*)
@@ -250,7 +252,8 @@ if [[ -n "$MODEL_FILE" ]]; then
   echo "model=$MODEL env_effort=${CLAUDE_CODE_EFFORT_LEVEL:-}" >> "$MODEL_FILE"
 fi
 if [[ -n "$FAKE_CLAUDE_SLEEP" ]]; then sleep "$FAKE_CLAUDE_SLEEP"; fi
-if [[ -n "$FAKE_CLAUDE_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
+if [[ -n "$FAKE_CLAUDE_FAIL" ]]; then echo "simulated stdout failure"; echo "simulated stderr failure" >&2; exit 1; fi
+echo "diagnostic from stderr" >&2
 case "$PROMPT" in
   *"enough_context"*)
     echo '{"enough_context":true,"confidence":"high","summary":"ready","missing_context":[]}'

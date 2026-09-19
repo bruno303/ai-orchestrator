@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import io
 import os
 import select
 import shutil
@@ -10,6 +12,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+def _drain_pipe(pipe, decoder: io.IncrementalNewlineDecoder) -> tuple[str, bool]:
+    """Read bytes currently available without waiting for a line delimiter."""
+    chunk = os.read(pipe.fileno(), 65536)
+    if chunk:
+        return decoder.decode(chunk), False
+    return decoder.decode(b"", final=True), True
 
 from orchestrator.application.ports import (
     DiscussionRequest,
@@ -23,6 +33,11 @@ from orchestrator.application.ports import (
 from orchestrator.domain import ReviewOutcome, TriageOutcome
 from orchestrator.infra.review.parser import parse_review_output
 from orchestrator.infra.triage.parser import parse_triage_output
+
+
+def _failure_diagnostic(stdout: str, stderr: str, fallback: str = "") -> str:
+    """Keep both provider streams available without treating failure output as a response."""
+    return "\n".join(stream for stream in (stdout, stderr) if stream) or fallback
 
 
 class ClaudeError(ExecutorError):
@@ -112,8 +127,8 @@ class ClaudeDiscussionExecutor:
             raise ExecutorError(str(exc)) from exc
         return DiscussionResult(
             success=result.exit_code == 0,
-            response=result.stdout,
-            stderr=result.stderr,
+            response=result.stdout if result.exit_code == 0 else "",
+            stderr=result.stderr if result.exit_code == 0 else _failure_diagnostic(result.stdout, result.stderr),
             duration_seconds=result.duration_seconds,
             context=request.context,
         )
@@ -144,7 +159,7 @@ class ClaudeReviewExecutor:
         if result.exit_code != 0:
             return ReviewOutcome(
                 False,
-                summary=result.stdout or result.stderr,
+                summary=_failure_diagnostic(result.stdout, result.stderr),
                 context=request.context.merge_namespace("claude", {"exit_code": result.exit_code}),
             )
         return parse_review_output(result.stdout, request.context)
@@ -171,7 +186,7 @@ class ClaudeTriageExecutor:
         )
         if result.exit_code != 0:
             context = request.context.merge_namespace("claude", {"exit_code": result.exit_code})
-            return TriageOutcome(False, summary=result.stdout or result.stderr or "Claude triage executor failed", context=context)
+            return TriageOutcome(False, summary=_failure_diagnostic(result.stdout, result.stderr, "Claude triage executor failed"), context=context)
         return parse_triage_output(result.stdout, request.context)
 
 
@@ -222,14 +237,14 @@ def run_claude(
             cwd=workspace,
             env=child_environment,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
     except FileNotFoundError as exc:
         raise ClaudeError(f"claude binary not found: {cmd[0]}") from exc
 
-    lines: list[str] = []
+    streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
     fh = None
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -248,25 +263,40 @@ def run_claude(
 
     deadline = time.monotonic() + timeout
     try:
-        assert proc.stdout is not None
+        assert proc.stdout is not None and proc.stderr is not None
+        pipes = {proc.stdout: "stdout", proc.stderr: "stderr"}
+        decoders = {
+            pipe: io.IncrementalNewlineDecoder(
+                codecs.getincrementaldecoder(pipe.encoding or "utf-8")(
+                    errors=pipe.errors or "strict"
+                ),
+                translate=True,
+            )
+            for pipe in pipes
+        }
+        active = list(pipes)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 proc.kill()
                 proc.wait()
                 raise ClaudeError(f"claude run timed out after {timeout}s")
-            readable, _, _ = select.select([proc.stdout], [], [], remaining)
+            readable, _, _ = select.select(active, [], [], remaining)
             if not readable:
                 proc.kill()
                 proc.wait()
                 raise ClaudeError(f"claude run timed out after {timeout}s")
-            line = proc.stdout.readline()
-            if not line:
+            for pipe in readable:
+                chunk, eof = _drain_pipe(pipe, decoders[pipe])
+                if chunk:
+                    streams[pipes[pipe]].append(chunk)
+                    if fh is not None:
+                        fh.write(chunk)
+                        fh.flush()
+                if eof:
+                    active.remove(pipe)
+            if not active:
                 break
-            lines.append(line)
-            if fh is not None:
-                fh.write(line)
-                fh.flush()
         proc.wait()
     except subprocess.TimeoutExpired as exc:
         proc.kill()
@@ -282,7 +312,7 @@ def run_claude(
 
     return ClaudeResult(
         exit_code=proc.returncode,
-        stdout="".join(lines),
-        stderr="",
+        stdout="".join(streams["stdout"]),
+        stderr="".join(streams["stderr"]),
         duration_seconds=time.monotonic() - start,
     )

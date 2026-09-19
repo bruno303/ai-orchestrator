@@ -5,20 +5,30 @@ from __future__ import annotations
 import pytest
 
 from orchestrator.infra.opencode import executor as opencode
-from orchestrator.application.ports import ExecutionRequest, ExecutionResult
+from orchestrator.application.ports import (
+    DiscussionRequest,
+    ExecutionRequest,
+    ExecutionResult,
+    ReviewRequest,
+    TriageRequest,
+)
+from orchestrator.domain import Context
 
 
 def test_run_opencode_success(tmp_path, clean_env):
     result = opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
     assert result.exit_code == 0
     assert "Plan written" in result.stdout
+    assert result.stderr == "diagnostic from stderr\n"
 
 
 def test_opencode_executor_adapts_run_result(tmp_path, clean_env):
     result = opencode.OpenCodeExecutor().execute(
         ExecutionRequest("task-1", str(tmp_path), "planning the implementation of issue", "plan")
     )
-    assert result == ExecutionResult(True, 0, stdout=result.stdout, duration_seconds=result.duration_seconds)
+    assert result == ExecutionResult(
+        True, 0, stdout=result.stdout, stderr=result.stderr, duration_seconds=result.duration_seconds
+    )
 
 
 def test_run_opencode_passes_flags(tmp_path, clean_env, monkeypatch):
@@ -42,7 +52,46 @@ def test_run_opencode_failure(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_OPCODE_FAIL", "1")
     result = opencode.run_opencode(tmp_path, "plan", "planning the implementation of issue")
     assert result.exit_code == 1
-    assert "simulated failure" in result.stdout  # stderr merged into stdout
+    assert "simulated stdout failure" in result.stdout
+    assert "simulated stderr failure" in result.stderr
+
+
+def test_opencode_discussion_failure_does_not_publish_stdout(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_OPCODE_FAIL", "1")
+
+    result = opencode.OpenCodeDiscussionExecutor().execute(
+        DiscussionRequest("task-1", "owner/repo", str(tmp_path), "answer the question")
+    )
+
+    assert not result.success
+    assert result.response == ""
+    assert "simulated stdout failure" not in result.response
+    assert "simulated stdout failure" in result.stderr
+    assert "simulated stderr failure" in result.stderr
+
+
+def test_opencode_review_failure_preserves_both_streams(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_OPCODE_FAIL", "1")
+
+    result = opencode.OpenCodeReviewExecutor().execute(
+        ReviewRequest("review:r#1", "owner/repo", str(tmp_path), "review", Context())
+    )
+
+    assert not result.success
+    assert "simulated stdout failure" in result.summary
+    assert "simulated stderr failure" in result.summary
+
+
+def test_opencode_triage_failure_preserves_both_streams(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_OPCODE_FAIL", "1")
+
+    result = opencode.OpenCodeTriageExecutor().execute(
+        TriageRequest("triage-1", "owner/repo", str(tmp_path), "triage", context=Context())
+    )
+
+    assert not result.success
+    assert "simulated stdout failure" in result.summary
+    assert "simulated stderr failure" in result.summary
 
 
 def test_run_opencode_timeout(tmp_path, monkeypatch):
@@ -79,6 +128,7 @@ def test_run_opencode_streams_to_log_file(tmp_path, clean_env, monkeypatch):
     assert log_file.exists()
     content = log_file.read_text()
     assert "Plan written" in content
+    assert "diagnostic from stderr" in content
     assert result_holder["result"].exit_code == 0
 
 

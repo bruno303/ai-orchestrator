@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from orchestrator.application.ports import ExecutionRequest, ReviewRequest
+from orchestrator.application.ports import DiscussionRequest, ExecutionRequest, ReviewRequest, TriageRequest
 from orchestrator.domain import Context
 from orchestrator.infra.claude import executor as claude
 from orchestrator.main import config
@@ -18,6 +18,7 @@ def test_run_claude_success(tmp_path, clean_env):
 
     assert result.exit_code == 0
     assert "Plan written" in result.stdout
+    assert result.stderr == "diagnostic from stderr\n"
 
 
 def test_run_claude_passes_workspace_model_and_permission_options_without_effort_flag(
@@ -72,7 +73,46 @@ def test_run_claude_failure(tmp_path, monkeypatch):
     result = claude.run_claude(tmp_path, "plan", "planning the implementation of issue")
 
     assert result.exit_code == 1
-    assert "simulated failure" in result.stdout
+    assert "simulated stdout failure" in result.stdout
+    assert "simulated stderr failure" in result.stderr
+
+
+def test_claude_discussion_failure_does_not_publish_stdout(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+
+    result = claude.ClaudeDiscussionExecutor().execute(
+        DiscussionRequest("task-1", "owner/repo", str(tmp_path), "answer the question")
+    )
+
+    assert not result.success
+    assert result.response == ""
+    assert "simulated stdout failure" not in result.response
+    assert "simulated stdout failure" in result.stderr
+    assert "simulated stderr failure" in result.stderr
+
+
+def test_claude_review_failure_preserves_both_streams(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+
+    result = claude.ClaudeReviewExecutor().execute(
+        ReviewRequest("review:r#1", "owner/repo", str(tmp_path), "review", Context())
+    )
+
+    assert not result.success
+    assert "simulated stdout failure" in result.summary
+    assert "simulated stderr failure" in result.summary
+
+
+def test_claude_triage_failure_preserves_both_streams(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_CLAUDE_FAIL", "1")
+
+    result = claude.ClaudeTriageExecutor().execute(
+        TriageRequest("triage-1", "owner/repo", str(tmp_path), "triage", context=Context())
+    )
+
+    assert not result.success
+    assert "simulated stdout failure" in result.summary
+    assert "simulated stderr failure" in result.summary
 
 
 def test_run_claude_timeout(tmp_path, monkeypatch):
@@ -106,6 +146,7 @@ def test_run_claude_streams_to_log_file(tmp_path, clean_env, monkeypatch):
 
     assert log_file.exists()
     assert "Plan written" in log_file.read_text()
+    assert "diagnostic from stderr" in log_file.read_text()
     assert result_holder["result"].exit_code == 0
 
 
