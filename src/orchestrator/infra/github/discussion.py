@@ -27,7 +27,7 @@ class GitHubDiscussionDestination:
 
         comment_id = values.get("comment_id")
         if isinstance(comment_id, int) and not isinstance(comment_id, bool):
-            marker = _publication_marker(comment_id)
+            marker = publication_marker(comment_id)
             comments = getattr(self.github_client, "list_issue_comments", None)
             if callable(comments) and any(
                 marker in comment.body for comment in comments(request.repository, number)
@@ -41,6 +41,6 @@ class GitHubDiscussionDestination:
         self.github_client.add_issue_comment(request.repository, number, body)
 
 
-def _publication_marker(comment_id: int) -> str:
+def publication_marker(comment_id: int) -> str:
     """Identify a response already published for one triggering comment."""
     return f"<!-- ai-agent-discussion:{comment_id} -->"

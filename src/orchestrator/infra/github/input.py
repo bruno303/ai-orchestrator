@@ -9,6 +9,7 @@ from typing import Any
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.github import auth as github_auth
 from orchestrator.infra.github import client as github
+from orchestrator.infra.github.discussion import publication_marker
 from orchestrator.domain import Context, WorkItem
 from orchestrator.application.ports import InputEvent
 
@@ -209,7 +210,11 @@ class GitHubPollingInputSource:
         eligible: list[tuple[Any, str, str]] = []
         for comment in comments:
             parsed = parse_comment_command(comment.body)
-            if parsed is not None and self._comment_is_eligible(repository, comment.id):
+            if (
+                parsed is not None
+                and self._comment_is_eligible(repository, comment.id)
+                and not self._discussion_response_published(parsed[0], comment.id, comments)
+            ):
                 intent, instruction = parsed
                 eligible.append((comment, intent, instruction))
         if not eligible:
@@ -277,6 +282,13 @@ class GitHubPollingInputSource:
                 )
             )
         return events
+
+    @staticmethod
+    def _discussion_response_published(intent: str, comment_id: int, comments: list[Any]) -> bool:
+        if intent != COMMENT_DISCUSS:
+            return False
+        marker = publication_marker(comment_id)
+        return any(marker in str(getattr(comment, "body", "")) for comment in comments)
 
     def _comment_is_eligible(self, repository: str, comment_id: int) -> bool:
         try:

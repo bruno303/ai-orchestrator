@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from orchestrator.application import PollingApplication
 from orchestrator.application.discussion import DiscussionRunRequest, DiscussionRuntime, discussion_prompt
 from orchestrator.application.execution.models import (
     IncrementalExecutionRequest,
     WorkContext,
 )
+from orchestrator.application.execution.errors import PublicationError
 from orchestrator.application.execution.service import ExecutionRuntime
 from orchestrator.application.ports import (
     DiscussionPublicationRequest,
@@ -18,7 +21,7 @@ from orchestrator.application.ports import (
 )
 from orchestrator.domain import Context, PublishedChange, WorkItem
 from orchestrator.infra.github.discussion import GitHubDiscussionDestination
-from orchestrator.infra.github.input import parse_comment_command
+from orchestrator.infra.github.input import GitHubPollingInputSource, parse_comment_command
 
 
 def _work(task_id: str = "owner/repo#7") -> WorkContext:
@@ -76,6 +79,7 @@ def test_polling_routes_comment_intents_to_dedicated_callbacks():
 
 def test_incremental_execution_skips_planning(tmp_path):
     requests = []
+    cleaned = []
 
     class Executor:
         def execute(self, request):
@@ -87,7 +91,7 @@ def test_incremental_execution_skips_planning(tmp_path):
             return WorkspaceResult(str(tmp_path), "ai/issue-7", request.context, "main")
 
         def cleanup(self, result):
-            pass
+            cleaned.append(result)
 
     class Destination:
         def publish(self, request):
@@ -108,6 +112,40 @@ def test_incremental_execution_skips_planning(tmp_path):
     assert "also validate the email before saving" in requests[0].prompt
     assert "Do not stop after writing a plan" in requests[0].prompt
     assert "/plan-implementation" not in requests[0].prompt
+    assert len(cleaned) == 1
+
+
+def test_incremental_execution_preserves_workspace_when_publication_fails(tmp_path):
+    cleaned = []
+
+    class Workspace:
+        def prepare(self, request):
+            return WorkspaceResult(str(tmp_path), "ai/issue-7", request.context, "main")
+
+        def cleanup(self, result):
+            cleaned.append(result)
+
+    class Executor:
+        def execute(self, request):
+            return ExecutionResult(True, 0, stdout="implemented", context=request.context)
+
+    class Destination:
+        def publish(self, request):
+            raise RuntimeError("push failed")
+
+    runtime = ExecutionRuntime(Executor(), Workspace(), Destination())
+
+    with pytest.raises(PublicationError, match="push failed"):
+        runtime.run_incremental(IncrementalExecutionRequest(
+            work=_work(),
+            instruction="also validate the email before saving",
+            branch="ai/issue-7",
+            base_branch="main",
+            workspace=str(tmp_path),
+            context=_work().item.context,
+        ))
+
+    assert cleaned == []
 
 
 def test_discussion_runtime_is_read_only_and_publishes_only_response(tmp_path):
@@ -193,3 +231,54 @@ def test_github_discussion_destination_does_not_duplicate_published_response():
     destination.publish(request)
 
     assert len(calls) == 1
+
+
+def test_discussion_comment_is_terminal_after_response_without_terminal_reaction():
+    class Client:
+        class GitHubError(Exception):
+            pass
+
+        def __init__(self):
+            self.comments = [SimpleNamespace(id=101, body="/ai-agent-discuss explain this")]
+            self.reactions = []
+
+        def list_issue_comments(self, repository, number):
+            return self.comments
+
+        def list_open_issues(self, repository, label=None, assignee=None):
+            return [SimpleNamespace(number=1, title="title", body="body", labels=[])]
+
+        def list_open_pull_requests(self, repository):
+            return []
+
+        def list_issue_comment_reactions(self, repository, comment_id):
+            return self.reactions
+
+        def add_issue_comment(self, repository, number, body):
+            self.comments.append(SimpleNamespace(id=102, body=body))
+
+        def get_issue(self, repository, number):
+            return SimpleNamespace(number=number, title="title", body="body")
+
+        def find_open_pr(self, repository, branch):
+            return None
+
+    client = Client()
+    source = GitHubPollingInputSource(
+        client,
+        config_module=SimpleNamespace(allowed_repositories=lambda: ["owner/repo"]),
+    )
+    first = [item for item in source.poll() if item.metadata["kind"] == "comment"]
+    assert len(first) == 1
+
+    GitHubDiscussionDestination(github_client=client).publish(
+        DiscussionPublicationRequest(
+            "owner/repo#1:101",
+            "owner/repo",
+            "The answer",
+            Context({"github": {"conversation_number": 1, "comment_id": 101}}),
+        )
+    )
+    second = [item for item in source.poll() if item.metadata["kind"] == "comment"]
+
+    assert second == []

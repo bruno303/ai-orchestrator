@@ -231,27 +231,30 @@ class ExecutionRuntime:
             request.workspace,
             request.context,
         ))
+        # Preserve the prepared worktree and branch when implementation or
+        # publication fails so the completed work can be inspected or retried
+        # without losing uncommitted changes.
+        implemented = self.implement_incremental(IncrementalImplementationRequest(
+            request.work,
+            prepared.workspace.workspace,
+            request.instruction,
+            prepared.context,
+        ))
+        published = self.publish(PublishRequest(
+            request.work,
+            prepared.workspace.workspace,
+            prepared.workspace.branch,
+            prepared.base_branch,
+            implemented.phase.context,
+        ))
+
         try:
-            implemented = self.implement_incremental(IncrementalImplementationRequest(
-                request.work,
-                prepared.workspace.workspace,
-                request.instruction,
-                prepared.context,
-            ))
-            return self.publish(PublishRequest(
-                request.work,
-                prepared.workspace.workspace,
-                prepared.workspace.branch,
-                prepared.base_branch,
-                implemented.phase.context,
-            ))
-        finally:
-            try:
-                self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
-            except CleanupError:
-                # Cleanup is best effort after a direct comment operation and
-                # must not hide the implementation or publication result.
-                pass
+            self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
+        except CleanupError:
+            # Cleanup is best effort after a successful comment publication
+            # and must not hide the publication result.
+            pass
+        return published
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
         try:
