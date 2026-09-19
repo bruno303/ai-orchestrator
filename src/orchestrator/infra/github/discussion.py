@@ -24,4 +24,23 @@ class GitHubDiscussionDestination:
             number = values.get("pr_number") or values.get("issue_number")
         if not isinstance(number, int) or isinstance(number, bool):
             raise ValueError("GitHub discussion context is missing conversation number")
-        self.github_client.add_issue_comment(request.repository, number, request.response)
+
+        comment_id = values.get("comment_id")
+        if isinstance(comment_id, int) and not isinstance(comment_id, bool):
+            marker = _publication_marker(comment_id)
+            comments = getattr(self.github_client, "list_issue_comments", None)
+            if callable(comments) and any(
+                marker in comment.body for comment in comments(request.repository, number)
+            ):
+                return
+            body = f"{marker}\n{request.response}"
+        else:
+            # Keep direct callers without an originating comment compatible;
+            # polling-triggered discussions always include comment_id.
+            body = request.response
+        self.github_client.add_issue_comment(request.repository, number, body)
+
+
+def _publication_marker(comment_id: int) -> str:
+    """Identify a response already published for one triggering comment."""
+    return f"<!-- ai-agent-discussion:{comment_id} -->"

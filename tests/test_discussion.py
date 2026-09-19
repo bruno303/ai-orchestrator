@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from orchestrator.application import PollingApplication
 from orchestrator.application.discussion import DiscussionRunRequest, DiscussionRuntime, discussion_prompt
 from orchestrator.application.execution.models import (
@@ -162,3 +164,32 @@ def test_github_discussion_destination_posts_only_to_originating_conversation():
     )
 
     assert calls == [("owner/repo", 42, "The abstraction still holds.")]
+
+
+def test_github_discussion_destination_does_not_duplicate_published_response():
+    calls = []
+    existing = []
+
+    class Client:
+        def list_issue_comments(self, repository, number):
+            return existing
+
+        def add_issue_comment(self, repository, number, body):
+            calls.append((repository, number, body))
+
+    destination = GitHubDiscussionDestination(github_client=Client())
+    request = DiscussionPublicationRequest(
+        "owner/repo#7:101",
+        "owner/repo",
+        "The abstraction still holds.",
+        Context({"github": {"conversation_number": 42, "comment_id": 101}}),
+    )
+
+    destination.publish(request)
+    assert len(calls) == 1
+    assert "<!-- ai-agent-discussion:101 -->" in calls[0][2]
+
+    existing[:] = [SimpleNamespace(body=calls[0][2])]
+    destination.publish(request)
+
+    assert len(calls) == 1
