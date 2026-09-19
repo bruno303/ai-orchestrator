@@ -131,6 +131,7 @@ class ExecutionRuntime:
                 checkout_mode="branch",
                 workspace=request.workspace,
                 context=context,
+                reuse_workspace=request.reuse_workspace,
             ))
         except WorkspacePreparationError:
             raise
@@ -230,6 +231,7 @@ class ExecutionRuntime:
             request.base_branch,
             request.workspace,
             request.context,
+            reuse_workspace=True,
         ))
         # Preserve the prepared worktree and branch when implementation or
         # publication fails so the completed work can be inspected or retried

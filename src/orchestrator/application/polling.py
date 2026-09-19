@@ -137,8 +137,8 @@ class PollingApplication:
         task_id = event.work_item.id
         self.feedback.mark_started(event)
         intent = event.metadata.get("intent", "impl")
-        if intent != "discuss":
-            self.reset_task(event)
+        # Incremental execution owns workspace reuse so failed implementation
+        # work remains available for the next comment-triggered retry.
         seed = _input_seed(
             event,
             task_id,

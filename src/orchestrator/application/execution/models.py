@@ -39,6 +39,7 @@ class PrepareExecutionRequest:
     base_branch: str = ""
     workspace: str = ""
     context: Context = field(default_factory=Context)
+    reuse_workspace: bool = False
 
 
 @dataclass(frozen=True)

@@ -94,7 +94,7 @@ class DiscussionResult:
 class WorkspaceRequest:
     task_id: str; repository: str; branch: str; base_branch: str; purpose: str = "execution"
     repository_url: str = ""; fetch_url: str = ""; target_ref: str = ""; revision: str = ""; checkout_mode: str = "branch"; workspace: str = ""
-    context: Context = field(default_factory=Context)
+    context: Context = field(default_factory=Context); reuse_workspace: bool = False
     def to_dict(self) -> dict[str, Any]: return _json_dict(self)
 
 
