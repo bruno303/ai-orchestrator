@@ -421,10 +421,5 @@ def is_repository_allowed(repository: str) -> bool:
     return repository in load_repository_config()
 
 
-def repository_command(repository: str) -> str:
-    """Comment prefix that triggers a re-run for the repo (default /ai-agent)."""
-    return load_repository_config().get(repository, {}).get("command") or "/ai-agent"
-
-
 def allowed_repositories() -> list[str]:
     return sorted(load_repository_config())

@@ -28,6 +28,7 @@ class InputState(TypedDict, total=False):
     provider: str
     data: dict[str, Any]
     context: dict[str, dict[str, Any]]
+    event: dict[str, Any]
 
 
 class ProcessingState(TypedDict, total=False):

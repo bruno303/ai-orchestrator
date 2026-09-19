@@ -35,9 +35,9 @@ class GitWorkspaceManager:
         if not base_branch:
             base_branch = self.git_client.detect_default_branch(repo_dir)
 
-        if request.purpose not in {"execution", "review"}:
+        if request.purpose not in {"execution", "review", "discussion"}:
             raise git.GitError(f"unknown workspace purpose: {request.purpose}")
-        review = request.checkout_mode == "revision" or request.purpose == "review"
+        review = request.checkout_mode == "revision" or request.purpose in {"review", "discussion"}
         branch = "" if review else request.branch or git_context.get("branch", "")
         workspace_value = request.workspace or git_context.get("workspace")
         if not workspace_value:
@@ -50,14 +50,17 @@ class GitWorkspaceManager:
         workspace_path = Path(workspace_value)
         if review:
             commit = request.revision or git_context.get("revision")
+            if not commit and request.purpose == "discussion":
+                commit = f"origin/{base_branch}"
             if not commit:
                 raise git.GitError("revision workspace requires a commit revision")
-            self.git_client.fetch_commit(
-                repo_dir,
-                commit,
-                request.fetch_url or git_context.get("fetch_url")
-                or "origin",
-            )
+            if request.revision or git_context.get("revision"):
+                self.git_client.fetch_commit(
+                    repo_dir,
+                    commit,
+                    request.fetch_url or git_context.get("fetch_url")
+                    or "origin",
+                )
             self.git_client.create_detached_worktree(repo_dir, workspace_path, commit)
         else:
             if workspace_path.exists() or workspace_path.is_symlink():

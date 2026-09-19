@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from orchestrator.domain import ReviewOutcome
-from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, TriageRequest
+from orchestrator.application.ports import (
+    DiscussionRequest,
+    DiscussionResult,
+    ExecutorError,
+    ExecutionRequest,
+    ExecutionResult,
+    ReviewRequest,
+    TriageRequest,
+)
 from orchestrator.infra.review.parser import extract_review_json, parse_review_output
 from orchestrator.infra.triage.parser import parse_triage_output
 
@@ -51,6 +59,11 @@ OPENCODE_TRIAGE_CONFIG_CONTENT = json.dumps(
     separators=(",", ":"),
     sort_keys=True,
 )
+
+# Discussion has the same read-only tool boundary as triage, but is a distinct
+# provider contract so the application cannot accidentally route it through a
+# planning or implementation executor.
+OPENCODE_DISCUSSION_CONFIG_CONTENT = OPENCODE_TRIAGE_CONFIG_CONTENT
 
 
 @dataclass
@@ -98,6 +111,38 @@ class OpenCodeExecutor:
             exit_code=result.exit_code,
             stdout=result.stdout,
             stderr=result.stderr,
+            duration_seconds=result.duration_seconds,
+            context=request.context,
+        )
+
+
+class OpenCodeDiscussionExecutor:
+    """Run a discussion with OpenCode's explicit read-only permissions."""
+
+    provider_type = "opencode"
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = dict(options or {})
+
+    def execute(self, request: DiscussionRequest) -> DiscussionResult:
+        options = {**self.options, **dict(request.context.namespace("opencode"))}
+        model_config = options.get("model_config")
+        try:
+            result = run_opencode(
+                workspace=request.workspace,
+                agent=None,
+                prompt=request.prompt,
+                log_file=Path(request.log_file or options["log_file"]) if request.log_file or options.get("log_file") else None,
+                model=request.model or (model_config.name if model_config else None),
+                variant=request.variant or (model_config.variant if model_config else None),
+                timeout=options.get("timeout"),
+                config_content=OPENCODE_DISCUSSION_CONFIG_CONTENT,
+            )
+        except OpenCodeError as exc:
+            raise ExecutorError(str(exc)) from exc
+        return DiscussionResult(
+            success=result.exit_code == 0,
+            response=result.stdout,
             duration_seconds=result.duration_seconds,
             context=request.context,
         )

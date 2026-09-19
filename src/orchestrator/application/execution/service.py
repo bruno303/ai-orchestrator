@@ -18,6 +18,8 @@ from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
     CleanupResult,
+    IncrementalExecutionRequest,
+    IncrementalImplementationRequest,
     ImplementationRequest,
     ImplementationResult,
     PhaseResult,
@@ -77,6 +79,29 @@ implementation. During implementation, run the repository's appropriate tests,
 linters, and other relevant quality checks. Fix any failures and only finish
 when the implementation and its validation are complete. Work only in this
 workspace. Do not push or create a pull request.
+"""
+
+
+def incremental_implement_prompt(work: WorkContext, instruction: str) -> str:
+    """Build the direct implementation prompt used by comment commands."""
+    return f"""Apply this incremental implementation request directly in repository {work.repository}.
+
+Source work item: {work.task_id}
+Title: {work.title}
+
+Source issue description:
+{work.body}
+
+Requested change from the triggering comment:
+{instruction}
+{_extra_context(work)}
+
+Make the requested code changes now. Do not stop after writing a plan and do
+not invoke the standalone planning workflow or require .agents/plans/plan.md.
+Inspect the current implementation and existing changes before editing. Run
+the repository's appropriate tests, linters, and other relevant quality checks,
+fix failures, and only finish after validating the incremental change. Work
+only in this workspace and do not push or create a pull request yourself.
 """
 
 
@@ -159,6 +184,20 @@ class ExecutionRuntime:
         ))
         return ImplementationResult(phase.execution.stdout[:4000], phase)
 
+    def implement_incremental(
+        self, request: IncrementalImplementationRequest
+    ) -> ImplementationResult:
+        """Implement one explicit comment request without invoking planning."""
+        phase = self.agent.execute(AgentRequest(
+            request.work,
+            "implement-comment",
+            "build",
+            incremental_implement_prompt(request.work, request.instruction),
+            request.workspace,
+            request.context,
+        ))
+        return ImplementationResult(phase.execution.stdout[:4000], phase)
+
     def publish(self, request: PublishRequest) -> PublishResult:
         context = request.work.item.context.merged(request.context)
         try:
@@ -182,6 +221,37 @@ class ExecutionRuntime:
                 result_context,
             )
         return PublishResult(result)
+
+    def run_incremental(self, request: IncrementalExecutionRequest) -> PublishResult:
+        """Run one comment implementation directly, without a plan phase."""
+        prepared = self.prepare(PrepareExecutionRequest(
+            request.work,
+            request.branch,
+            request.base_branch,
+            request.workspace,
+            request.context,
+        ))
+        try:
+            implemented = self.implement_incremental(IncrementalImplementationRequest(
+                request.work,
+                prepared.workspace.workspace,
+                request.instruction,
+                prepared.context,
+            ))
+            return self.publish(PublishRequest(
+                request.work,
+                prepared.workspace.workspace,
+                prepared.workspace.branch,
+                prepared.base_branch,
+                implemented.phase.context,
+            ))
+        finally:
+            try:
+                self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
+            except CleanupError:
+                # Cleanup is best effort after a direct comment operation and
+                # must not hide the implementation or publication result.
+                pass
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
         try:

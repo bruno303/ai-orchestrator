@@ -48,8 +48,9 @@ def test_polling_only_starts_a_task_once_per_snapshot():
 
 class Client:
     class GitHubError(Exception): pass
-    def __init__(self, reactions=(), issues=None):
+    def __init__(self, reactions=(), issues=None, comment_body="/ai-agent-impl rerun"):
         self.reactions = reactions
+        self.comment_body = comment_body
         self.issues = issues or [
             SimpleNamespace(number=1, title="eligible", body="", labels=["ai-agent"]),
             SimpleNamespace(number=3, title="triage", body="", labels=["ai-triage"]),
@@ -67,15 +68,14 @@ class Client:
         self.assignments.append((repository, number))
 
     def list_open_pull_requests(self, repository): return []
-    def list_issue_comments(self, repository, number): return [SimpleNamespace(id=11, body="/ai-agent rerun")]
+    def list_issue_comments(self, repository, number): return [SimpleNamespace(id=11, body=self.comment_body)]
     def list_issue_comment_reactions(self, repository, comment_id): return self.reactions
     def get_issue(self, repository, number): return SimpleNamespace(number=number, title="title", body="body")
     def find_open_pr(self, repository, branch): return None
 
 
 def config_module():
-    return SimpleNamespace(allowed_repositories=lambda: ["owner/repo"],
-                           repository_command=lambda repo: "/ai-agent")
+    return SimpleNamespace(allowed_repositories=lambda: ["owner/repo"])
 
 
 def test_developed_issue_is_not_returned_as_new_work():
@@ -112,6 +112,20 @@ def test_comment_command_bypasses_stage_label_filter():
     comments = [event for event in source.poll() if event.metadata["kind"] == "comment"]
 
     assert [event.work_item.id for event in comments] == ["owner/repo#4"]
+
+
+def test_comment_event_preserves_explicit_intent_and_context():
+    client = Client(comment_body="/ai-agent-discuss does this still make sense?")
+    source = GitHubPollingInputSource(client, config_module=config_module())
+
+    event = next(item for item in source.poll() if item.metadata["kind"] == "comment")
+
+    assert event.trigger == "comment"
+    assert event.metadata["intent"] == "discuss"
+    assert event.metadata["instruction"] == "does this still make sense?"
+    assert event.work_item.description == "body"
+    assert event.work_item.extra_context == ("/ai-agent-discuss does this still make sense?",)
+    assert event.context.namespace("github")["conversation_number"] == 1
 
 
 def test_github_feedback_assigns_new_issue_when_execution_starts():

@@ -27,6 +27,7 @@ class Runtime:
     input_provider: str | None = None
     execution_runtime: ExecutionRuntime | None = None
     context_presenter: ContextPresenter = NoopContextPresenter()
+    discussion_runtime: object | None = None
 
 
 def _input_seed(
@@ -52,7 +53,16 @@ def _input_seed(
         data["extra_context"] = extra_context
     return {
         "task_id": task_id,
-        "input": {"provider": provider or item.input_provider, "data": data, "context": context.to_dict()},
+        "input": {
+            "provider": provider or item.input_provider,
+            "data": data,
+            "context": context.to_dict(),
+            "event": {
+                "id": event.event_id,
+                "trigger": event.trigger,
+                "metadata": dict(event.metadata),
+            },
+        },
         "processing": {},
         "workspace": {},
         "output": {},
@@ -77,6 +87,8 @@ class PollingApplication:
         feedback: SourceFeedback | None = None,
         now: Callable[[], str] | None = None,
         input_provider: str | None = None,
+        run_comment_impl: Callable[[dict, str], dict] | None = None,
+        run_comment_discuss: Callable[[dict, str], dict] | None = None,
     ) -> None:
         self.input_source = input_source
         self.run_graph = run_graph
@@ -85,6 +97,8 @@ class PollingApplication:
         self.feedback = feedback or getattr(input_source, "feedback", None) or _NoopFeedback()
         self.now = now or (lambda: "--:--:--")
         self.input_provider = input_provider
+        self.run_comment_impl = run_comment_impl
+        self.run_comment_discuss = run_comment_discuss
 
     def poll_once(self, once: bool = False) -> None:
         events = self.input_source.poll()
@@ -122,7 +136,9 @@ class PollingApplication:
     def _run_comment(self, event: InputEvent) -> bool:
         task_id = event.work_item.id
         self.feedback.mark_started(event)
-        self.reset_task(event)
+        intent = event.metadata.get("intent", "impl")
+        if intent != "discuss":
+            self.reset_task(event)
         seed = _input_seed(
             event,
             task_id,
@@ -135,7 +151,13 @@ class PollingApplication:
             flush=True,
         )
         try:
-            result = self.run_graph(seed, task_id)
+            runner = self.run_comment_discuss if intent == "discuss" else self.run_comment_impl
+            if runner is None:
+                # Preserve compatibility for callers that only provide the
+                # original graph callback; production composition wires the
+                # explicit comment operations below.
+                runner = self.run_graph
+            result = runner(seed, task_id)
             self.report_result(result)
             status = result.get("status", FAILED)
             if status == COMPLETED:
