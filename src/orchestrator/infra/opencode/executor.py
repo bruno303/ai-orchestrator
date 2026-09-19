@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orchestrator.domain import ReviewOutcome
+from orchestrator.domain import ReviewOutcome, TriageOutcome
 from orchestrator.application.ports import (
     DiscussionRequest,
     DiscussionResult,
@@ -192,8 +192,20 @@ class OpenCodeTriageExecutor:
             config_content=OPENCODE_TRIAGE_CONFIG_CONTENT,
         )
         if result.exit_code != 0:
-            return parse_triage_output("", request.context.merge_namespace("opencode", {"exit_code": result.exit_code}))
+            context = request.context.merge_namespace("opencode", {"exit_code": result.exit_code})
+            return TriageOutcome(
+                False,
+                summary=result.stdout or result.stderr or "OpenCode triage executor failed",
+                context=context,
+            )
         return parse_triage_output(result.stdout, request.context)
+
+
+def _model_reference(model: str, variant: str | None) -> str:
+    """Return the OpenCode V2 model reference without duplicating a variant."""
+    if variant and "#" not in model:
+        return f"{model}#{variant}"
+    return model
 
 
 def run_opencode(
@@ -210,7 +222,7 @@ def run_opencode(
     """Run `opencode run [--agent <agent>] --auto` in the given workspace.
 
     Output is streamed live to `log_file` (if given) while also captured for the
-    returned result. `model`/`variant` are passed through as `-m`/`--variant`.
+    returned result. OpenCode V2 receives the model and variant as one reference.
     """
     workspace = Path(workspace)
     if not workspace.exists():
@@ -219,15 +231,11 @@ def run_opencode(
         os.environ.get("ORCHESTRATOR_OPENCODE_BIN") or _find_opencode(),
         "run",
         "--auto",
-        "--dir",
-        str(workspace),
     ]
     if agent is not None:
         cmd[2:2] = ["--agent", agent]
     if model is not None:
-        cmd += ["-m", model]
-    if variant is not None:
-        cmd += ["--variant", variant]
+        cmd += ["-m", _model_reference(model, variant)]
     cmd.append(prompt)
     timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
     start = time.monotonic()
@@ -256,9 +264,7 @@ def run_opencode(
         if agent is not None:
             header += f" --agent {agent}"
         if model is not None:
-            header += f" --model {model}"
-        if variant is not None:
-            header += f" --variant {variant}"
+            header += f" --model {_model_reference(model, variant)}"
         fh.write(header + "\n")
         fh.flush()
     deadline = time.monotonic() + timeout

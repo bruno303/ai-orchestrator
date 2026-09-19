@@ -22,6 +22,7 @@ from orchestrator.application.ports import (
     TriageRequest,
 )
 from orchestrator.domain import ReviewOutcome
+from orchestrator.domain import TriageOutcome
 from orchestrator.infra.review.parser import parse_review_output
 from orchestrator.infra.triage.parser import parse_triage_output
 
@@ -179,7 +180,8 @@ class CodexTriageExecutor:
             approval_policy=options.get("approval_policy", "never"),
         )
         if result.exit_code != 0:
-            return parse_triage_output("", request.context.merge_namespace("codex", {"exit_code": result.exit_code}))
+            context = request.context.merge_namespace("codex", {"exit_code": result.exit_code})
+            return TriageOutcome(False, summary=result.stdout or result.stderr or "Codex triage executor failed", context=context)
         return parse_triage_output(result.stdout, request.context)
 
 

@@ -82,7 +82,10 @@ Each accepts `opencode`, `codex`, or `claude` and overrides only the matching
 in effect. For example, use `ORCHESTRATOR_EXECUTOR_EXECUTION=codex` while
 keeping the review executor configured in YAML.
 
-OpenCode receives `name` and `variant` as its model flags. Codex receives
+OpenCode configuration continues to use separate `name` and `variant` fields;
+the adapter combines them into the OpenCode V2 model reference
+`provider/model#variant` (and leaves an already-qualified model unchanged).
+Codex receives
 `name` as `codex exec -m` and maps `variant` to the Codex
 `model_reasoning_effort` setting. Claude Code receives `name` as `--model` and
 sets `CLAUDE_CODE_EFFORT_LEVEL` for the configured `variant`.
