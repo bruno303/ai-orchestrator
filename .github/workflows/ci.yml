@@ -19,5 +19,7 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --group dev
+      - name: Build sandbox integration image
+        run: docker build -f Dockerfile.agent --target opencode -t bruno303/ai-orchestrator-agent-opencode:latest .
       - name: Run tests
         run: uv run pytest
