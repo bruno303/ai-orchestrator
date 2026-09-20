@@ -108,6 +108,35 @@ def test_execution_runtime_does_not_retry_executor_failures(tmp_path):
     assert runtime.agent.executor.calls == 1
 
 
+def test_execution_runtime_reports_failed_result_diagnostics_and_log_path(tmp_path):
+    diagnostic = "permission denied: read-only filesystem"
+
+    class FailingExecutor:
+        provider_type = "fake-provider"
+
+        def execute(self, request):
+            return ExecutionResult(
+                False,
+                1,
+                stdout="provider output",
+                stderr=diagnostic,
+                context=request.context.merge_namespace("provider", {"attempt": 1}),
+            )
+
+    runtime = compose_execution_runtime(
+        executor=FailingExecutor(), workspace_manager=ExecutionWorkspace(str(tmp_path)), destination=object()
+    )
+    with pytest.raises(AgentExecutionError) as failure:
+        runtime.execute_phase(AgentRequest(_context(), "implement", "build", "prompt", str(tmp_path)))
+
+    message = str(failure.value)
+    assert "fake-provider (build) exited with 1" in message
+    assert "stdout: provider output" in message
+    assert f"stderr: {diagnostic}" in message
+    assert "log=" in message and message.split("log=", 1)[1].split(";", 1)[0].endswith("implement.log")
+    assert failure.value.context.namespace("provider")["attempt"] == 1
+
+
 def test_execution_runtime_uses_requested_plan_path(tmp_path):
     executor = ExecutionAgent()
     runtime = compose_execution_runtime(

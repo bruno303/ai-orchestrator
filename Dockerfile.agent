@@ -1,0 +1,29 @@
+# Provider-specific images for the agent sandbox. No credentials are baked in.
+FROM python:3.11-slim-bookworm AS base
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y build-essential ca-certificates curl git golang-go nodejs npm \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y docker-ce-cli docker-compose-plugin \
+    && python -m pip install --no-cache-dir uv \
+    && rm -rf /var/lib/apt/lists/* /root/.cache
+
+ENV HOME=/home/agent \
+    XDG_CONFIG_HOME=/home/agent/.config \
+    XDG_CACHE_HOME=/tmp/cache \
+    XDG_DATA_HOME=/home/agent/.local/share
+
+WORKDIR /workspace
+
+FROM base AS opencode
+RUN npm install --global @opencode/cli
+
+FROM base AS codex
+RUN npm install --global @openai/codex
+
+FROM base AS claude
+RUN npm install --global @anthropic-ai/claude-code

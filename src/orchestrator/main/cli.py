@@ -14,7 +14,6 @@ from orchestrator.main import config
 from orchestrator.application.discussion import DiscussionRunRequest
 from orchestrator.application.execution.models import IncrementalExecutionRequest, WorkContext
 from orchestrator.infra.filesystem import workspace
-from orchestrator.infra.git import client as git
 from orchestrator.infra.github import assignees as github_assignees
 from orchestrator.infra.github import client as github
 from orchestrator.infra.langgraph import state as state_mod
@@ -178,7 +177,7 @@ def _remove_event_workspace(event: InputEvent) -> None:
     context = event.work_item.context.namespace("git")
     path = context.get("workspace")
     if path and Path(str(path)).exists():
-        git.remove_worktree(git.base_repo_dir(event.work_item.repository), Path(str(path)), str(context.get("branch", "")))
+        workspace.remove_workspace(Path(str(path)))
 
 
 def _developed_label() -> str:
@@ -206,13 +205,13 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_reset(args: argparse.Namespace) -> None:
     repository, number = _parse_ref(args.issue_ref)
-    task_id, branch = f"{repository}#{number}", f"ai/issue-{number}"
+    task_id = f"{repository}#{number}"
     path = workspace.task_workspace(task_id)
     if path.exists():
         try:
-            git.remove_worktree(git.base_repo_dir(repository), path, branch)
-        except git.GitError as exc:
-            print(f"[{_now()}] reset: warning: could not remove worktree: {exc}", flush=True)
+            workspace.remove_workspace(path)
+        except OSError as exc:
+            print(f"[{_now()}] reset: warning: could not remove workspace: {exc}", flush=True)
     runtime = compose_execution_runtime()
     github_client = runtime.destination.github_client
     assignment_cleared = github_assignees.clear_authenticated_issue_assignee(

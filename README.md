@@ -3,13 +3,14 @@
 Local orchestrator (LangGraph + OpenCode, Codex, or Claude Code) that turns input events into published changes:
 
 ```
-GitHub Issue → triage (`make triage`) → workspace (git worktree) → agent plan → agent build with tests and quality checks
+GitHub Issue → triage (`make triage`) → workspace (self-contained Git clone) → agent plan → agent build with tests and quality checks
              (subagent-plan-execution) → push / PR publication → cleanup
 ```
 
 ## Requirements
 
-- `uv`, `git`, `gh`, and the CLI for the selected agent provider (`opencode` >= 1.18, `codex`, or `claude`)
+- `uv`, `git`, `gh`, and Docker or Podman
+- The selected sandbox image, with its provider CLI installed (`opencode` >= 1.18, `codex`, or `claude`)
 
 ## Setup
 
@@ -74,6 +75,94 @@ Set `ORCHESTRATOR_MODEL_EXECUTION_NAME` / `ORCHESTRATOR_MODEL_EXECUTION_VARIANT`
 `ORCHESTRATOR_MODEL_TRIAGE_NAME` / `ORCHESTRATOR_MODEL_TRIAGE_VARIANT` to
 override the corresponding `config.yaml` values through the environment.
 
+### Agent sandbox
+
+Agent commands always run through the configured container sandbox. The default
+uses one image per provider:
+
+```text
+bruno303/ai-orchestrator-agent-opencode:latest
+bruno303/ai-orchestrator-agent-codex:latest
+bruno303/ai-orchestrator-agent-claude:latest
+```
+
+Build all images with `make build-images`, or use `make build-opencode-image`,
+`make build-codex-image`, and `make build-claude-image` individually. The shared
+base contains Python/uv, Node/npm, Go, Git, build tools, Docker CLI, and the
+Docker Compose plugin; each final target adds only its matching agent CLI.
+`make publish-images` pushes the three configured tags.
+
+The default sandbox configuration is:
+
+```yaml
+sandbox:
+  enabled: true
+  runtime: docker
+  images:
+    opencode: bruno303/ai-orchestrator-agent-opencode:latest
+    codex: bruno303/ai-orchestrator-agent-codex:latest
+    claude: bruno303/ai-orchestrator-agent-claude:latest
+  network: bridge
+  docker_socket: /var/run/docker.sock
+  cpus: 4
+  memory: 4g
+  pids_limit: 512
+  environment_allowlist: []
+```
+
+`sandbox.enabled: false` fails closed; it never enables host-side provider
+execution. CPU, memory and PID limits are applied to every agent run. The
+container also uses a read-only root filesystem, drops all Linux capabilities,
+sets `no-new-privileges`, and keeps writable runtime state in tmpfs-backed
+`/home/agent` and `/tmp` instead of creating `.home`, `.cache`, or provider
+state directories in the repository workspace.
+
+The task workspace is the normal writable host bind mount. It is mounted at the
+same absolute path inside the agent container rather than only at `/workspace`.
+This is deliberate: Docker Compose talks to the host Docker daemon, so relative
+bind mounts in repository Compose files must resolve to the same host path.
+Legacy provider arguments containing `/workspace` are translated by the runner
+to that absolute path.
+
+Provider state is mounted only for the selected provider and is read-only when
+it exists:
+
+| Provider | Host state exposed read-only |
+|---|---|
+| OpenCode | `~/.config/opencode`, `~/.local/share/opencode`, `~/.agents/skills` |
+| Codex | `~/.codex` |
+| Claude | `~/.claude`, `~/.claude.json` |
+
+Missing paths are skipped. If a provider requires mutable authentication state,
+prefer an environment credential or temporary container state rather than
+making the host provider directory writable.
+
+By default the host Docker socket is mounted and the socket's group is added to
+the non-root container user. This allows agent commands to use `docker build`,
+`docker run`, and `docker compose` without running a nested Docker daemon. Each
+sandbox run receives a unique `COMPOSE_PROJECT_NAME`; when the run ends, the
+orchestrator performs best-effort cleanup of containers, networks, and volumes
+carrying that Compose project label. It never runs a global `docker system
+prune`.
+
+**Docker socket access is an intentional security trade-off.** A process that
+can control the host Docker daemon can effectively obtain broad host access.
+Therefore this sandbox is designed primarily to contain accidental shell,
+filesystem, package-manager, and build-tool mistakes; it is not a security
+boundary against intentionally malicious agent code. Set `docker_socket: false`
+to remove that access when Docker/Compose is not needed.
+
+Network access is available by default so agents can reach providers and fetch
+dependencies. Set `sandbox.network: none` for an offline run, noting that model
+authentication and dependency downloads will then fail. No arbitrary host
+environment variables are copied by default; add only required names to
+`sandbox.environment_allowlist`.
+
+On Linux, the Docker/Podman runtime and workspace path must be accessible to the
+invoking user. Host Docker socket integration is only added for the Docker
+runtime; Podman can still be selected explicitly but does not inherit the host
+Docker socket behavior.
+
 Select the executor independently for issue execution, pull-request review,
 and triage with `ORCHESTRATOR_EXECUTOR_EXECUTION`,
 `ORCHESTRATOR_EXECUTOR_REVIEW`, and `ORCHESTRATOR_EXECUTOR_TRIAGE`.
@@ -110,14 +199,11 @@ Paths, limits, model and loop detection (env overrides):
 | Variable | Default |
 |---|---|
 | `ORCHESTRATOR_REPOS_DIR` | `~/agent-repos` (base clones) |
-| `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task worktrees) |
+| `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task workspaces) |
 | `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
-| `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
-| `ORCHESTRATOR_CODEX_BIN` | `codex` |
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
-| `ORCHESTRATOR_CLAUDE_BIN` | `claude` |
 | `ORCHESTRATOR_CLAUDE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_EXECUTOR_EXECUTION` | `pipeline.execution.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_REVIEW` | `pipeline.review.executor.type` |
@@ -274,7 +360,7 @@ the same issue and review steps can later be called by an HTTP API, n8n, or
 another workflow engine without duplicating agent, git, or provider logic.
 `GitWorkspaceManager` is provider-neutral: adapters provide explicit clone/fetch
 URLs, refs, revisions, checkout mode, and workspace paths; it performs only git
-clone, fetch, worktree, and cleanup operations.
+clone, fetch, checkout, and cleanup operations.
 LangGraph routes a single in-memory execution. The review workflow remains
 independently invokable and has its own GitHub `ai-reviewed` marker.
 
@@ -349,9 +435,10 @@ and configure its type. Input events carry
 the configured input provider identity, and provider metadata belongs in its
 Context namespace. Do not put service-specific values in generic fields.
 
-- **Isolation**: each task gets its own `git worktree` under
+- **Isolation**: each task gets its own self-contained Git clone under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,
-  created from a shared base clone in `~/agent-repos/`.
+  created from a shared base clone in `~/agent-repos/`. Its `.git` directory
+  is local to the workspace and has no dependency on the base clone.
 - **Assignment**: polling selects only unassigned issues matching the
   execution stage's labels and assigns the authenticated GitHub user
   before starting work. A failed assignment is logged and the issue is skipped
@@ -369,10 +456,10 @@ Context namespace. Do not put service-specific values in generic fields.
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
-- **Cleanup**: after a successful PR, the task worktree and local branch are
+- **Cleanup**: after a successful PR, the task workspace and local branch are
   removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging until a rerun starts; reruns discard and recreate the
-  task workspace from the base branch.
+  workspace for debugging until a rerun starts; reruns discard and recreate the
+  task clone from the base branch.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use `/ai-agent-impl` for an incremental implementation request
@@ -383,6 +470,10 @@ Context namespace. Do not put service-specific values in generic fields.
 ```bash
 uv run pytest
 ```
+
+Optional real-Docker sandbox checks run automatically when the provider image is
+available locally. Build it first with `make build-opencode-image`, then run
+`uv run pytest tests/integration/test_sandbox_docker.py`.
 
 ## Roadmap (V2+)
 

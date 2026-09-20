@@ -78,7 +78,7 @@ def test_polling_routes_comment_intents_to_dedicated_callbacks():
     app.poll_once()
 
     assert calls == ["impl", "discuss"]
-    # Incremental retries must retain the prior worktree so the next agent run
+    # Incremental retries must retain the prior workspace so the next agent run
     # can inspect and continue uncommitted changes.
     assert resets == []
 

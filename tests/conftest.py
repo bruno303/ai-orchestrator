@@ -93,6 +93,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent) AGENT="$2"; shift 2 ;;
     --auto) shift ;;
+    --dir) shift 2 ;;
     -m) MODEL="$2"; shift 2; MODEL_NAME="${MODEL%%#*}"; if [[ "$MODEL" == *#* ]]; then VARIANT="${MODEL#*#}"; fi ;;
     --*|-*) echo "unsupported option: $1" >&2; exit 2 ;;
     *) PROMPT="$1"; shift ;;
@@ -333,6 +334,40 @@ def clear_config_cache():
     config.load_review_model_config.cache_clear()
     config.load_triage_model_config.cache_clear()
     config.load_pipeline_config.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def fake_sandbox_runner(monkeypatch):
+    """Run provider fixtures through the sandbox seam without Docker."""
+    from orchestrator.infra.sandbox.runner import SandboxError, SandboxRunner, SandboxResult
+
+    def run(self, command, workspace, **options):
+        binary = {
+            "opencode": os.environ["ORCHESTRATOR_OPENCODE_BIN"],
+            "codex": os.environ["ORCHESTRATOR_CODEX_BIN"],
+            "claude": os.environ["ORCHESTRATOR_CLAUDE_BIN"],
+        }[command[0]]
+        environment = os.environ.copy()
+        environment.update(options.get("environment") or {})
+        # The real runner mounts the host workspace at this container path.
+        # Translate provider CLI paths for the host-side fake binaries.
+        command = [str(workspace) if value == "/workspace" else value for value in command]
+        try:
+            result = subprocess.run(
+                [binary, *command[1:]], cwd=workspace, env=environment,
+                capture_output=True, text=True, timeout=options.get("timeout"),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SandboxError(f"sandbox run timed out after {options.get('timeout')}s") from exc
+        log_file = options.get("log_file")
+        if log_file is not None:
+            path = Path(log_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text((options.get("log_header") or "") + "\n" + result.stdout + result.stderr)
+        return SandboxResult(result.returncode, result.stdout, result.stderr, 0.0)
+
+    monkeypatch.setattr(SandboxRunner, "run", run)
+    yield
 
 
 @pytest.fixture

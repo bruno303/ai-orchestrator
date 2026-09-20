@@ -1,3 +1,24 @@
+sandbox:
+  # Sandbox execution is mandatory. false fails closed; it never runs on host.
+  enabled: true
+  runtime: docker
+  images:
+    opencode: bruno303/ai-orchestrator-agent-opencode:latest
+    codex: bruno303/ai-orchestrator-agent-codex:latest
+    claude: bruno303/ai-orchestrator-agent-claude:latest
+  # bridge provides network access to providers and dependency registries.
+  network: bridge
+  # Pragmatic host-Docker access for builds and Compose. Set false to disable.
+  # With this socket mounted the container is NOT a security boundary against
+  # malicious code; the remaining restrictions primarily contain accidents.
+  docker_socket: /var/run/docker.sock
+  cpus: 4
+  memory: 4g
+  pids_limit: 512
+  # Only these host variables are copied into the agent container. Keep empty
+  # unless the selected CLI explicitly needs a credential or other setting.
+  environment_allowlist: []
+
 # Model selection is independent for issue execution and pull-request review.
 # Omit either section to use the selected provider's default model for that
 # workflow. Codex maps variant to model_reasoning_effort; Claude exposes its

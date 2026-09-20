@@ -2,25 +2,11 @@
 
 from __future__ import annotations
 
-import codecs
-import io
 import json
 import os
-import select
-import shutil
-import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-
-def _drain_pipe(pipe, decoder: io.IncrementalNewlineDecoder) -> tuple[str, bool]:
-    """Read bytes currently available without waiting for a line delimiter."""
-    chunk = os.read(pipe.fileno(), 65536)
-    if chunk:
-        return decoder.decode(chunk), False
-    return decoder.decode(b"", final=True), True
 
 from orchestrator.application.ports import (
     DiscussionRequest,
@@ -31,10 +17,10 @@ from orchestrator.application.ports import (
     ReviewRequest,
     TriageRequest,
 )
-from orchestrator.domain import ReviewOutcome
-from orchestrator.domain import TriageOutcome
+from orchestrator.domain import ReviewOutcome, TriageOutcome
 from orchestrator.infra.review.parser import parse_review_output
 from orchestrator.infra.triage.parser import parse_triage_output
+from orchestrator.infra.sandbox import SandboxError, SandboxRunner
 
 
 def _failure_diagnostic(stdout: str, stderr: str, fallback: str = "") -> str:
@@ -54,20 +40,6 @@ class CodexResult:
     duration_seconds: float
 
 
-def _find_codex() -> str:
-    """Resolve the Codex binary from PATH and common local install locations."""
-    found = shutil.which("codex")
-    if found:
-        return found
-    for candidate in (
-        Path.home() / ".codex" / "bin" / "codex",
-        Path.home() / ".local" / "bin" / "codex",
-    ):
-        if candidate.is_file():
-            return str(candidate)
-    return "codex"
-
-
 def _config_override(name: str, value: str) -> str:
     return f"{name}={json.dumps(value)}"
 
@@ -79,6 +51,7 @@ class CodexExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         options = {**self.options, **dict(request.context.namespace("codex"))}
@@ -94,6 +67,7 @@ class CodexExecutor:
                 timeout=options.get("timeout"),
                 sandbox=options.get("sandbox", "workspace-write"),
                 approval_policy=options.get("approval_policy", "never"),
+                runner=self.sandbox_runner or options.get("sandbox_runner"),
             )
         except CodexError as exc:
             raise ExecutorError(str(exc)) from exc
@@ -114,6 +88,7 @@ class CodexDiscussionExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: DiscussionRequest) -> DiscussionResult:
         options = {**self.options, **dict(request.context.namespace("codex"))}
@@ -130,6 +105,7 @@ class CodexDiscussionExecutor:
                 timeout=options.get("timeout"),
                 sandbox="read-only",
                 approval_policy="never",
+                runner=self.sandbox_runner or options.get("sandbox_runner"),
             )
         except CodexError as exc:
             raise ExecutorError(str(exc)) from exc
@@ -149,6 +125,7 @@ class CodexReviewExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: ReviewRequest) -> ReviewOutcome:
         options = {**self.options, **dict(request.context.namespace("codex"))}
@@ -164,6 +141,7 @@ class CodexReviewExecutor:
             timeout=options.get("timeout"),
             sandbox=options.get("sandbox", "read-only"),
             approval_policy=options.get("approval_policy", "never"),
+            runner=self.sandbox_runner or options.get("sandbox_runner"),
         )
         if result.exit_code != 0:
             return ReviewOutcome(
@@ -181,6 +159,7 @@ class CodexTriageExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: TriageRequest):
         options = {**self.options, **dict(request.context.namespace("codex"))}
@@ -193,6 +172,7 @@ class CodexTriageExecutor:
             timeout=options.get("timeout"),
             sandbox=options.get("sandbox", "read-only"),
             approval_policy=options.get("approval_policy", "never"),
+            runner=self.sandbox_runner or options.get("sandbox_runner"),
         )
         if result.exit_code != 0:
             context = request.context.merge_namespace("codex", {"exit_code": result.exit_code})
@@ -211,6 +191,7 @@ def run_codex(
     variant: str | None = None,
     sandbox: str = "workspace-write",
     approval_policy: str = "never",
+    runner: SandboxRunner | None = None,
 ) -> CodexResult:
     """Run ``codex exec`` in a workspace while streaming its output."""
     workspace = Path(workspace)
@@ -218,10 +199,10 @@ def run_codex(
         raise CodexError(f"workspace does not exist: {workspace}")
 
     cmd = [
-        os.environ.get("ORCHESTRATOR_CODEX_BIN") or _find_codex(),
+        "codex",
         "exec",
         "--cd",
-        str(workspace),
+        "/workspace",
         "--sandbox",
         sandbox,
         "-c",
@@ -234,25 +215,8 @@ def run_codex(
     cmd.append(prompt)
 
     timeout = int(timeout or os.environ.get("ORCHESTRATOR_CODEX_TIMEOUT", str(60 * 60)))
-    start = time.monotonic()
     try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=workspace,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-    except FileNotFoundError as exc:
-        raise CodexError(f"codex binary not found: {cmd[0]}") from exc
-
-    streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
-    fh = None
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = log_file.open("a")
-        header = f"[orchestrator] codex exec --cd {workspace} --sandbox {sandbox}"
+        header = f"[orchestrator] codex exec --cd /workspace --sandbox {sandbox}"
         header += f" -c approval_policy={approval_policy}"
         if agent is not None:
             header += f" agent={agent}"
@@ -260,61 +224,15 @@ def run_codex(
             header += f" --model {model}"
         if variant is not None:
             header += f" -c model_reasoning_effort={variant}"
-        fh.write(header + "\n")
-        fh.flush()
-
-    deadline = time.monotonic() + timeout
-    try:
-        assert proc.stdout is not None and proc.stderr is not None
-        pipes = {proc.stdout: "stdout", proc.stderr: "stderr"}
-        decoders = {
-            pipe: io.IncrementalNewlineDecoder(
-                codecs.getincrementaldecoder(pipe.encoding or "utf-8")(
-                    errors=pipe.errors or "strict"
-                ),
-                translate=True,
-            )
-            for pipe in pipes
-        }
-        active = list(pipes)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                proc.kill()
-                proc.wait()
-                raise CodexError(f"codex exec timed out after {timeout}s")
-            readable, _, _ = select.select(active, [], [], remaining)
-            if not readable:
-                proc.kill()
-                proc.wait()
-                raise CodexError(f"codex exec timed out after {timeout}s")
-            for pipe in readable:
-                chunk, eof = _drain_pipe(pipe, decoders[pipe])
-                if chunk:
-                    streams[pipes[pipe]].append(chunk)
-                    if fh is not None:
-                        fh.write(chunk)
-                        fh.flush()
-                if eof:
-                    active.remove(pipe)
-            if not active:
-                break
-        proc.wait()
-    except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
-        raise CodexError(f"codex exec timed out after {timeout}s") from exc
-    except KeyboardInterrupt:
-        proc.kill()
-        proc.wait()
-        raise
-    finally:
-        if fh is not None:
-            fh.close()
+        result = (runner or SandboxRunner()).run(
+            cmd, workspace, timeout=timeout, log_file=log_file, log_header=header
+        )
+    except SandboxError as exc:
+        raise CodexError(str(exc)) from exc
 
     return CodexResult(
-        exit_code=proc.returncode,
-        stdout="".join(streams["stdout"]),
-        stderr="".join(streams["stderr"]),
-        duration_seconds=time.monotonic() - start,
+        exit_code=result.exit_code,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        duration_seconds=result.duration_seconds,
     )

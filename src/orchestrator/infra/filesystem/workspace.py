@@ -6,6 +6,7 @@ import json
 import hashlib
 import os
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +38,16 @@ def task_workspace(task_id: str) -> Path:
 
 def review_workspace(task_id: str) -> Path:
     return WORKSPACES_DIR / safe_task_token(task_id)
+
+
+def remove_workspace(path: Path) -> None:
+    """Remove a task workspace, including legacy external Git metadata."""
+    if not path.exists() and not path.is_symlink():
+        return
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
 
 
 def discussion_workspace(task_id: str) -> Path:

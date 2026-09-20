@@ -41,6 +41,83 @@ def test_run_opencode_passes_flags(tmp_path, clean_env, monkeypatch):
     assert f"dir={tmp_path}" in line
 
 
+def test_run_opencode_ignores_host_binary_override(tmp_path, monkeypatch):
+    captured = {}
+
+    class Runner:
+        def run(self, command, workspace, **options):
+            captured["command"] = command
+            from orchestrator.infra.sandbox.runner import SandboxResult
+            return SandboxResult(0, "", "", 0)
+
+    monkeypatch.setenv("ORCHESTRATOR_OPENCODE_BIN", "/host/custom-opencode")
+    opencode.run_opencode(tmp_path, "plan", "prompt", runner=Runner())
+
+    assert captured["command"][0] == "opencode"
+
+
+def test_run_opencode_uses_sandbox_working_directory(tmp_path):
+    captured = {}
+
+    class Runner:
+        def run(self, command, workspace, **options):
+            captured["command"] = command
+            captured["workspace"] = workspace
+            from orchestrator.infra.sandbox.runner import SandboxResult
+            return SandboxResult(0, "", "", 0)
+
+    opencode.run_opencode(tmp_path, "plan", "prompt", runner=Runner())
+
+    assert captured["workspace"] == tmp_path
+    assert "--dir" not in captured["command"]
+
+
+def test_run_opencode_passes_log_directory_to_sandbox(tmp_path):
+    captured = {}
+
+    class Runner:
+        def run(self, command, workspace, **options):
+            captured.update(options)
+            from orchestrator.infra.sandbox.runner import SandboxResult
+            return SandboxResult(0, "", "", 0)
+
+    opencode.run_opencode(tmp_path, "plan", "prompt", runner=Runner())
+
+    assert captured["environment"] == {
+        "OPENCODE_LOG_DIR": "/tmp/opencode/log",
+        "XDG_DATA_HOME": "/tmp/opencode/data",
+        "XDG_STATE_HOME": "/tmp/opencode/state",
+        "OPENCODE_CONFIG_DIR": "/home/agent/.config/opencode",
+    }
+    assert captured["environment_allowlist_extra"] == (
+        "OPENCODE_LOG_DIR", "XDG_DATA_HOME", "XDG_STATE_HOME", "OPENCODE_CONFIG_DIR"
+    )
+
+
+def test_run_opencode_preserves_config_environment_and_log_directory(tmp_path):
+    captured = {}
+
+    class Runner:
+        def run(self, command, workspace, **options):
+            captured.update(options)
+            from orchestrator.infra.sandbox.runner import SandboxResult
+            return SandboxResult(0, "", "", 0)
+
+    opencode.run_opencode(tmp_path, None, "prompt", config_content="{}", runner=Runner())
+
+    assert captured["environment"] == {
+        "OPENCODE_LOG_DIR": "/tmp/opencode/log",
+        "XDG_DATA_HOME": "/tmp/opencode/data",
+        "XDG_STATE_HOME": "/tmp/opencode/state",
+        "OPENCODE_CONFIG_DIR": "/home/agent/.config/opencode",
+        "OPENCODE_CONFIG_CONTENT": "{}",
+    }
+    assert captured["environment_allowlist_extra"] == (
+        "OPENCODE_LOG_DIR", "XDG_DATA_HOME", "XDG_STATE_HOME",
+        "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"
+    )
+
+
 def test_run_opencode_uses_default_agent_when_not_provided(tmp_path, clean_env, monkeypatch):
     args_file = tmp_path / "args.txt"
     monkeypatch.setenv("FAKE_OPCODE_ARGS_FILE", str(args_file))

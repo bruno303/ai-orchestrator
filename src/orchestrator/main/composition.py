@@ -29,6 +29,8 @@ from orchestrator.main.providers import (
     TRIAGE_INPUT_PROVIDERS,
     WORKSPACE_PROVIDERS,
 )
+from orchestrator.infra.sandbox import SandboxRunner
+from orchestrator.infra.sandbox.settings import load_provider_sandbox_settings
 
 
 def _create(registry, provider, *, overrides: dict | None = None):
@@ -39,6 +41,28 @@ def _create(registry, provider, *, overrides: dict | None = None):
         settings["model_config"] = config.load_review_model_config()
     if registry is TRIAGE_EXECUTOR_PROVIDERS:
         settings["model_config"] = config.load_triage_model_config()
+    if registry in (
+        EXECUTOR_PROVIDERS,
+        DISCUSSION_EXECUTOR_PROVIDERS,
+        REVIEW_EXECUTOR_PROVIDERS,
+        TRIAGE_EXECUTOR_PROVIDERS,
+    ):
+        sandbox = config.load_sandbox_config()
+        provider_sandbox = load_provider_sandbox_settings(provider.type, config.CONFIG_FILE)
+        settings["sandbox_runner"] = SandboxRunner(
+            enabled=sandbox.enabled,
+            runtime=sandbox.runtime,
+            image=provider_sandbox.image,
+            network=sandbox.network,
+            environment_allowlist=sandbox.environment_allowlist,
+            mounts=provider_sandbox.mounts,
+            cpus=provider_sandbox.cpus,
+            memory=provider_sandbox.memory,
+            pids_limit=provider_sandbox.pids_limit,
+            docker_socket=provider_sandbox.docker_socket,
+            tmpfs_mounts=provider_sandbox.tmpfs_mounts,
+            writable_copies=provider_sandbox.writable_copies,
+        )
     settings.update(overrides or {})
     return registry.create(
         provider.type,

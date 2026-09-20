@@ -13,6 +13,22 @@ from orchestrator.application.execution.errors import AgentExecutionError
 from orchestrator.application.execution.models import AgentRequest, PhaseResult
 
 
+_FAILURE_DIAGNOSTIC_LIMIT = 2_000
+
+
+def _failure_diagnostic(stdout: str, stderr: str) -> str:
+    """Return a bounded, labeled excerpt of provider output."""
+    streams = []
+    for name, output in (("stdout", stdout), ("stderr", stderr)):
+        output = output.strip()
+        if output:
+            streams.append(f"{name}: {output}")
+    diagnostic = "\n".join(streams)
+    if len(diagnostic) > _FAILURE_DIAGNOSTIC_LIMIT:
+        return diagnostic[:_FAILURE_DIAGNOSTIC_LIMIT - 3].rstrip() + "..."
+    return diagnostic
+
+
 def _now() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
@@ -72,5 +88,9 @@ class IssueAgentRunner:
                 if result.exit_code == 0
                 else f"{provider_type} ({request.agent}) exited with {result.exit_code}"
             )
+            diagnostic = _failure_diagnostic(result.stdout, result.stderr)
+            error = f"{error}; log={log_path}"
+            if diagnostic:
+                error = f"{error}; diagnostic={diagnostic}"
             raise AgentExecutionError(error, context=context)
         return PhaseResult(result, context)

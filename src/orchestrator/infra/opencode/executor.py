@@ -2,14 +2,8 @@
 
 from __future__ import annotations
 
-import codecs
-import io
 import json
-import select
-import subprocess
-import time
 import os
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +20,7 @@ from orchestrator.application.ports import (
 )
 from orchestrator.infra.review.parser import extract_review_json, parse_review_output
 from orchestrator.infra.triage.parser import parse_triage_output
+from orchestrator.infra.sandbox import SandboxError, SandboxRunner
 
 
 _extract_review_json = extract_review_json
@@ -34,14 +29,6 @@ _extract_review_json = extract_review_json
 def _failure_diagnostic(stdout: str, stderr: str, fallback: str = "") -> str:
     """Keep both provider streams available without treating failure output as a response."""
     return "\n".join(stream for stream in (stdout, stderr) if stream) or fallback
-
-
-def _drain_pipe(pipe, decoder: io.IncrementalNewlineDecoder) -> tuple[str, bool]:
-    """Read bytes currently available without waiting for a line delimiter."""
-    chunk = os.read(pipe.fileno(), 65536)
-    if chunk:
-        return decoder.decode(chunk), False
-    return decoder.decode(b"", final=True), True
 
 
 class OpenCodeError(ExecutorError):
@@ -89,16 +76,6 @@ class OpenCodeResult:
     duration_seconds: float
 
 
-def _find_opencode() -> str:
-    found = shutil.which("opencode")
-    if found:
-        return found
-    for candidate in (Path.home() / ".opencode" / "bin" / "opencode", Path.home() / ".local" / "bin" / "opencode"):
-        if candidate.is_file():
-            return str(candidate)
-    return "opencode"
-
-
 class OpenCodeExecutor:
     """Executor implementation backed by the existing OpenCode wrapper."""
 
@@ -106,6 +83,7 @@ class OpenCodeExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: ExecutionRequest) -> ExecutionResult:
         options = {**self.options, **dict(request.context.namespace("opencode"))}
@@ -118,6 +96,7 @@ class OpenCodeExecutor:
                 model=request.model,
                 variant=request.variant,
                 timeout=options.get("timeout"),
+                runner=self.sandbox_runner or options.get("sandbox_runner"),
             )
         except OpenCodeError as exc:
             raise ExecutorError(str(exc)) from exc
@@ -138,6 +117,7 @@ class OpenCodeDiscussionExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: DiscussionRequest) -> DiscussionResult:
         options = {**self.options, **dict(request.context.namespace("opencode"))}
@@ -152,6 +132,7 @@ class OpenCodeDiscussionExecutor:
                 variant=request.variant or (model_config.variant if model_config else None),
                 timeout=options.get("timeout"),
                 config_content=OPENCODE_DISCUSSION_CONFIG_CONTENT,
+                runner=self.sandbox_runner or options.get("sandbox_runner"),
             )
         except OpenCodeError as exc:
             raise ExecutorError(str(exc)) from exc
@@ -171,6 +152,7 @@ class OpenCodeReviewExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: ReviewRequest) -> ReviewOutcome:
         options = {**self.options, **dict(request.context.namespace("opencode"))}
@@ -181,6 +163,7 @@ class OpenCodeReviewExecutor:
             model=options.get("model") or (model_config.name if model_config else None),
             variant=options.get("variant") or (model_config.variant if model_config else None),
             timeout=options.get("timeout"),
+            runner=self.sandbox_runner or options.get("sandbox_runner"),
         )
         if result.exit_code != 0:
             return ReviewOutcome(False, summary=_failure_diagnostic(result.stdout, result.stderr),
@@ -195,6 +178,7 @@ class OpenCodeTriageExecutor:
 
     def __init__(self, options: dict[str, Any] | None = None) -> None:
         self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
 
     def execute(self, request: TriageRequest):
         options = {**self.options, **dict(request.context.namespace("opencode"))}
@@ -206,6 +190,7 @@ class OpenCodeTriageExecutor:
             variant=options.get("variant") or (model_config.variant if model_config else request.variant),
             timeout=options.get("timeout"),
             config_content=OPENCODE_TRIAGE_CONFIG_CONTENT,
+            runner=self.sandbox_runner or options.get("sandbox_runner"),
         )
         if result.exit_code != 0:
             context = request.context.merge_namespace("opencode", {"exit_code": result.exit_code})
@@ -234,6 +219,7 @@ def run_opencode(
     model: str | None = None,
     variant: str | None = None,
     config_content: str | None = None,
+    runner: SandboxRunner | None = None,
 ) -> OpenCodeResult:
     """Run `opencode run [--agent <agent>] --auto` in the given workspace.
 
@@ -244,7 +230,7 @@ def run_opencode(
     if not workspace.exists():
         raise OpenCodeError(f"workspace does not exist: {workspace}")
     cmd = [
-        os.environ.get("ORCHESTRATOR_OPENCODE_BIN") or _find_opencode(),
+        "opencode",
         "run",
         "--auto",
     ]
@@ -254,86 +240,38 @@ def run_opencode(
         cmd += ["-m", _model_reference(model, variant)]
     cmd.append(prompt)
     timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
-    start = time.monotonic()
+    # OpenCode persists its state (including the runtime database) below the
+    # XDG state directory. Keep that state ephemeral so the provider state
+    # mount can remain read-only.
+    environment = {
+        "OPENCODE_LOG_DIR": "/tmp/opencode/log",
+        "XDG_DATA_HOME": "/tmp/opencode/data",
+        "XDG_STATE_HOME": "/tmp/opencode/state",
+        "OPENCODE_CONFIG_DIR": "/home/agent/.config/opencode",
+    }
+    if config_content is not None:
+        environment["OPENCODE_CONFIG_CONTENT"] = config_content
     try:
-        child_environment = os.environ.copy()
-        if config_content is not None:
-            child_environment["OPENCODE_CONFIG_CONTENT"] = config_content
-        proc = subprocess.Popen(
-            cmd,
-            cwd=workspace,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            env=child_environment,
-        )
-    except FileNotFoundError as exc:
-        raise OpenCodeError(f"opencode binary not found: {cmd[0]}") from exc
-
-    streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
-    fh = None
-    if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = log_file.open("a")
         header = "[orchestrator] opencode run"
         if agent is not None:
             header += f" --agent {agent}"
         if model is not None:
             header += f" --model {_model_reference(model, variant)}"
-        fh.write(header + "\n")
-        fh.flush()
-    deadline = time.monotonic() + timeout
-    try:
-        assert proc.stdout is not None and proc.stderr is not None
-        pipes = {proc.stdout: "stdout", proc.stderr: "stderr"}
-        decoders = {
-            pipe: io.IncrementalNewlineDecoder(
-                codecs.getincrementaldecoder(pipe.encoding or "utf-8")(
-                    errors=pipe.errors or "strict"
-                ),
-                translate=True,
-            )
-            for pipe in pipes
-        }
-        active = list(pipes)
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                proc.kill()
-                proc.wait()
-                raise OpenCodeError(f"opencode run timed out after {timeout}s")
-            readable, _, _ = select.select(active, [], [], remaining)
-            if not readable:
-                proc.kill()
-                proc.wait()
-                raise OpenCodeError(f"opencode run timed out after {timeout}s")
-            for pipe in readable:
-                chunk, eof = _drain_pipe(pipe, decoders[pipe])
-                if chunk:
-                    streams[pipes[pipe]].append(chunk)
-                    if fh is not None:
-                        fh.write(chunk)
-                        fh.flush()
-                if eof:
-                    active.remove(pipe)
-            if not active:
-                break
-        proc.wait()
-    except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
-        raise OpenCodeError(f"opencode run timed out after {timeout}s") from exc
-    except KeyboardInterrupt:
-        proc.kill()
-        proc.wait()
-        raise
-    finally:
-        if fh is not None:
-            fh.close()
+        result = (runner or SandboxRunner()).run(
+            cmd, workspace, timeout=timeout, log_file=log_file,
+            environment=environment,
+            environment_allowlist_extra=(
+                "OPENCODE_LOG_DIR",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+                "OPENCODE_CONFIG_DIR",
+                *(("OPENCODE_CONFIG_CONTENT",) if config_content else ()),
+            ),
+            log_header=header,
+        )
+    except SandboxError as exc:
+        raise OpenCodeError(str(exc)) from exc
     return OpenCodeResult(
-        exit_code=proc.returncode,
-        stdout="".join(streams["stdout"]),
-        stderr="".join(streams["stderr"]),
-        duration_seconds=time.monotonic() - start,
+        exit_code=result.exit_code, stdout=result.stdout, stderr=result.stderr,
+        duration_seconds=result.duration_seconds,
     )
