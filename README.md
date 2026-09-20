@@ -78,85 +78,90 @@ override the corresponding `config.yaml` values through the environment.
 ### Agent sandbox
 
 Agent commands always run through the configured container sandbox. The default
-is Docker with image `bruno303/ai-orchestrator-agent:latest`, bridge networking, and one
-general-purpose read-write bind mount: the task workspace at `/workspace`. The
-optional OpenCode state mount at `/workspace/.local/share/opencode` is an additional
-read-write mount. Setting
-`sandbox.enabled: false` fails closed; it does not permit execution on the host.
+uses one image per provider:
 
-Install Docker Engine or Podman and make the selected runtime available on
-`PATH`. Build the included image before the first run. The provider CLIs are
-installed in this image; provider binaries installed on the host are not used
-for sandbox execution:
-
-```bash
-make build-image
+```text
+bruno303/ai-orchestrator-agent-opencode:latest
+bruno303/ai-orchestrator-agent-codex:latest
+bruno303/ai-orchestrator-agent-claude:latest
 ```
 
-The image is also available as `bruno303/ai-orchestrator-agent:latest` on Docker
-Hub. To build and publish it, authenticate with Docker Hub first (`docker login`)
-and run:
+Build all images with `make build-images`, or use `make build-opencode-image`,
+`make build-codex-image`, and `make build-claude-image` individually. The shared
+base contains Python/uv, Node/npm, Go, Git, build tools, Docker CLI, and the
+Docker Compose plugin; each final target adds only its matching agent CLI.
+`make publish-images` pushes the three configured tags.
 
-```bash
-make publish-image
+The default sandbox configuration is:
+
+```yaml
+sandbox:
+  enabled: true
+  runtime: docker
+  images:
+    opencode: bruno303/ai-orchestrator-agent-opencode:latest
+    codex: bruno303/ai-orchestrator-agent-codex:latest
+    claude: bruno303/ai-orchestrator-agent-claude:latest
+  network: bridge
+  docker_socket: /var/run/docker.sock
+  cpus: 4
+  memory: 4g
+  pids_limit: 512
+  environment_allowlist: []
 ```
 
-`publish-image` builds the image before pushing it; `build-image` never publishes
-an image. The optional provider CLIs can be installed during the build by
-passing the existing Dockerfile build arguments through Make:
+`sandbox.enabled: false` fails closed; it never enables host-side provider
+execution. CPU, memory and PID limits are applied to every agent run. The
+container also uses a read-only root filesystem, drops all Linux capabilities,
+sets `no-new-privileges`, and keeps writable runtime state in tmpfs-backed
+`/home/agent` and `/tmp` instead of creating `.home`, `.cache`, or provider
+state directories in the repository worktree.
 
-```bash
-make build-image INSTALL_CODEX=1 INSTALL_CLAUDE=1
-```
+The task workspace is the normal writable host bind mount. It is mounted at the
+same absolute path inside the agent container rather than only at `/workspace`.
+This is deliberate: Docker Compose talks to the host Docker daemon, so relative
+bind mounts in repository Compose files must resolve to the same host path.
+Legacy provider arguments containing `/workspace` are translated by the runner
+to that absolute path.
 
-`Dockerfile.agent` includes Python 3.11, build tools, git, uv, Node.js, and npm.
-It installs OpenCode by default. Codex and Claude Code are optional build hooks:
+Provider state is mounted only for the selected provider and is read-only when
+it exists:
 
-```bash
-docker build -f Dockerfile.agent -t bruno303/ai-orchestrator-agent:latest . \
-  --build-arg INSTALL_CODEX=1 --build-arg INSTALL_CLAUDE=1
-```
+| Provider | Host state exposed read-only |
+|---|---|
+| OpenCode | `~/.config/opencode`, `~/.local/share/opencode`, `~/.agents/skills` |
+| Codex | `~/.codex` |
+| Claude | `~/.claude`, `~/.claude.json` |
 
-The corresponding npm packages are `opencode-ai`, `@openai/codex`, and
-`@anthropic-ai/claude-code`. Alternatively, build a compatible custom image
-with the selected CLI already on `PATH`, then set `sandbox.image` and, if
-needed, `sandbox.runtime: podman` in `config/config.yaml`.
+Missing paths are skipped. If a provider requires mutable authentication state,
+prefer an environment credential or temporary container state rather than
+making the host provider directory writable.
 
-For OpenCode, the sandbox additionally mounts available host state directories:
+By default the host Docker socket is mounted and the socket's group is added to
+the non-root container user. This allows agent commands to use `docker build`,
+`docker run`, and `docker compose` without running a nested Docker daemon. Each
+sandbox run receives a unique `COMPOSE_PROJECT_NAME`; when the run ends, the
+orchestrator performs best-effort cleanup of containers, networks, and volumes
+carrying that Compose project label. It never runs a global `docker system
+prune`.
 
-| Host directory | Container directory | Permission |
-|---|---|---|
-| `~/.config/opencode` | `/workspace/.config/opencode` | read-only |
-| `~/.local/share/opencode` | `/workspace/.local/share/opencode` | read-write |
-| `~/.agents/skills` | `/workspace/.home/.agents/skills` | read-only |
+**Docker socket access is an intentional security trade-off.** A process that
+can control the host Docker daemon can effectively obtain broad host access.
+Therefore this sandbox is designed primarily to contain accidental shell,
+filesystem, package-manager, and build-tool mistakes; it is not a security
+boundary against intentionally malicious agent code. Set `docker_socket: false`
+to remove that access when Docker/Compose is not needed.
 
-These mounts provide OpenCode configuration/authentication and shared skills
-without copying them into the image. Each mount is optional: a missing host
-directory is skipped. The task workspace remains the only general read-write
-mount. The OpenCode state mounts may contain credentials, so keep their host
-permissions and contents appropriate for the invoking user.
+Network access is available by default so agents can reach providers and fetch
+dependencies. Set `sandbox.network: none` for an offline run, noting that model
+authentication and dependency downloads will then fail. No arbitrary host
+environment variables are copied by default; add only required names to
+`sandbox.environment_allowlist`.
 
-Network access is available by default so agents can reach their provider and
-fetch dependencies. The `sandbox.network` value is passed directly to Docker
-or Podman and can include unsafe modes such as `host`; choose an appropriate
-mode deliberately. Set `sandbox.network: none` for an offline run, noting that
-provider authentication and dependency downloads will then fail. No host
-environment variables are copied by default. Add only required variable names
-to `sandbox.environment_allowlist`; values remain supplied at runtime and must
-never be placed in the Dockerfile, image, `.env.example`, or committed config.
-
-On Linux, the Docker/Podman daemon and the workspace path must be accessible to
-the invoking user. On WSL2, use Docker Desktop's WSL integration or a working
-Linux Docker/Podman installation and keep the workspace in an accessible mount.
-On macOS, enable the workspace parent in Docker Desktop File Sharing; bind mount
-performance can be lower than Linux. Podman Docker-API compatibility is not
-assumed: select `runtime: podman` explicitly and test the image locally.
-
-The sandbox is not a complete security boundary. The agent has the configured
-network, can modify every file in the mounted workspace, and runs with the host
-uid/gid where supported by the runtime. Do not mount the Docker socket or put
-secrets in the workspace. Runtime availability, image presence, and bind-mount
-permissions are checked before execution.
+On Linux, the Docker/Podman runtime and workspace path must be accessible to the
+invoking user. Host Docker socket integration is only added for the Docker
+runtime; Podman can still be selected explicitly but does not inherit the host
+Docker socket behavior.
 
 Select the executor independently for issue execution, pull-request review,
 and triage with `ORCHESTRATOR_EXECUTOR_EXECUTION`,
@@ -464,6 +469,10 @@ Context namespace. Do not put service-specific values in generic fields.
 ```bash
 uv run pytest
 ```
+
+Optional real-Docker sandbox checks run automatically when the provider image is
+available locally. Build it first with `make build-opencode-image`, then run
+`uv run pytest tests/integration/test_sandbox_docker.py`.
 
 ## Roadmap (V2+)
 
