@@ -82,7 +82,10 @@ Each accepts `opencode`, `codex`, or `claude` and overrides only the matching
 in effect. For example, use `ORCHESTRATOR_EXECUTOR_EXECUTION=codex` while
 keeping the review executor configured in YAML.
 
-OpenCode receives `name` and `variant` as its model flags. Codex receives
+OpenCode configuration continues to use separate `name` and `variant` fields;
+the adapter combines them into the OpenCode V2 model reference
+`provider/model#variant` (and leaves an already-qualified model unchanged).
+Codex receives
 `name` as `codex exec -m` and maps `variant` to the Codex
 `model_reasoning_effort` setting. Claude Code receives `name` as `--model` and
 sets `CLAUDE_CODE_EFFORT_LEVEL` for the configured `variant`.
@@ -149,19 +152,25 @@ orchestrator logs company/backend#123                 # list the task's node log
 orchestrator logs company/backend#123 --node plan     # read a node log
 ```
 
-## Comment triggers (`/ai-agent`)
+## Comment triggers
 
-While executing, the orchestrator also scans comments on open issues **and** open
-PRs. A comment starting with the repo's `command` prefix (default `/ai-agent`)
-triggers a full re-run of the task with the comment body added as extra context:
+While executing, the orchestrator scans comments on open issues **and** open PRs
+on orchestrator-owned branches (`ai/issue-*`). The command is explicit:
 
-- The existing open PR is updated in place (force-push on the same branch)
-- Feedback reactions on the comment: 👀 `eyes` while running, 🚀 `rocket` on
-  success, -1 on failure
-- Each comment is processed exactly once (tracked in the `handled_comments`
-  table); a failed run is not retried automatically — post a new comment to
-  retry
-- PR comments only trigger for orchestrator branches (`ai/issue-*`)
+```text
+/ai-agent-impl <instruction>    = change code and update/reuse the task PR
+/ai-agent-discuss <question>    = inspect read-only and reply in the same thread
+```
+
+`/ai-agent` is not an alias. Implementation comments prepare the current task
+branch, run one direct implementation agent without the normal planning phase,
+run the requested validation, and publish the result. Discussion comments use a
+detached checkout and a read-only provider contract; they never modify files,
+commit, push, create/update a PR, or change completion labels.
+
+Both commands use the same feedback reactions: 👀 `eyes` while running, 🚀
+`rocket` on success, and `-1` on failure. Terminal reactions prevent the same
+comment from being processed again.
 
 ## Pull-request reviews
 
@@ -352,8 +361,8 @@ Context namespace. Do not put service-specific values in generic fields.
   task workspace from the base branch.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
-  is published. Use a comment command or direct `run` to rerun interrupted
-  work.
+  is published. Use `/ai-agent-impl` for an incremental implementation request
+  or the direct `run` command for a full issue execution.
 
 ## Development
 

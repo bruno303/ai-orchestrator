@@ -53,6 +53,18 @@ class _PlaceholderExecutor:
 
 
 @dataclass
+class _PlaceholderDiscussionExecutor:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def execute(self, request: DiscussionRequest) -> DiscussionResult:
+        return DiscussionResult(
+            False,
+            response="discussion executor provider is not wired",
+            context=request.context.merge_namespace("placeholder", {"options": self.options}),
+        )
+
+
+@dataclass
 class _PlaceholderWorkspaceManager:
     options: dict[str, Any] = field(default_factory=dict)
 
@@ -97,6 +109,15 @@ def _opencode_executor_factory(options):
     return OpenCodeExecutor(options=options)
 
 
+def _discussion_executor_factory(provider_name, class_name):
+    def factory(options):
+        if not options.pop("_runtime", False):
+            return _PlaceholderDiscussionExecutor(options)
+        module = __import__(f"orchestrator.infra.{provider_name}.executor", fromlist=[class_name])
+        return getattr(module, class_name)(options=options)
+    return factory
+
+
 def _codex_executor_factory(options):
     if not options.pop("_runtime", False):
         return _PlaceholderExecutor(options)
@@ -139,14 +160,43 @@ def _destination_factory(options):
     return GitHubDestination(options=options, github_client=GitHubClient(identity))
 
 
+@dataclass
+class _PlaceholderDiscussionDestination:
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def publish(self, request: DiscussionPublicationRequest) -> None:
+        return None
+
+
+def _discussion_destination_factory(options):
+    from orchestrator.infra.github import auth as github_auth
+
+    identity = github_auth.identity_from_options(options)
+    if not options.pop("_runtime", False):
+        return _PlaceholderDiscussionDestination(options)
+    from orchestrator.infra.github.client import GitHubClient
+    from orchestrator.infra.github.discussion import GitHubDiscussionDestination
+
+    options.pop("auth", None)
+    return GitHubDiscussionDestination(options=options, github_client=GitHubClient(identity))
+
+
 INPUT_PROVIDERS = ProviderRegistry({"github_polling": _input_factory}, InputSource)
 EXECUTOR_PROVIDERS = ProviderRegistry({
     "claude": _claude_executor_factory,
     "codex": _codex_executor_factory,
     "opencode": _opencode_executor_factory,
 }, Executor)
+DISCUSSION_EXECUTOR_PROVIDERS = ProviderRegistry({
+    "claude": _discussion_executor_factory("claude", "ClaudeDiscussionExecutor"),
+    "codex": _discussion_executor_factory("codex", "CodexDiscussionExecutor"),
+    "opencode": _discussion_executor_factory("opencode", "OpenCodeDiscussionExecutor"),
+}, DiscussionExecutor)
 WORKSPACE_PROVIDERS = ProviderRegistry({"git": _workspace_factory}, WorkspaceManager)
 DESTINATION_PROVIDERS = ProviderRegistry({"github": _destination_factory}, Destination)
+DISCUSSION_DESTINATION_PROVIDERS = ProviderRegistry(
+    {"github": _discussion_destination_factory}, DiscussionDestination
+)
 
 
 @dataclass

@@ -9,9 +9,28 @@ from typing import Any
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.github import auth as github_auth
 from orchestrator.infra.github import client as github
+from orchestrator.infra.github.discussion import publication_marker
 from orchestrator.domain import Context, WorkItem
 from orchestrator.application.ports import InputEvent
 
+
+COMMENT_IMPL = "impl"
+COMMENT_DISCUSS = "discuss"
+COMMENT_COMMANDS = {
+    "/ai-agent-impl": COMMENT_IMPL,
+    "/ai-agent-discuss": COMMENT_DISCUSS,
+}
+
+
+def parse_comment_command(body: str) -> tuple[str, str] | None:
+    """Return the explicit comment intent and instruction, if supported."""
+    text = body.strip()
+    for command, intent in COMMENT_COMMANDS.items():
+        if text.startswith(command):
+            suffix = text[len(command):]
+            if not suffix or suffix[0].isspace():
+                return intent, suffix.strip()
+    return None
 
 
 def _pr_context_block(pr: github.PullRequestDetail) -> str:
@@ -187,14 +206,17 @@ class GitHubPollingInputSource:
         except self.github_client.GitHubError as exc:
             print(f"[poll] {repository}#{number}: comments: {exc}", flush=True)
             return []
-        command = self.config_module.repository_command(repository)
         task_number = task_number or int(task_id.rsplit("#", 1)[1])
-        eligible = [
-            comment
-            for comment in comments
-            if comment.body.strip().startswith(command)
-            and self._comment_is_eligible(repository, comment.id)
-        ]
+        eligible: list[tuple[Any, str, str]] = []
+        for comment in comments:
+            parsed = parse_comment_command(comment.body)
+            if (
+                parsed is not None
+                and self._comment_is_eligible(repository, comment.id)
+                and not self._discussion_response_published(parsed[0], comment.id, comments)
+            ):
+                intent, instruction = parsed
+                eligible.append((comment, intent, instruction))
         if not eligible:
             return []
         try:
@@ -208,39 +230,65 @@ class GitHubPollingInputSource:
             except self.github_client.GitHubError:
                 pr_number = None
         context: list[str] = []
+        pr_detail = None
         if pr_number is not None:
             try:
-                context.append(_pr_context_block(self.github_client.get_pull_request(repository, pr_number)))
+                pr_detail = self.github_client.get_pull_request(repository, pr_number)
+                context.append(_pr_context_block(pr_detail))
             except self.github_client.GitHubError:
                 pass
         events: list[InputEvent] = []
-        for comment in eligible:
+        base_git_context = dict(git_context or {})
+        for comment, intent, instruction in eligible:
+            comment_task_id = f"{task_id}:{comment.id}"
+            comment_workspace = (
+                workspace.task_workspace(task_id)
+                if intent == COMMENT_IMPL
+                else workspace.discussion_workspace(comment_task_id)
+            )
+            comment_git_context = {
+                **base_git_context,
+                "branch": f"ai/issue-{task_number}",
+                "workspace": str(comment_workspace),
+            }
+            if pr_detail is not None:
+                comment_git_context.update({
+                    "base_branch": pr_detail.base_ref,
+                    "revision": pr_detail.head_sha,
+                    "fetch_url": pr_detail.head_clone_url or comment_git_context.get("repository_url", ""),
+                })
             events.append(
                 InputEvent(
                     event_id=f"comment:{comment.id}",
                     work_item=WorkItem(
-                        task_id, repository, issue.title, comment.body,
+                        task_id, repository, issue.title, issue.body,
                         tuple([*context, comment.body]), self.provider_type,
                         Context({
                             "github": {"issue_number": task_number},
-                            "git": {
-                                **(git_context or {}),
-                                "branch": f"ai/issue-{task_number}",
-                                "workspace": str(workspace.task_workspace(task_id)),
-                            },
+                            "git": comment_git_context,
                         }),
                     ),
                     metadata={
                         "kind": "comment",
+                        "intent": intent,
+                        "instruction": instruction,
                     },
-                    trigger="rerun",
+                    trigger="comment",
                     context=Context({"github": {
                         "comment_id": comment.id,
+                        "conversation_number": number,
                         **({"pr_number": pr_number} if pr_number is not None else {}),
                     }}),
                 )
             )
         return events
+
+    @staticmethod
+    def _discussion_response_published(intent: str, comment_id: int, comments: list[Any]) -> bool:
+        if intent != COMMENT_DISCUSS:
+            return False
+        marker = publication_marker(comment_id)
+        return any(marker in str(getattr(comment, "body", "")) for comment in comments)
 
     def _comment_is_eligible(self, repository: str, comment_id: int) -> bool:
         try:

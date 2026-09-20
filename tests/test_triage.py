@@ -10,6 +10,8 @@ from orchestrator.application.triage import TriageApplication
 from orchestrator.domain import Context, TriageOutcome, TriageTarget
 from orchestrator.infra.github.client import Issue
 from orchestrator.infra.github.triage import GitHubTriageDestination, GitHubTriageInputSource
+from orchestrator.infra.claude.executor import ClaudeResult, ClaudeTriageExecutor
+from orchestrator.infra.codex.executor import CodexResult, CodexTriageExecutor
 from orchestrator.infra.opencode.executor import OpenCodeResult, OpenCodeTriageExecutor
 from orchestrator.infra.triage.parser import parse_triage_output
 
@@ -216,3 +218,88 @@ def test_opencode_triage_uses_model_and_parses_result(monkeypatch, tmp_path):
     assert permissions["edit"] == "deny"
     assert permissions["task"] == "deny"
     assert permissions["external_directory"] == "deny"
+
+
+@pytest.mark.parametrize(
+    ("provider", "executor_cls", "result_cls", "run_path", "parser_path"),
+    [
+        (
+            "opencode",
+            OpenCodeTriageExecutor,
+            OpenCodeResult,
+            "orchestrator.infra.opencode.executor.run_opencode",
+            "orchestrator.infra.opencode.executor.parse_triage_output",
+        ),
+        (
+            "codex",
+            CodexTriageExecutor,
+            CodexResult,
+            "orchestrator.infra.codex.executor.run_codex",
+            "orchestrator.infra.codex.executor.parse_triage_output",
+        ),
+        (
+            "claude",
+            ClaudeTriageExecutor,
+            ClaudeResult,
+            "orchestrator.infra.claude.executor.run_claude",
+            "orchestrator.infra.claude.executor.parse_triage_output",
+        ),
+    ],
+)
+def test_triage_preserves_failed_provider_output_and_bypasses_parser(
+    monkeypatch, tmp_path, provider, executor_cls, result_cls, run_path, parser_path
+):
+    monkeypatch.setattr(run_path, lambda *args, **kwargs: result_cls(7, "provider diagnostics", "", 0.1))
+    monkeypatch.setattr(parser_path, lambda *args, **kwargs: pytest.fail("failed output must bypass parser"))
+
+    result = executor_cls().execute(
+        TriageRequest("triage:r#1", "r", str(tmp_path), "assess", Context())
+    )
+
+    assert not result.success
+    assert result.summary == "provider diagnostics"
+    assert result.context.namespace(provider)["exit_code"] == 7
+
+
+@pytest.mark.parametrize(
+    ("provider", "executor_cls", "result_cls", "run_path", "parser_path", "fallback"),
+    [
+        (
+            "opencode",
+            OpenCodeTriageExecutor,
+            OpenCodeResult,
+            "orchestrator.infra.opencode.executor.run_opencode",
+            "orchestrator.infra.opencode.executor.parse_triage_output",
+            "OpenCode triage executor failed",
+        ),
+        (
+            "codex",
+            CodexTriageExecutor,
+            CodexResult,
+            "orchestrator.infra.codex.executor.run_codex",
+            "orchestrator.infra.codex.executor.parse_triage_output",
+            "Codex triage executor failed",
+        ),
+        (
+            "claude",
+            ClaudeTriageExecutor,
+            ClaudeResult,
+            "orchestrator.infra.claude.executor.run_claude",
+            "orchestrator.infra.claude.executor.parse_triage_output",
+            "Claude triage executor failed",
+        ),
+    ],
+)
+def test_triage_uses_provider_fallback_for_empty_failed_output(
+    monkeypatch, tmp_path, provider, executor_cls, result_cls, run_path, parser_path, fallback
+):
+    monkeypatch.setattr(run_path, lambda *args, **kwargs: result_cls(9, "", "", 0.1))
+    monkeypatch.setattr(parser_path, lambda *args, **kwargs: pytest.fail("failed output must bypass parser"))
+
+    result = executor_cls().execute(
+        TriageRequest("triage:r#1", "r", str(tmp_path), "assess", Context())
+    )
+
+    assert not result.success
+    assert result.summary == fallback
+    assert result.context.namespace(provider)["exit_code"] == 9

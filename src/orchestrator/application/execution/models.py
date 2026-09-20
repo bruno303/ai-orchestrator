@@ -39,6 +39,7 @@ class PrepareExecutionRequest:
     base_branch: str = ""
     workspace: str = ""
     context: Context = field(default_factory=Context)
+    reuse_workspace: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,18 @@ class PrepareExecutionResult:
     work: WorkContext
     workspace: WorkspaceResult
     base_branch: str
+    context: Context = field(default_factory=Context)
+
+
+@dataclass(frozen=True)
+class IncrementalExecutionRequest:
+    """Inputs for a comment-triggered direct implementation run."""
+
+    work: WorkContext
+    instruction: str
+    branch: str = ""
+    base_branch: str = ""
+    workspace: str = ""
     context: Context = field(default_factory=Context)
 
 
@@ -83,6 +96,18 @@ class ImplementationRequest:
     workspace: str
     plan_path: str = ".agents/plans/plan.md"
     context: Context = field(default_factory=Context)
+
+
+@dataclass(frozen=True)
+class IncrementalImplementationRequest:
+    """Request for a comment-triggered implementation without planning."""
+
+    work: WorkContext
+    workspace: str
+    instruction: str
+    context: Context = field(default_factory=Context)
+
+
 @dataclass(frozen=True)
 class ImplementationResult:
     summary: str

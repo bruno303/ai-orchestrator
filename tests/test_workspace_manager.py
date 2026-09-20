@@ -76,6 +76,33 @@ def test_prepare_recreates_existing_execution_workspace(remote_repo, tmp_path):
     assert not workspace_path.exists()
 
 
+def test_prepare_reuses_existing_execution_workspace_when_requested(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    request = WorkspaceRequest(
+        "company/backend#8-retry", "company/backend", "ai/issue-8", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    )
+
+    first = manager.prepare(request)
+    sentinel = workspace_path / "unfinished.txt"
+    sentinel.write_text("preserve this work\n")
+
+    second = manager.prepare(
+        WorkspaceRequest(
+            "company/backend#8-retry", "company/backend", "ai/issue-8", "main",
+            workspace=str(workspace_path), reuse_workspace=True,
+            context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+        )
+    )
+
+    assert second.workspace == first.workspace
+    assert sentinel.read_text() == "preserve this work\n"
+    manager.cleanup(second)
+    assert not workspace_path.exists()
+
+
 def test_prepare_removes_existing_plain_directory(remote_repo, tmp_path):
     manager = GitWorkspaceManager()
     workspace_path = tmp_path / "workspace"
