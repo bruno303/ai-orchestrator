@@ -35,7 +35,7 @@ def test_destination_reuses_existing_pr_without_changing_body(monkeypatch, tmp_p
     calls: list[tuple] = []
     monkeypatch.setattr(git, "has_changes", lambda workspace: False)
     monkeypatch.setattr(git, "commits_ahead", lambda workspace, base: 1)
-    monkeypatch.setattr(git, "push_branch", lambda workspace, branch: calls.append(("push", branch)))
+    monkeypatch.setattr(git, "push_branch", lambda *args, **kwargs: calls.append(("push", args[1])))
     monkeypatch.setattr("orchestrator.infra.github.client.find_open_pr", lambda repository, head: 7)
     existing_body = "Closes #1\n\nExisting PR description"
     monkeypatch.setattr(
@@ -88,6 +88,53 @@ def test_github_destination_reads_issue_metadata_from_its_namespace(monkeypatch,
     assert result.id == "23"
     assert calls[0] == ("commit", "feat: task\n\nCloses #7")
     assert calls[2][1].startswith("Closes #7")
+
+
+def test_pr_destination_updates_same_pr_without_issue_closing_or_new_pr(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(git, "has_changes", lambda workspace: True)
+    monkeypatch.setattr(git, "commits_ahead", lambda *args: 0)
+    monkeypatch.setattr(git, "commit_all", lambda workspace, message: calls.append(("commit", message)))
+    monkeypatch.setattr(git, "push_branch", lambda *args, **kwargs: calls.append(("push", args[1])))
+
+    class Client:
+        def add_issue_label(self, *args): calls.append(("label", *args))
+        def create_pull_request(self, *args, **kwargs): raise AssertionError("must not create PR")
+
+    result = GitHubDestination(
+        github_client=Client(),
+    ).publish(ChangeRequest(
+        "owner/repo#pr-17", "owner/repo", "Improve feature", "description",
+        "contributors/topic", "main", Context({
+            "github": {"pr_number": 17}, "git": {
+                "workspace": str(tmp_path), "push_url": "https://github.com/contributors/repo.git",
+            },
+        }),
+    ))
+
+    assert result.id == "17"
+    assert calls == [("commit", "Improve feature"), ("push", "contributors/topic"),
+                     ("label", "owner/repo", 17, "ai-developed")]
+
+
+def test_pr_destination_rejects_closed_pr_before_push(monkeypatch, tmp_path):
+    import pytest
+
+    pushed = []
+    monkeypatch.setattr(git, "push_branch", lambda *args: pushed.append(args))
+
+    class Client:
+        def get_pull_request(self, repository, number):
+            return type("PR", (), {"state": "CLOSED", "head_ref": "topic", "head_sha": "sha"})()
+
+    with pytest.raises(git.GitError, match="no longer open"):
+        GitHubDestination(github_client=Client()).publish(ChangeRequest(
+            "owner/repo#pr-17", "owner/repo", "title", "description", "topic", "main",
+            Context({"github": {"pr_number": 17, "head_branch": "topic", "head_sha": "sha"},
+                     "git": {"workspace": str(tmp_path),
+                             "push_url": "https://github.com/contributors/repo.git"}}),
+        ))
+    assert not pushed
 
 
 def test_destination_does_not_report_success_when_developed_label_fails(monkeypatch, tmp_path):

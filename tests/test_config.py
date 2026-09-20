@@ -118,6 +118,23 @@ def test_pipeline_config_defaults(allowlist):
     assert pipeline.triage.labels.output.blocked.add == ("ai-triage",)
 
 
+def test_logging_verbosity_defaults_to_normal(allowlist):
+    config.load_logging_config.cache_clear()
+    assert config.load_logging_config().verbosity == "normal"
+
+
+def test_logging_verbosity_is_validated(allowlist):
+    config.CONFIG_FILE.write_text("logging:\n  verbosity: noisy\n")
+    config.load_logging_config.cache_clear()
+    try:
+        config.load_logging_config()
+    except ValueError as exc:
+        assert "logging.verbosity" in str(exc)
+        assert "quiet, normal, verbose" in str(exc)
+    else:
+        raise AssertionError("expected invalid logging verbosity error")
+
+
 def test_stage_label_contracts_are_translated_to_provider_options(allowlist):
     config.CONFIG_FILE.write_text(
         "pipeline:\n"

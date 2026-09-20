@@ -47,6 +47,7 @@ def fake_gh(monkeypatch):
                     "body": "Closes #28",
                     "url": "https://github.com/company/backend/pull/14",
                     "baseRefName": "main",
+                    "headRepository": {"nameWithOwner": "company/backend"},
                     "headRefName": "ai/issue-28",
                     "files": [
                         {"path": "src/app/page.tsx", "status": "modified"},
@@ -202,6 +203,69 @@ def test_get_pull_request(fake_gh):
     assert pr.head_ref == "ai/issue-28"
     assert pr.url == "https://github.com/company/backend/pull/14"
     assert pr.files == [("src/app/page.tsx", "modified"), ("src/new.ts", "added")]
+
+
+def test_get_pull_request_preserves_head_repository_metadata(monkeypatch):
+    monkeypatch.setattr(github, "_run_gh", lambda args: json.dumps({
+        "number": 9, "title": "feature", "body": "body", "url": "url",
+        "baseRefName": "main", "headRefName": "arbitrary/topic", "headRefOid": "sha",
+        "headRepository": {"cloneUrl": "https://github.com/fork/repo.git", "nameWithOwner": "fork/repo"},
+        "files": [],
+    }))
+
+    pr = github.get_pull_request("owner/repo", 9)
+
+    assert (pr.head_ref, pr.head_sha, pr.head_clone_url, pr.head_repository) == (
+        "arbitrary/topic", "sha", "https://github.com/fork/repo.git", "fork/repo"
+    )
+
+
+def test_get_pull_request_derives_head_clone_url_from_real_gh_repository_shape(monkeypatch):
+    monkeypatch.setattr(github, "_run_gh", lambda args: json.dumps({
+        "number": 9, "title": "feature", "body": "", "url": "url",
+        "baseRefName": "main", "headRefName": "topic", "headRefOid": "sha",
+        "headRepository": {"nameWithOwner": "fork/repo"}, "files": [],
+    }))
+    assert github.get_pull_request("owner/repo", 9).head_clone_url == \
+        "https://github.com/fork/repo.git"
+
+
+def test_raw_paginated_comments_and_reactions_are_aggregated(monkeypatch):
+    def api(endpoint, jq_expr=None, *, paginate=False):
+        if "/reactions?" in endpoint:
+            return '[{"content":"eyes","user":{"login":"a"}}][{"content":"rocket","user":{"login":"b"}}]'
+        return '[{"id":1,"body":"one"}][{"id":2,"body":"two"}]'
+
+    monkeypatch.setattr(github, "_api", api)
+    assert [item.id for item in github.list_issue_comments("o/r", 1)] == [1, 2]
+    assert [item.content for item in github.list_issue_comment_reactions("o/r", 1)] == ["eyes", "rocket"]
+
+
+def test_list_pull_request_reviews_and_inline_comments_include_links(monkeypatch):
+    def api(endpoint, jq_expr=None, *, paginate=False):
+        if "/reviews?" in endpoint:
+            return json.dumps([{"id": 4, "body": "looks good", "state": "APPROVED",
+                                "user": {"login": "reviewer"}, "html_url": "review-url"}])
+        return json.dumps([{"id": 5, "body": "fix this", "path": "a.py", "line": 3,
+                            "user": {"login": "reviewer"}, "html_url": "comment-url"}])
+
+    monkeypatch.setattr(github, "_api", api)
+    review = github.list_pull_request_reviews("owner/repo", 9)[0]
+    comment = github.list_pull_request_review_comments("owner/repo", 9)[0]
+
+    assert (review.state, review.url) == ("APPROVED", "review-url")
+    assert (comment.path, comment.line, comment.url) == ("a.py", 3, "comment-url")
+
+
+def test_pull_request_review_endpoints_aggregate_paginated_arrays(monkeypatch):
+    def api(endpoint, jq_expr=None, *, paginate=False):
+        if "/reviews?" in endpoint:
+            return '[{"id": 1, "body": "first"}][{"id": 2, "body": "second"}]'
+        return '[{"id": 3, "body": "inline one"}][{"id": 4, "body": "inline two"}]'
+
+    monkeypatch.setattr(github, "_api", api)
+    assert [item.id for item in github.list_pull_request_reviews("o/r", 1)] == [1, 2]
+    assert [item.id for item in github.list_pull_request_review_comments("o/r", 1)] == [3, 4]
 
 
 def test_remove_pull_request_label_is_idempotent(monkeypatch):

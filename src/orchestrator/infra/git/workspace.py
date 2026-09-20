@@ -27,7 +27,11 @@ class GitWorkspaceManager:
 
     def prepare(self, request: WorkspaceRequest) -> WorkspaceResult:
         git_context = {**self.options, **dict(request.context.namespace("git"))}
-        repository_url = request.repository_url or git_context.get("repository_url")
+        repository_url = (
+            request.repository_url
+            or git_context.get("base_repository_url")
+            or git_context.get("repository_url")
+        )
         if not repository_url:
             raise git.GitError("workspace request requires a repository URL")
         base_branch = request.base_branch or request.target_ref or git_context.get("base_branch", "")
@@ -76,7 +80,18 @@ class GitWorkspaceManager:
                             shutil.rmtree(workspace_path)
                         else:
                             workspace_path.unlink()
-                self.git_client.create_worktree(repo_dir, workspace_path, branch, base_branch)
+                revision = request.revision or git_context.get("revision")
+                fetch_url = request.fetch_url or git_context.get("fetch_url")
+                if revision:
+                    # PR execution must begin at the recorded head, not at a cached
+                    # base clone's origin branch (which may be a different fork).
+                    self.git_client.fetch_commit(repo_dir, revision, fetch_url or "origin")
+                    self.git_client.create_worktree(
+                        repo_dir, workspace_path, branch, base_branch,
+                        start_point=revision,
+                    )
+                else:
+                    self.git_client.create_worktree(repo_dir, workspace_path, branch, base_branch)
         result_context = request.context.merge_namespace("git", {
             **dict(request.context.namespace("git")),
             "repository": request.repository,

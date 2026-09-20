@@ -113,7 +113,10 @@ def compose_runtime() -> Runtime:
     source = _create(
         INPUT_PROVIDERS,
         pipeline.input_source,
-        overrides=_label_filter_options(pipeline.labels),
+        overrides={
+            **_label_filter_options(pipeline.labels),
+            "verbosity": config.load_logging_config().verbosity,
+        },
     )
     executor = _create(EXECUTOR_PROVIDERS, pipeline.executor)
     manager = _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager)

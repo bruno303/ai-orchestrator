@@ -230,3 +230,19 @@ def test_push_branch_force_overwrites_stale_remote(repo_dir, remote_repo, tmp_pa
         text=True,
     ).stdout.split()[0]
     assert remote_head == local_head
+
+
+def test_push_branch_does_not_force_arbitrary_pr_branch(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, cwd, *, check=True, env=None):
+        calls.append(args)
+        if args[:3] == ["git", "push", "-u"]:
+            return subprocess.CompletedProcess(args, 1, "", "non-fast-forward")
+        raise AssertionError("force retry must not be attempted")
+
+    monkeypatch.setattr(git, "_run", fake_run)
+    with pytest.raises(git.GitError, match="non-fast-forward"):
+        git.push_branch(tmp_path, "contributors/topic", "https://github.com/fork/repo.git",
+                        allow_force_with_lease=False)
+    assert calls == [["git", "push", "-u", "https://github.com/fork/repo.git", "contributors/topic"]]
