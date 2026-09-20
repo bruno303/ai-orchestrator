@@ -203,7 +203,7 @@ def run_sandbox(
         "--cpus",
         str(cpus),
         "--tmpfs",
-        "/tmp:rw,nosuid,nodev,mode=1777",
+        "/tmp:rw,exec,nosuid,nodev,mode=1777",
         "--tmpfs",
         f"/home/agent:rw,nosuid,nodev,uid={uid},gid={gid},mode=0700",
         "--workdir",
