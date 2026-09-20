@@ -111,13 +111,13 @@ def test_runner_mounts_host_docker_socket_and_adds_socket_group(tmp_path, monkey
     calls = []
     socket = tmp_path / "docker.sock"
     socket.touch()
-    monkeypatch.setattr(os, "stat", lambda path: type("Stat", (), {"st_gid": 987})() if str(path) == str(socket) else Path(path).stat())
+    socket_gid = socket.stat().st_gid
     _runtime_ok(monkeypatch, calls)
 
     run_sandbox(["docker", "version"], tmp_path, docker_socket=str(socket))
 
     command = _container_command(calls)
-    assert command[command.index("--group-add") + 1] == "987"
+    assert command[command.index("--group-add") + 1] == str(socket_gid)
     assert f"type=bind,source={socket},target=/var/run/docker.sock,readonly" in command
 
 
@@ -153,7 +153,6 @@ def test_runner_fails_closed_when_disabled(tmp_path):
 
 
 def test_runner_preserves_exit_code_and_streams_log(tmp_path, monkeypatch):
-    calls = []
     log_file = tmp_path / "logs" / "sandbox.log"
 
     class Process:
