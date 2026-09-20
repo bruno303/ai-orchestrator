@@ -22,6 +22,7 @@ def test_runner_builds_restricted_container_command(tmp_path, monkeypatch):
 
     monkeypatch.setenv("TOKEN", "secret")
     monkeypatch.setenv("NOT_ALLOWED", "must-not-leak")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.run", lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})())
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.Popen", lambda command, **kwargs: (calls.append((command, kwargs)) or Process()))
@@ -44,9 +45,122 @@ def test_runner_builds_restricted_container_command(tmp_path, monkeypatch):
     assert "XDG_CACHE_HOME=/workspace/.cache" in command
     assert "XDG_DATA_HOME=/workspace/.local/share" in command
     mount = command[command.index("--mount") + 1]
-    assert mount.startswith(f"type=bind,source={tmp_path.resolve()},target=/workspace")
+    assert mount == f"type=bind,source={tmp_path.resolve()},target=/workspace"
     assert command.count("--mount") == 1
     assert "/workspace" in mount and command[-3:] == ["agent", "--prompt", "hello"]
+
+
+def test_runner_mounts_available_opencode_directories_with_expected_permissions(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".config" / "opencode").mkdir(parents=True)
+    (home / ".local" / "share" / "opencode").mkdir(parents=True)
+    (home / ".agents" / "skills").mkdir(parents=True)
+    calls = []
+
+    class Process:
+        returncode = 0
+        stdout = StringIO()
+        stderr = StringIO()
+
+        def wait(self):
+            return None
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
+    )
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.Popen",
+        lambda command, **kwargs: (calls.append(command) or Process()),
+    )
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
+
+    run_sandbox(["true"], tmp_path)
+
+    mounts = [calls[0][index + 1] for index, value in enumerate(calls[0]) if value == "--mount"]
+    assert mounts[1:] == [
+        f"type=bind,source={(tmp_path / 'home' / '.config' / 'opencode').resolve()},target=/workspace/.config/opencode,ro",
+        f"type=bind,source={(tmp_path / 'home' / '.local' / 'share' / 'opencode').resolve()},target=/workspace/.local/share/opencode",
+        f"type=bind,source={(tmp_path / 'home' / '.agents' / 'skills').resolve()},target=/workspace/.home/.agents/skills,ro",
+    ]
+
+
+def test_runner_skips_absent_opencode_directories(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".config" / "opencode").mkdir(parents=True)
+    calls = []
+
+    class Process:
+        returncode = 0
+        stdout = StringIO()
+        stderr = StringIO()
+
+        def wait(self):
+            return None
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
+    )
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.Popen",
+        lambda command, **kwargs: (calls.append(command) or Process()),
+    )
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
+
+    run_sandbox(["true"], tmp_path)
+
+    mounts = [calls[0][index + 1] for index, value in enumerate(calls[0]) if value == "--mount"]
+    assert len(mounts) == 2
+    assert mounts[0].endswith("target=/workspace")
+    assert mounts[1].endswith("target=/workspace/.config/opencode,ro")
+
+
+def test_runner_prepares_writable_mount_destinations(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".local" / "share" / "opencode").mkdir(parents=True)
+    calls = []
+
+    class Process:
+        returncode = 0
+        stdout = StringIO()
+        stderr = StringIO()
+
+        def wait(self):
+            return None
+
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
+    )
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.Popen",
+        lambda command, **kwargs: (calls.append(command) or Process()),
+    )
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
+
+    run_sandbox(["true"], tmp_path)
+
+    for relative in (".home", ".config", ".cache", ".local/share", ".local/share/opencode"):
+        assert (tmp_path / relative).is_dir()
+
+
+def test_runner_rejects_conflicting_mount_destination(tmp_path, monkeypatch):
+    (tmp_path / ".config").symlink_to(tmp_path / "elsewhere")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
+    )
+    with pytest.raises(SandboxError, match="mount destination"):
+        run_sandbox(["true"], tmp_path)
 
 
 @pytest.mark.parametrize("path_kind", ["missing", "file"])
@@ -106,7 +220,7 @@ def test_runner_preserves_exit_code_and_writes_streamed_output(tmp_path, monkeyp
 
     assert result.exit_code == 7
     assert result.stdout == "failure\n"
-    assert "docker run --image orchestrator-agent:latest" in log_file.read_text()
+    assert "docker run --image bruno303/ai-orchestrator-agent:latest" in log_file.read_text()
     assert "failure\n" in log_file.read_text()
 
 

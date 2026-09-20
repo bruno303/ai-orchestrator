@@ -78,8 +78,10 @@ override the corresponding `config.yaml` values through the environment.
 ### Agent sandbox
 
 Agent commands always run through the configured container sandbox. The default
-is Docker with image `orchestrator-agent:latest`, bridge networking, and one
-read-write bind mount: the task workspace at `/workspace`. Setting
+is Docker with image `bruno303/ai-orchestrator-agent:latest`, bridge networking, and one
+general-purpose read-write bind mount: the task workspace at `/workspace`. The
+optional OpenCode state mount at `/workspace/.local/share/opencode` is an additional
+read-write mount. Setting
 `sandbox.enabled: false` fails closed; it does not permit execution on the host.
 
 Install Docker Engine or Podman and make the selected runtime available on
@@ -88,14 +90,30 @@ installed in this image; provider binaries installed on the host are not used
 for sandbox execution:
 
 ```bash
-docker build -f Dockerfile.agent -t orchestrator-agent:latest .
+make build-image
+```
+
+The image is also available as `bruno303/ai-orchestrator-agent:latest` on Docker
+Hub. To build and publish it, authenticate with Docker Hub first (`docker login`)
+and run:
+
+```bash
+make publish-image
+```
+
+`publish-image` builds the image before pushing it; `build-image` never publishes
+an image. The optional provider CLIs can be installed during the build by
+passing the existing Dockerfile build arguments through Make:
+
+```bash
+make build-image INSTALL_CODEX=1 INSTALL_CLAUDE=1
 ```
 
 `Dockerfile.agent` includes Python 3.11, build tools, git, uv, Node.js, and npm.
 It installs OpenCode by default. Codex and Claude Code are optional build hooks:
 
 ```bash
-docker build -f Dockerfile.agent -t orchestrator-agent:latest . \
+docker build -f Dockerfile.agent -t bruno303/ai-orchestrator-agent:latest . \
   --build-arg INSTALL_CODEX=1 --build-arg INSTALL_CLAUDE=1
 ```
 
@@ -103,6 +121,20 @@ The corresponding npm packages are `opencode-ai`, `@openai/codex`, and
 `@anthropic-ai/claude-code`. Alternatively, build a compatible custom image
 with the selected CLI already on `PATH`, then set `sandbox.image` and, if
 needed, `sandbox.runtime: podman` in `config/config.yaml`.
+
+For OpenCode, the sandbox additionally mounts available host state directories:
+
+| Host directory | Container directory | Permission |
+|---|---|---|
+| `~/.config/opencode` | `/workspace/.config/opencode` | read-only |
+| `~/.local/share/opencode` | `/workspace/.local/share/opencode` | read-write |
+| `~/.agents/skills` | `/workspace/.home/.agents/skills` | read-only |
+
+These mounts provide OpenCode configuration/authentication and shared skills
+without copying them into the image. Each mount is optional: a missing host
+directory is skipped. The task workspace remains the only general read-write
+mount. The OpenCode state mounts may contain credentials, so keep their host
+permissions and contents appropriate for the invoking user.
 
 Network access is available by default so agents can reach their provider and
 fetch dependencies. The `sandbox.network` value is passed directly to Docker

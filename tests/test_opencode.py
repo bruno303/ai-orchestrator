@@ -56,6 +56,22 @@ def test_run_opencode_ignores_host_binary_override(tmp_path, monkeypatch):
     assert captured["command"][0] == "opencode"
 
 
+def test_run_opencode_uses_sandbox_working_directory(tmp_path):
+    captured = {}
+
+    class Runner:
+        def run(self, command, workspace, **options):
+            captured["command"] = command
+            captured["workspace"] = workspace
+            from orchestrator.infra.sandbox.runner import SandboxResult
+            return SandboxResult(0, "", "", 0)
+
+    opencode.run_opencode(tmp_path, "plan", "prompt", runner=Runner())
+
+    assert captured["workspace"] == tmp_path
+    assert "--dir" not in captured["command"]
+
+
 def test_run_opencode_uses_default_agent_when_not_provided(tmp_path, clean_env, monkeypatch):
     args_file = tmp_path / "args.txt"
     monkeypatch.setenv("FAKE_OPCODE_ARGS_FILE", str(args_file))

@@ -123,7 +123,7 @@ def test_sandbox_config_defaults(allowlist):
     sandbox = config.load_sandbox_config()
     assert sandbox.enabled is True
     assert sandbox.runtime == "docker"
-    assert sandbox.image == "orchestrator-agent:latest"
+    assert sandbox.image == "bruno303/ai-orchestrator-agent:latest"
     assert sandbox.network == "bridge"
     assert sandbox.environment_allowlist == ()
 

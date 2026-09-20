@@ -72,7 +72,7 @@ class SandboxConfig:
 
     enabled: bool = True
     runtime: str = "docker"
-    image: str = "orchestrator-agent:latest"
+    image: str = "bruno303/ai-orchestrator-agent:latest"
     network: str = "bridge"
     environment_allowlist: tuple[str, ...] = ()
 
@@ -85,7 +85,7 @@ def _sandbox_config(data: dict[str, Any]) -> SandboxConfig:
     raw = data.get("sandbox") or {}
     if not isinstance(raw, dict):
         raise ValueError("sandbox must be a mapping")
-    values = {"enabled": True, "runtime": "docker", "image": "orchestrator-agent:latest", "network": "bridge"}
+    values = {"enabled": True, "runtime": "docker", "image": "bruno303/ai-orchestrator-agent:latest", "network": "bridge"}
     values.update({key: raw[key] for key in values if key in raw})
     allowlist = raw.get("environment_allowlist", raw.get("environment", ()))
     if isinstance(allowlist, str):

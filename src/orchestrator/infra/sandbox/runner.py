@@ -22,6 +22,14 @@ _WRITABLE_CLI_ENVIRONMENT = (
     ("XDG_DATA_HOME", "/workspace/.local/share"),
 )
 
+_OPENCODE_HOST_MOUNTS = (
+    (".config/opencode", "/workspace/.config/opencode", "ro"),
+    (".local/share/opencode", "/workspace/.local/share/opencode", None),
+    (".agents/skills", "/workspace/.home/.agents/skills", "ro"),
+)
+
+_WRITABLE_DESTINATIONS = (".home", ".config", ".cache", ".local/share")
+
 
 class SandboxError(RuntimeError):
     """The sandbox could not be started or completed."""
@@ -89,12 +97,52 @@ def _check_image(binary: str, image: str) -> None:
         raise SandboxError(f"sandbox image unavailable: {image}{suffix}")
 
 
+def _opencode_mount_args() -> list[str]:
+    """Return bind mounts for the invoking user's available OpenCode state."""
+    home = Path.home()
+    mounts: list[str] = []
+    for source_suffix, target, permissions in _OPENCODE_HOST_MOUNTS:
+        source = home / source_suffix
+        if source.is_dir():
+            mount = f"type=bind,source={source.resolve()},target={target}"
+            if permissions is not None:
+                mount += f",{permissions}"
+            mounts += [
+                "--mount",
+                mount,
+            ]
+    return mounts
+
+
+def _ensure_workspace_directory(workspace: Path, relative_path: str) -> None:
+    """Create a container destination owned by the invoking user.
+
+    Docker creates missing bind targets as root, so every destination needed by
+    the non-root container is created before the runtime is started. Symlinks
+    and non-directories are rejected to avoid preparing an unexpected path.
+    """
+    current = workspace
+    for component in Path(relative_path).parts:
+        current = current / component
+        if current.is_symlink() or (current.exists() and not current.is_dir()):
+            raise SandboxError(f"sandbox mount destination is not a directory: {current}")
+        current.mkdir(exist_ok=True)
+
+
+def _prepare_mount_destinations(workspace: Path, opencode_mounts: Sequence[str]) -> None:
+    for destination in _WRITABLE_DESTINATIONS:
+        _ensure_workspace_directory(workspace, destination)
+    for mount in opencode_mounts[1::2]:
+        target = next(field.removeprefix("target=") for field in mount.split(",") if field.startswith("target="))
+        _ensure_workspace_directory(workspace, target.removeprefix("/workspace/"))
+
+
 def run_sandbox(
     command: Sequence[str],
     workspace: str | Path,
     *,
     runtime: str = "docker",
-    image: str = "orchestrator-agent:latest",
+    image: str = "bruno303/ai-orchestrator-agent:latest",
     network: str = "bridge",
     environment_allowlist: Sequence[str] = (),
     timeout: int | None = None,
@@ -123,6 +171,8 @@ def run_sandbox(
         value = (environment or {}).get(name, os.environ.get(name))
         if value is not None:
             env_args += ["--env", f"{name}={value}"]
+    opencode_mounts = _opencode_mount_args()
+    _prepare_mount_destinations(workspace, opencode_mounts)
     cmd = [
         binary,
         "run",
@@ -136,7 +186,8 @@ def run_sandbox(
         "--workdir",
         "/workspace",
         "--mount",
-        f"type=bind,source={workspace.resolve()},target=/workspace,rw",
+        f"type=bind,source={workspace.resolve()},target=/workspace",
+        *opencode_mounts,
         *sum((["--env", f"{name}={value}"] for name, value in _WRITABLE_CLI_ENVIRONMENT), []),
         *env_args,
         image,

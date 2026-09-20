@@ -233,8 +233,6 @@ def run_opencode(
         "opencode",
         "run",
         "--auto",
-        "--dir",
-        "/workspace",
     ]
     if agent is not None:
         cmd[2:2] = ["--agent", agent]
