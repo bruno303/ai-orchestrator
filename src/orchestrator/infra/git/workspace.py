@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -10,15 +9,6 @@ from orchestrator.application.ports import WorkspaceRequest, WorkspaceResult
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.git import client as git
 from orchestrator.infra.github import auth as github_auth
-
-
-def _remove_workspace(path: Path) -> None:
-    if not path.exists() and not path.is_symlink():
-        return
-    if path.is_dir() and not path.is_symlink():
-        shutil.rmtree(path)
-    else:
-        path.unlink()
 
 
 class GitWorkspaceManager:
@@ -83,7 +73,7 @@ class GitWorkspaceManager:
             if not commit:
                 raise git.GitError("revision workspace requires a commit revision")
 
-            _remove_workspace(workspace_path)
+            workspace.remove_workspace(workspace_path)
             self.git_client.clone_workspace(
                 repo_dir, workspace_path, repository_url
             )
@@ -103,7 +93,7 @@ class GitWorkspaceManager:
                 and (workspace_path / ".git").is_dir()
             )
             if not reusable:
-                _remove_workspace(workspace_path)
+                workspace.remove_workspace(workspace_path)
                 self.git_client.clone_workspace(
                     repo_dir, workspace_path, repository_url
                 )
@@ -153,4 +143,4 @@ class GitWorkspaceManager:
         )
 
     def cleanup(self, result: WorkspaceResult) -> None:
-        _remove_workspace(Path(result.workspace))
+        workspace.remove_workspace(Path(result.workspace))

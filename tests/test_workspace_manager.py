@@ -125,13 +125,13 @@ def test_prepare_reuses_existing_execution_workspace_when_requested(
     manager.cleanup(second)
 
 
-def test_prepare_replaces_legacy_linked_worktree_when_reuse_requested(
+def test_prepare_replaces_legacy_external_git_metadata_when_reuse_requested(
     remote_repo, tmp_path
 ):
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
     (workspace_path / ".git").write_text(
-        "gitdir: /outside/base/.git/worktrees/legacy\n"
+        "gitdir: /outside/base/.git/linked-workspaces/legacy\n"
     )
     (workspace_path / "stale.txt").write_text("legacy\n")
 

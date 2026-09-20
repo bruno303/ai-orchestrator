@@ -3,7 +3,7 @@
 Local orchestrator (LangGraph + OpenCode, Codex, or Claude Code) that turns input events into published changes:
 
 ```
-GitHub Issue → triage (`make triage`) → workspace (git worktree) → agent plan → agent build with tests and quality checks
+GitHub Issue → triage (`make triage`) → workspace (self-contained Git clone) → agent plan → agent build with tests and quality checks
              (subagent-plan-execution) → push / PR publication → cleanup
 ```
 
@@ -115,7 +115,7 @@ execution. CPU, memory and PID limits are applied to every agent run. The
 container also uses a read-only root filesystem, drops all Linux capabilities,
 sets `no-new-privileges`, and keeps writable runtime state in tmpfs-backed
 `/home/agent` and `/tmp` instead of creating `.home`, `.cache`, or provider
-state directories in the repository worktree.
+state directories in the repository workspace.
 
 The task workspace is the normal writable host bind mount. It is mounted at the
 same absolute path inside the agent container rather than only at `/workspace`.
@@ -199,7 +199,7 @@ Paths, limits, model and loop detection (env overrides):
 | Variable | Default |
 |---|---|
 | `ORCHESTRATOR_REPOS_DIR` | `~/agent-repos` (base clones) |
-| `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task worktrees) |
+| `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task workspaces) |
 | `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
@@ -360,7 +360,7 @@ the same issue and review steps can later be called by an HTTP API, n8n, or
 another workflow engine without duplicating agent, git, or provider logic.
 `GitWorkspaceManager` is provider-neutral: adapters provide explicit clone/fetch
 URLs, refs, revisions, checkout mode, and workspace paths; it performs only git
-clone, fetch, worktree, and cleanup operations.
+clone, fetch, checkout, and cleanup operations.
 LangGraph routes a single in-memory execution. The review workflow remains
 independently invokable and has its own GitHub `ai-reviewed` marker.
 
@@ -435,9 +435,10 @@ and configure its type. Input events carry
 the configured input provider identity, and provider metadata belongs in its
 Context namespace. Do not put service-specific values in generic fields.
 
-- **Isolation**: each task gets its own `git worktree` under
+- **Isolation**: each task gets its own self-contained Git clone under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,
-  created from a shared base clone in `~/agent-repos/`.
+  created from a shared base clone in `~/agent-repos/`. Its `.git` directory
+  is local to the workspace and has no dependency on the base clone.
 - **Assignment**: polling selects only unassigned issues matching the
   execution stage's labels and assigns the authenticated GitHub user
   before starting work. A failed assignment is logged and the issue is skipped
@@ -455,10 +456,10 @@ Context namespace. Do not put service-specific values in generic fields.
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
-- **Cleanup**: after a successful PR, the task worktree and local branch are
+- **Cleanup**: after a successful PR, the task workspace and local branch are
   removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging until a rerun starts; reruns discard and recreate the
-  task workspace from the base branch.
+  workspace for debugging until a rerun starts; reruns discard and recreate the
+  task clone from the base branch.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use `/ai-agent-impl` for an incremental implementation request

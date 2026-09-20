@@ -233,7 +233,7 @@ class ExecutionRuntime:
             request.context,
             reuse_workspace=True,
         ))
-        # Preserve the prepared worktree and branch when implementation or
+        # Preserve the prepared workspace and branch when implementation or
         # publication fails so the completed work can be inspected or retried
         # without losing uncommitted changes.
         implemented = self.implement_incremental(IncrementalImplementationRequest(

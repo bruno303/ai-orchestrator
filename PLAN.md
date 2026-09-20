@@ -13,7 +13,7 @@ Resolve repository
     ↓
 Clone / fetch repository
     ↓
-Create isolated git worktree + branch
+Create isolated Git clone + branch
     ↓
 OpenCode (plan)
     ↓
@@ -97,7 +97,7 @@ Os repositórios trabalhados ficam em outro diretório:
 
 Não usar um único checkout compartilhado.
 
-Cada execução terá seu próprio worktree.
+Cada execução terá seu próprio clone e checkout.
 
 ---
 
@@ -220,7 +220,7 @@ O orchestrator deverá:
 5. Clonar o repositório, caso ainda não exista.
 6. Fazer `fetch` das referências necessárias.
 7. Criar uma branch de trabalho.
-8. Criar o git worktree.
+8. Criar o clone local da task e fazer o checkout da branch.
 9. Armazenar o caminho no `TaskState`.
 
 Exemplo:
@@ -242,31 +242,33 @@ branch: ai/issue-123
 
 # 8. Estratégia Git
 
-Preferir `git worktree` para isolamento.
+Usar clones locais independentes para isolamento.
 
 Exemplo conceitual:
 
 ```bash
 git clone git@github.com:company/backend.git ~/agent-repos/backend
 
-cd ~/agent-repos/backend
+git clone --no-checkout ~/agent-repos/backend ~/agent-workspaces/company-backend-123
 
+cd ~/agent-workspaces/company-backend-123
+
+git remote set-url origin git@github.com:company/backend.git
 git fetch origin
-
-git worktree add   ~/agent-workspaces/company-backend-123   -b ai/issue-123   origin/main
+git checkout -B ai/issue-123 origin/main
 ```
 
 Para múltiplas tasks do mesmo repositório:
 
 ```text
-backend.git
+backend.git (base clone)
    │
-   ├── worktree → issue-123
-   ├── worktree → issue-456
-   └── worktree → issue-789
+   ├── task clone → issue-123
+   ├── task clone → issue-456
+   └── task clone → issue-789
 ```
 
-O clone base pode ser reutilizado enquanto os worktrees permanecem isolados.
+O clone base pode ser reutilizado enquanto os clones das tasks permanecem independentes.
 
 ---
 
@@ -413,7 +415,7 @@ O prompt deve incluir:
   repositório durante a implementação, corrigindo qualquer falha;
 - instrução para não criar PR.
 
-O agente trabalha somente dentro do worktree daquela task.
+O agente trabalha somente dentro do workspace daquela task.
 
 ---
 
@@ -759,7 +761,7 @@ Adicionar:
 - execução persistente;
 - retries;
 - métricas;
-- melhor gerenciamento de worktrees;
+- melhor gerenciamento de workspaces;
 - cleanup automático.
 
 ## V4
@@ -794,7 +796,7 @@ Arquitetura futura:
              │             │             │
           OpenCode      OpenCode      OpenCode
              │             │             │
-         Worktree      Worktree      Worktree
+         Task clone    Task clone    Task clone
              │             │             │
              └─────────────┼─────────────┘
                            │
@@ -812,7 +814,7 @@ Arquitetura futura:
 4. Criar grafo `START → PLAN → BUILD → CREATE_PR → CLEANUP → END`.
 5. Implementar wrapper `opencode.py`.
 6. Testar com um repositório local.
-7. Implementar gerenciamento de worktree.
+7. Implementar gerenciamento de clones e checkouts.
 8. Fazer o orchestrator receber `owner/repo + issue`.
 9. Implementar clone/fetch automático.
 10. Criar branch automática.
