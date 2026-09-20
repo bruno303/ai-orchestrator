@@ -6,6 +6,7 @@ import codecs
 import io
 import os
 import select
+import shlex
 import shutil
 import subprocess
 import time
@@ -123,6 +124,38 @@ def _docker_socket_args(runtime: str, docker_socket: str | None) -> list[str]:
     return ["--group-add", str(socket_gid), *args]
 
 
+def _tmpfs_args(targets: Sequence[str], uid: int, gid: int) -> list[str]:
+    args: list[str] = []
+    for target in targets:
+        args += ["--tmpfs", f"{target}:rw,nosuid,nodev,uid={uid},gid={gid},mode=0700"]
+    return args
+
+
+def _writable_copy_command(
+    command: Sequence[str], copies: Sequence[tuple[str, str]]
+) -> list[str]:
+    """Copy read-only provider state into ephemeral storage before execution."""
+    if not copies:
+        return list(command)
+    lines = ["set -eu"]
+    for source, target in copies:
+        quoted_source = shlex.quote(source)
+        quoted_target = shlex.quote(target)
+        lines.extend(
+            (
+                f"if [ -d {quoted_source} ]; then",
+                f"  mkdir -p {quoted_target}",
+                f"  cp -a {quoted_source}/. {quoted_target}/",
+                f"elif [ -f {quoted_source} ]; then",
+                f"  mkdir -p \"$(dirname {quoted_target})\"",
+                f"  cp -a {quoted_source} {quoted_target}",
+                "fi",
+            )
+        )
+    lines.append('exec "$@"')
+    return ["sh", "-c", "\n".join(lines), "sandbox", *command]
+
+
 def run_sandbox(
     command: Sequence[str],
     workspace: str | Path,
@@ -142,6 +175,8 @@ def run_sandbox(
     memory: str = "4g",
     pids_limit: int = 512,
     docker_socket: str | None = "/var/run/docker.sock",
+    tmpfs_mounts: Sequence[str] = (),
+    writable_copies: Sequence[tuple[str, str]] = (),
 ) -> SandboxResult:
     """Run a command in a hardened container with only explicit host mounts.
 
@@ -180,6 +215,7 @@ def run_sandbox(
     # Compose talks to the host daemon through docker.sock, so host-side bind
     # mounts referenced by Compose must resolve to the same path.
     command = [workspace_path if value == "/workspace" else value for value in command]
+    command = _writable_copy_command(command, writable_copies)
 
     cmd = [
         binary,
@@ -206,6 +242,7 @@ def run_sandbox(
         "/tmp:rw,exec,nosuid,nodev,mode=1777",
         "--tmpfs",
         f"/home/agent:rw,nosuid,nodev,uid={uid},gid={gid},mode=0700",
+        *_tmpfs_args(tmpfs_mounts, uid, gid),
         "--workdir",
         workspace_path,
         "--mount",

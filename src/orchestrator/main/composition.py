@@ -60,6 +60,8 @@ def _create(registry, provider, *, overrides: dict | None = None):
             memory=provider_sandbox.memory,
             pids_limit=provider_sandbox.pids_limit,
             docker_socket=provider_sandbox.docker_socket,
+            tmpfs_mounts=provider_sandbox.tmpfs_mounts,
+            writable_copies=provider_sandbox.writable_copies,
         )
     settings.update(overrides or {})
     return registry.create(

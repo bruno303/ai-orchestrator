@@ -27,6 +27,8 @@ class ProviderSandboxSettings:
     pids_limit: int
     docker_socket: str | None
     mounts: tuple[SandboxMount, ...]
+    tmpfs_mounts: tuple[str, ...]
+    writable_copies: tuple[tuple[str, str], ...]
 
 
 def _provider_mounts(provider: str) -> tuple[SandboxMount, ...]:
@@ -50,6 +52,23 @@ def _provider_mounts(provider: str) -> tuple[SandboxMount, ...]:
         if source.exists():
             mounts.append(SandboxMount(source.resolve(), target, True))
     return tuple(mounts)
+
+
+def _provider_tmpfs_mounts(provider: str) -> tuple[str, ...]:
+    """Return writable overlays for provider state that must not persist."""
+    if provider == "opencode":
+        return ("/home/agent/.local/share/opencode/log",)
+    return ()
+
+
+def _provider_writable_copies(provider: str) -> tuple[tuple[str, str], ...]:
+    """Copy provider credentials/state into an ephemeral writable directory."""
+    if provider == "opencode":
+        return ((
+            "/home/agent/.local/share/opencode",
+            "/tmp/opencode/data/opencode",
+        ),)
+    return ()
 
 
 def _load_sandbox_mapping(config_file: Path) -> dict[str, Any]:
@@ -107,4 +126,6 @@ def load_provider_sandbox_settings(provider: str, config_file: Path) -> Provider
         pids_limit=pids_limit,
         docker_socket=docker_socket,
         mounts=_provider_mounts(provider),
+        tmpfs_mounts=_provider_tmpfs_mounts(provider),
+        writable_copies=_provider_writable_copies(provider),
     )

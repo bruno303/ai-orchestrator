@@ -182,7 +182,15 @@ def test_provider_workflows_use_injected_sandbox_runner(
     assert "implementing GitHub issue #1" in command or "review ONLY valid JSON" in command or "triage" in command
     assert str(tmp_path) not in command
     if provider == "opencode" and workflow == "triage":
-        assert options["environment_allowlist_extra"] == ("OPENCODE_CONFIG_CONTENT",)
+        assert options["environment"]["OPENCODE_LOG_DIR"] == "/tmp/opencode/log"
+        assert options["environment"]["XDG_DATA_HOME"] == "/tmp/opencode/data"
+        assert options["environment"]["XDG_STATE_HOME"] == "/tmp/opencode/state"
+        assert options["environment"]["OPENCODE_CONFIG_DIR"] == "/home/agent/.config/opencode"
+        assert "OPENCODE_CONFIG_CONTENT" in options["environment"]
+        assert options["environment_allowlist_extra"] == (
+            "OPENCODE_LOG_DIR", "XDG_DATA_HOME", "XDG_STATE_HOME",
+            "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"
+        )
     if provider == "claude" and workflow == "triage":
         assert options["environment"] == {"CLAUDE_CODE_EFFORT_LEVEL": "high"}
         assert options["environment_allowlist_extra"] == ("CLAUDE_CODE_EFFORT_LEVEL",)
@@ -279,6 +287,12 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
         "verbosity": "normal",
     }
     assert runtime.executor.options == {"timeout": 10}
+    assert runtime.executor.sandbox_runner.options["tmpfs_mounts"] == (
+        "/home/agent/.local/share/opencode/log",
+    )
+    assert runtime.executor.sandbox_runner.options["writable_copies"] == (
+        ("/home/agent/.local/share/opencode", "/tmp/opencode/data/opencode"),
+    )
     assert runtime.workspace_manager.options == {"root": "/tmp/workspaces"}
     assert runtime.destination.options == {
         "draft": True,

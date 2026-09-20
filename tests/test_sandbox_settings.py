@@ -52,3 +52,12 @@ def test_provider_mounts_do_not_leak_between_providers(tmp_path, monkeypatch):
     assert [mount.target for mount in codex.mounts] == ["/home/agent/.codex"]
     assert {mount.target for mount in claude.mounts} == {"/home/agent/.claude", "/home/agent/.claude.json"}
     assert all(mount.read_only for settings in (opencode, codex, claude) for mount in settings.mounts)
+    assert opencode.tmpfs_mounts == ("/home/agent/.local/share/opencode/log",)
+    assert opencode.writable_copies == ((
+        "/home/agent/.local/share/opencode",
+        "/tmp/opencode/data/opencode",
+    ),)
+    assert codex.tmpfs_mounts == ()
+    assert claude.tmpfs_mounts == ()
+    assert codex.writable_copies == ()
+    assert claude.writable_copies == ()

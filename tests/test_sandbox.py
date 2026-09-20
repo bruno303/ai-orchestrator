@@ -107,6 +107,42 @@ def test_runner_mounts_only_explicit_provider_state_read_only(tmp_path, monkeypa
     assert f"type=bind,source={state.resolve()},target=/home/agent/.config/opencode,readonly" in mounts
 
 
+def test_runner_adds_requested_writable_tmpfs_overlays(tmp_path, monkeypatch):
+    calls = []
+    _runtime_ok(monkeypatch, calls)
+
+    run_sandbox(
+        ["opencode", "run", "prompt"],
+        tmp_path,
+        tmpfs_mounts=["/home/agent/.local/share/opencode/log"],
+    )
+
+    command = _container_command(calls)
+    assert (
+        f"/home/agent/.local/share/opencode/log:rw,nosuid,nodev,"
+        f"uid={os.getuid()},gid={os.getgid()},mode=0700"
+    ) in command
+
+
+def test_runner_copies_read_only_state_into_ephemeral_storage(tmp_path, monkeypatch):
+    calls = []
+    _runtime_ok(monkeypatch, calls)
+
+    run_sandbox(
+        ["opencode", "run", "prompt"],
+        tmp_path,
+        writable_copies=[
+            ("/home/agent/.local/share/opencode", "/tmp/opencode/data/opencode")
+        ],
+    )
+
+    command = _container_command(calls)
+    script = command[command.index("-c") + 1]
+    assert command[-4:] == ["sandbox", "opencode", "run", "prompt"]
+    assert "cp -a /home/agent/.local/share/opencode/. /tmp/opencode/data/opencode/" in script
+    assert "set -eu" in script
+
+
 def test_runner_mounts_host_docker_socket_and_adds_socket_group(tmp_path, monkeypatch):
     calls = []
     socket = tmp_path / "docker.sock"

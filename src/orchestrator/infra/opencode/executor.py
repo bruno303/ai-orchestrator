@@ -240,10 +240,17 @@ def run_opencode(
         cmd += ["-m", _model_reference(model, variant)]
     cmd.append(prompt)
     timeout = timeout or int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
+    # OpenCode persists its state (including the runtime database) below the
+    # XDG state directory. Keep that state ephemeral so the provider state
+    # mount can remain read-only.
+    environment = {
+        "OPENCODE_LOG_DIR": "/tmp/opencode/log",
+        "XDG_DATA_HOME": "/tmp/opencode/data",
+        "XDG_STATE_HOME": "/tmp/opencode/state",
+        "OPENCODE_CONFIG_DIR": "/home/agent/.config/opencode",
+    }
     if config_content is not None:
-        environment = {"OPENCODE_CONFIG_CONTENT": config_content}
-    else:
-        environment = None
+        environment["OPENCODE_CONFIG_CONTENT"] = config_content
     try:
         header = "[orchestrator] opencode run"
         if agent is not None:
@@ -253,7 +260,13 @@ def run_opencode(
         result = (runner or SandboxRunner()).run(
             cmd, workspace, timeout=timeout, log_file=log_file,
             environment=environment,
-            environment_allowlist_extra=("OPENCODE_CONFIG_CONTENT",) if config_content else (),
+            environment_allowlist_extra=(
+                "OPENCODE_LOG_DIR",
+                "XDG_DATA_HOME",
+                "XDG_STATE_HOME",
+                "OPENCODE_CONFIG_DIR",
+                *(("OPENCODE_CONFIG_CONTENT",) if config_content else ()),
+            ),
             log_header=header,
         )
     except SandboxError as exc:
