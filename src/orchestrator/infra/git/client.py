@@ -1,12 +1,12 @@
-"""Git operations: base clones, worktrees, branches, commits, pushes."""
+"""Git operations: cached clones, isolated workspaces, branches, commits, pushes."""
 
 from __future__ import annotations
 
-import subprocess
 import os
+import subprocess
 from contextvars import ContextVar
-from pathlib import Path
 from functools import wraps
+from pathlib import Path
 
 from orchestrator.infra.github import auth as github_auth
 
@@ -87,19 +87,25 @@ def base_repo_dir(repository: str) -> Path:
 
 
 def ensure_base_clone(repository: str, clone_url: str) -> Path:
-    """Clone the repository once into REPOS_DIR if not present, then fetch."""
+    """Keep one fetched clone as a local object cache for task workspaces."""
     repo_dir = base_repo_dir(repository)
     if not (repo_dir / ".git").exists():
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
-        _run(["git", "clone", clone_url, str(repo_dir)], cwd=repo_dir.parent,
-             env=_github_env_for_url(clone_url))
+        _run(
+            ["git", "clone", clone_url, str(repo_dir)],
+            cwd=repo_dir.parent,
+            env=_github_env_for_url(clone_url),
+        )
     fetch(repo_dir)
     return repo_dir
 
 
 def fetch(repo_dir: Path) -> None:
-    _run(["git", "fetch", "origin", "--prune"], cwd=repo_dir,
-         env=_github_env_for_remote(repo_dir, "origin"))
+    _run(
+        ["git", "fetch", "origin", "--prune"],
+        cwd=repo_dir,
+        env=_github_env_for_remote(repo_dir, "origin"),
+    )
 
 
 def fetch_commit(repo_dir: Path, commit: str, remote: str = "origin") -> None:
@@ -109,8 +115,7 @@ def fetch_commit(repo_dir: Path, commit: str, remote: str = "origin") -> None:
         if "github.com" in remote
         else _github_env_for_remote(repo_dir, remote)
     )
-    _run(["git", "fetch", remote, commit], cwd=repo_dir,
-         env=environment)
+    _run(["git", "fetch", remote, commit], cwd=repo_dir, env=environment)
 
 
 def detect_default_branch(repo_dir: Path) -> str:
@@ -129,14 +134,26 @@ def detect_default_branch(repo_dir: Path) -> str:
     raise GitError(f"could not detect default branch in {repo_dir}")
 
 
-def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
-    """Remove a task worktree and its branch (used for clean re-runs)."""
-    if workspace.exists():
-        _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
-    if branch:
-        proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
-        if branch in proc.stdout.split():
-            _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+def clone_workspace(repo_dir: Path, workspace: Path, repository_url: str) -> None:
+    """Create a self-contained task clone using the cached repository locally.
+
+    A normal local clone can reuse object files efficiently without an
+    ``objects/info/alternates`` dependency. The workspace's origin is then
+    restored to the real repository and fetched so its remote-tracking refs are
+    current. The resulting ``.git`` directory lives entirely inside workspace.
+    """
+    if workspace.exists() or workspace.is_symlink():
+        raise GitError(f"workspace already exists: {workspace}")
+    workspace.parent.mkdir(parents=True, exist_ok=True)
+    proc = _run(
+        ["git", "clone", "--no-checkout", str(repo_dir), str(workspace)],
+        cwd=workspace.parent,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise GitError(f"workspace clone failed: {proc.stderr.strip()}")
+    _run(["git", "remote", "set-url", "origin", repository_url], cwd=workspace)
+    fetch(workspace)
 
 
 def remote_branch_exists(repo_dir: Path, branch: str) -> bool:
@@ -148,62 +165,55 @@ def remote_branch_exists(repo_dir: Path, branch: str) -> bool:
     return proc.returncode == 0
 
 
-def create_worktree(
-    repo_dir: Path,
+def checkout_branch(
     workspace: Path,
     branch: str,
     base_branch: str,
     start_point: str | None = None,
 ) -> None:
-    """Create an isolated worktree at `workspace` on `branch`.
+    """Checkout a task branch inside an independent workspace clone.
 
-    Reuses `origin/{branch}` when it already exists — a comment-triggered
-    re-run on a task that already has an open PR should keep building on that
-    branch, not silently discard it by forking a fresh one from base_branch.
+    Existing remote branches are reused for comment-triggered follow-ups. A
+    supplied immutable start point is attached directly to the requested local
+    branch, which is used for PR-head execution.
     """
-    if workspace.exists():
-        raise GitError(f"workspace already exists: {workspace}")
-    workspace.parent.mkdir(parents=True, exist_ok=True)
     if start_point:
         proc = _run(
-            ["git", "worktree", "add", "-B", branch, str(workspace), start_point],
-            cwd=repo_dir,
+            ["git", "checkout", "-B", branch, start_point],
+            cwd=workspace,
             check=False,
         )
         if proc.returncode != 0:
-            raise GitError(f"worktree add failed: {proc.stderr.strip()}")
+            raise GitError(f"branch checkout failed: {proc.stderr.strip()}")
         return
-    if remote_branch_exists(repo_dir, branch):
+
+    if remote_branch_exists(workspace, branch):
         proc = _run(
-            ["git", "worktree", "add", "-B", branch, str(workspace), f"origin/{branch}"],
-            cwd=repo_dir,
+            ["git", "checkout", "-B", branch, f"origin/{branch}"],
+            cwd=workspace,
             check=False,
         )
         if proc.returncode == 0:
             return
-    base_ref = f"origin/{base_branch}"
+
     proc = _run(
-        ["git", "worktree", "add", "-b", branch, str(workspace), base_ref],
-        cwd=repo_dir,
+        ["git", "checkout", "-B", branch, f"origin/{base_branch}"],
+        cwd=workspace,
         check=False,
     )
     if proc.returncode != 0:
-        # Fallback for local repos without an origin remote layout.
         proc = _run(
-            ["git", "worktree", "add", "-b", branch, str(workspace), base_branch],
-            cwd=repo_dir,
+            ["git", "checkout", "-B", branch, base_branch],
+            cwd=workspace,
             check=False,
         )
     if proc.returncode != 0:
-        raise GitError(f"worktree add failed: {proc.stderr.strip()}")
+        raise GitError(f"branch checkout failed: {proc.stderr.strip()}")
 
 
-def create_detached_worktree(repo_dir: Path, workspace: Path, commit: str) -> None:
-    """Create an isolated, detached worktree at an immutable commit."""
-    if workspace.exists():
-        raise GitError(f"workspace already exists: {workspace}")
-    workspace.parent.mkdir(parents=True, exist_ok=True)
-    _run(["git", "worktree", "add", "--detach", str(workspace), commit], cwd=repo_dir)
+def checkout_detached(workspace: Path, commit: str) -> None:
+    """Checkout an immutable revision without attaching it to a local branch."""
+    _run(["git", "checkout", "--detach", commit], cwd=workspace)
 
 
 def commits_ahead(workspace: Path, base_branch: str) -> int:
@@ -242,8 +252,12 @@ def commit_all(workspace: Path, message: str) -> None:
     )
     if proc.returncode != 0:
         _run(["git", "add", "-A", "--", "."], cwd=workspace)
-    proc = _run(["git", "commit", "-m", message], cwd=workspace, check=False,
-                env=_github_env_for_remote(workspace, "origin"))
+    proc = _run(
+        ["git", "commit", "-m", message],
+        cwd=workspace,
+        check=False,
+        env=_github_env_for_remote(workspace, "origin"),
+    )
     if proc.returncode != 0:
         raise NoChangesError(f"nothing to commit: {proc.stderr.strip()}")
 
@@ -257,23 +271,31 @@ def push_branch(
 ) -> None:
     """Push a branch, optionally retrying with ``--force-with-lease``.
 
-    Force-with-lease is only safe for orchestrator-owned issue branches.  PR
+    Force-with-lease is only safe for orchestrator-owned issue branches. PR
     publication passes ``False`` explicitly so contributor history conflicts
-    are surfaced instead of overwriting a branch we do not own.  ``None``
-    retains compatibility for direct callers and enables it only for the
-    historical ``ai/issue-*`` namespace.
+    are surfaced instead of overwriting a branch we do not own. ``None`` retains
+    compatibility for direct callers and enables it only for the historical
+    ``ai/issue-*`` namespace.
     """
     if allow_force_with_lease is None:
         allow_force_with_lease = branch.startswith("ai/issue-")
-    environment = (_github_env_for_url(remote) if "://" in remote
-                   else _github_env_for_remote(workspace, remote))
-    proc = _run(["git", "push", "-u", remote, branch], cwd=workspace, check=False,
-                env=environment)
+    environment = (
+        _github_env_for_url(remote)
+        if "://" in remote
+        else _github_env_for_remote(workspace, remote)
+    )
+    proc = _run(
+        ["git", "push", "-u", remote, branch],
+        cwd=workspace,
+        check=False,
+        env=environment,
+    )
     if proc.returncode != 0 and allow_force_with_lease:
         proc = _run(
             ["git", "push", "--force-with-lease", "-u", remote, branch],
             cwd=workspace,
-            check=False, env=environment,
+            check=False,
+            env=environment,
         )
     if proc.returncode != 0:
         raise GitError(f"git push failed in {workspace}: {proc.stderr.strip()}")
