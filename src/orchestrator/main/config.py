@@ -83,6 +83,35 @@ class ModelConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    """Application-wide logging verbosity."""
+
+    verbosity: str = "normal"
+
+
+LOGGING_VERBOSITIES = {"quiet", "normal", "verbose"}
+
+
+@lru_cache(maxsize=1)
+def load_logging_config() -> LoggingConfig:
+    """Load and validate the global logging configuration."""
+    if not CONFIG_FILE.exists():
+        data = {}
+    else:
+        with CONFIG_FILE.open() as fh:
+            data = yaml.safe_load(fh) or {}
+    raw = data.get("logging") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("logging must be a mapping with verbosity quiet, normal, or verbose")
+    verbosity = raw.get("verbosity", "normal")
+    if verbosity not in LOGGING_VERBOSITIES:
+        raise ValueError(
+            f"logging.verbosity must be one of quiet, normal, verbose; got {verbosity!r}"
+        )
+    return LoggingConfig(verbosity=verbosity)
+
+
+@dataclass(frozen=True)
 class ProviderConfig:
     type: str
     options: dict[str, Any]

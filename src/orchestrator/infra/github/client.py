@@ -85,6 +85,24 @@ def _api(endpoint: str, jq_expr: str | None = None, *, paginate: bool = False) -
     return _run_gh(args)
 
 
+def _paginated_json(output: str) -> list[dict]:
+    """Decode both one JSON array and gh --paginate's concatenated arrays."""
+    decoder = json.JSONDecoder()
+    values: list[dict] = []
+    position = 0
+    while position < len(output):
+        while position < len(output) and output[position].isspace():
+            position += 1
+        if position >= len(output):
+            break
+        value, position = decoder.raw_decode(output, position)
+        if isinstance(value, list):
+            values.extend(item for item in value if isinstance(item, dict))
+        elif isinstance(value, dict):
+            values.append(value)
+    return values
+
+
 def get_repository(repository: str) -> dict:
     """Validate the repository exists; return metadata (ssh_url, default_branch)."""
     out = _api(f"repos/{repository}", "{ssh_url, clone_url, default_branch, html_url}")
@@ -142,7 +160,7 @@ def list_open_issues(
             html_url=item["html_url"],
             labels=[lbl["name"] for lbl in item.get("labels") or [] if isinstance(lbl, dict)],
         )
-        for item in json.loads(out or "[]")
+        for item in _paginated_json(out)
         if item.get("pull_request") is None
     ]
 
@@ -248,7 +266,7 @@ def list_issue_comments(repository: str, number: int) -> list[IssueComment]:
             body=item.get("body") or "",
             user_login=(item.get("user") or {}).get("login") or "",
         )
-        for item in json.loads(out or "[]")
+        for item in _paginated_json(out)
     ]
 
 
@@ -272,6 +290,8 @@ class PullRequestDetail:
     head_clone_url: str = ""
     changed_lines: dict[str, dict[str, list[int]]] = field(default_factory=dict)
     author_login: str = ""
+    head_repository: str = ""
+    state: str = "OPEN"
 
 
 def list_open_pull_requests(repository: str) -> list[PullRequest]:
@@ -292,8 +312,36 @@ def list_open_pull_requests(repository: str) -> list[PullRequest]:
     )
     return [
         PullRequest(number=item["number"], head_ref=item.get("headRefName") or "")
-        for item in json.loads(out or "[]")
+        for item in _paginated_json(out)
     ]
+
+
+def _head_repository_name(repository: object) -> str:
+    if not isinstance(repository, dict):
+        return ""
+    return (
+        repository.get("nameWithOwner")
+        or repository.get("fullName")
+        or ""
+    )
+
+
+def _head_repository_clone_url(repository: object) -> str:
+    """Return a credential-free URL from gh's real headRepository fields.
+
+    ``cloneUrl`` is not a supported field in ``gh pr view --json``.  The CLI
+    supplies ``nameWithOwner`` (and, for older versions, ``fullName``), which
+    is sufficient to construct the public HTTPS URL without embedding a
+    token.  The caller must reject an absent repository rather than silently
+    publishing to the base repository.
+    """
+    if not isinstance(repository, dict):
+        return ""
+    clone_url = repository.get("cloneUrl")
+    if clone_url:
+        return str(clone_url)
+    name = _head_repository_name(repository)
+    return f"https://github.com/{name}.git" if name else ""
 
 
 def get_pull_request(repository: str, number: int) -> PullRequestDetail:
@@ -306,7 +354,7 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
             "--repo",
             repository,
             "--json",
-            "number,title,body,url,baseRefName,headRefName,headRefOid,headRepository,author,files,labels",
+            "number,title,body,url,state,baseRefName,headRefName,headRefOid,headRepository,author,files,labels",
         ]
     )
     data = json.loads(out)
@@ -324,9 +372,11 @@ def get_pull_request(repository: str, number: int) -> PullRequestDetail:
         ],
         labels=[label.get("name", "") for label in data.get("labels") or [] if isinstance(label, dict)],
         head_sha=data.get("headRefOid") or "",
-        head_clone_url=((data.get("headRepository") or {}).get("cloneUrl") or ""),
+        head_clone_url=_head_repository_clone_url(data.get("headRepository")),
+        head_repository=_head_repository_name(data.get("headRepository")),
         changed_lines=_changed_lines(data.get("files") or []),
         author_login=(data.get("author") or {}).get("login") or "",
+        state=data.get("state") or "OPEN",
     )
 
 
@@ -405,6 +455,7 @@ class ReviewComment:
     user_login: str
     path: str = ""
     line: int | None = None
+    url: str = ""
 
 
 def list_pull_request_review_comments(repository: str, number: int) -> list[ReviewComment]:
@@ -415,9 +466,28 @@ def list_pull_request_review_comments(repository: str, number: int) -> list[Revi
             id=item["id"], body=item.get("body") or "",
             user_login=(item.get("user") or {}).get("login") or "",
             path=item.get("path") or "", line=item.get("line"),
+            url=item.get("html_url") or item.get("url") or "",
         )
-        for item in json.loads(out or "[]")
+        for item in _paginated_json(out)
     ]
+
+
+@dataclass
+class ReviewSummary:
+    id: int
+    body: str
+    user_login: str
+    state: str = ""
+    url: str = ""
+
+
+def list_pull_request_reviews(repository: str, number: int) -> list[ReviewSummary]:
+    out = _api(f"repos/{repository}/pulls/{number}/reviews?per_page=100", paginate=True)
+    return [ReviewSummary(
+        id=item["id"], body=item.get("body") or "",
+        user_login=(item.get("user") or {}).get("login") or "",
+        state=item.get("state") or "", url=item.get("html_url") or item.get("url") or "",
+    ) for item in _paginated_json(out)]
 
 
 def publish_pull_request_review(
@@ -485,5 +555,5 @@ def list_issue_comment_reactions(repository: str, comment_id: int) -> list[React
     )
     return [
         Reaction(item.get("content") or "", (item.get("user") or {}).get("login") or "")
-        for item in json.loads(out or "[]")
+        for item in _paginated_json(out)
     ]

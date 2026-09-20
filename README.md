@@ -154,8 +154,9 @@ orchestrator logs company/backend#123 --node plan     # read a node log
 
 ## Comment triggers
 
-While executing, the orchestrator scans comments on open issues **and** open PRs
-on orchestrator-owned branches (`ai/issue-*`). The command is explicit:
+While executing, the orchestrator scans all conversation comments on open issues
+and open PRs in configured repositories. Branch naming does not gate PR
+discovery. The command is explicit:
 
 ```text
 /ai-agent-impl <instruction>    = change code and update/reuse the task PR
@@ -168,9 +169,22 @@ run the requested validation, and publish the result. Discussion comments use a
 detached checkout and a read-only provider contract; they never modify files,
 commit, push, create/update a PR, or change completion labels.
 
+An implementation comment on a PR updates the originating PR. The authenticated
+account must have write access to the PR head branch.
+
 Both commands use the same feedback reactions: 👀 `eyes` while running, 🚀
 `rocket` on success, and `-1` on failure. Terminal reactions prevent the same
 comment from being processed again.
+
+Polling verbosity is configured with `logging.verbosity`: `quiet`, `normal`, or
+`verbose` (default `normal`). `quiet` emits only errors and execution results,
+such as `[poll] repository=owner/repo issues error=<reason>`. `normal` adds
+repository summaries and actionable command discoveries, such as
+`[poll] repository=owner/repo comment=42 supported_command=impl`. `verbose`
+also emits scan boundaries and skip details, such as
+`[poll] repository=owner/repo number=17 comment=42 skip=terminal_reaction`.
+Polling diagnostics include stable identifiers and concise reasons, never full
+comment bodies, credentials, or clone URLs.
 
 ## Pull-request reviews
 

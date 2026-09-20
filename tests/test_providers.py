@@ -210,6 +210,7 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
         "interval": 30,
         "select_labels": ["ai-agent"],
         "suppress_labels": ["ai-developed"],
+        "verbosity": "normal",
     }
     assert runtime.executor.options == {"timeout": 10}
     assert runtime.workspace_manager.options == {"root": "/tmp/workspaces"}
@@ -218,6 +219,20 @@ def test_compose_runtime_builds_concrete_providers_and_forwards_options(allowlis
         "output_labels": ["ai-developed"],
         "remove_output_labels": [],
     }
+
+
+def test_compose_runtime_forwards_non_default_polling_verbosity(allowlist):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "logging:\n  verbosity: verbose\n"
+        "pipeline:\n  execution:\n    input_source:\n      type: github_polling\n"
+    )
+    config.load_pipeline_config.cache_clear()
+    config.load_logging_config.cache_clear()
+
+    runtime = compose_runtime()
+
+    assert runtime.input_source.options["verbosity"] == "verbose"
 
 
 def test_compose_runtime_builds_codex_executor(allowlist):

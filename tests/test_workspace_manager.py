@@ -180,6 +180,38 @@ def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch
     assert result.branch == ""
 
 
+def test_pr_execution_fetches_head_sha_from_fork_and_attaches_branch(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeGit:
+        def ensure_base_clone(self, repository, url):
+            calls.append(("clone", repository, url))
+            return tmp_path / "repo"
+
+        def fetch_commit(self, repo, commit, remote):
+            calls.append(("fetch", commit, remote))
+
+        def create_worktree(self, repo, path, branch, base, **kwargs):
+            calls.append(("worktree", branch, base, kwargs["start_point"]))
+
+    result = GitWorkspaceManager(git_client=FakeGit()).prepare(WorkspaceRequest(
+        "owner/repo#pr-4", "owner/repo", "topic", "main",
+        workspace=str(tmp_path / "ws"),
+        context=Context({"git": {
+            "repository_url": "https://github.com/fork/repo.git",
+            "base_repository_url": "https://github.com/owner/repo.git",
+            "fetch_url": "https://github.com/fork/repo.git",
+            "revision": "head-sha",
+        }}),
+    ))
+    assert calls == [
+        ("clone", "owner/repo", "https://github.com/owner/repo.git"),
+        ("fetch", "head-sha", "https://github.com/fork/repo.git"),
+        ("worktree", "topic", "main", "head-sha"),
+    ]
+    assert result.branch == "topic"
+
+
 def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
     monkeypatch.setattr(git, "ensure_base_clone", lambda repository, url: tmp_path / "repo")
     monkeypatch.setattr(git, "fetch_commit", lambda *args: (_ for _ in ()).throw(git.GitError("unknown commit")))

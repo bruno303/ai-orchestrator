@@ -148,7 +148,13 @@ def remote_branch_exists(repo_dir: Path, branch: str) -> bool:
     return proc.returncode == 0
 
 
-def create_worktree(repo_dir: Path, workspace: Path, branch: str, base_branch: str) -> None:
+def create_worktree(
+    repo_dir: Path,
+    workspace: Path,
+    branch: str,
+    base_branch: str,
+    start_point: str | None = None,
+) -> None:
     """Create an isolated worktree at `workspace` on `branch`.
 
     Reuses `origin/{branch}` when it already exists — a comment-triggered
@@ -158,6 +164,15 @@ def create_worktree(repo_dir: Path, workspace: Path, branch: str, base_branch: s
     if workspace.exists():
         raise GitError(f"workspace already exists: {workspace}")
     workspace.parent.mkdir(parents=True, exist_ok=True)
+    if start_point:
+        proc = _run(
+            ["git", "worktree", "add", "-B", branch, str(workspace), start_point],
+            cwd=repo_dir,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise GitError(f"worktree add failed: {proc.stderr.strip()}")
+        return
     if remote_branch_exists(repo_dir, branch):
         proc = _run(
             ["git", "worktree", "add", "-B", branch, str(workspace), f"origin/{branch}"],
@@ -233,18 +248,30 @@ def commit_all(workspace: Path, message: str) -> None:
         raise NoChangesError(f"nothing to commit: {proc.stderr.strip()}")
 
 
-def push_branch(workspace: Path, branch: str) -> None:
-    """Push the branch; retry with --force-with-lease on non-fast-forward.
+def push_branch(
+    workspace: Path,
+    branch: str,
+    remote: str = "origin",
+    *,
+    allow_force_with_lease: bool | None = None,
+) -> None:
+    """Push a branch, optionally retrying with ``--force-with-lease``.
 
-    The ai/issue-* branch is orchestrator-owned, so a stale remote copy from a
-    previous run of the same issue is safely overwritten.
+    Force-with-lease is only safe for orchestrator-owned issue branches.  PR
+    publication passes ``False`` explicitly so contributor history conflicts
+    are surfaced instead of overwriting a branch we do not own.  ``None``
+    retains compatibility for direct callers and enables it only for the
+    historical ``ai/issue-*`` namespace.
     """
-    environment = _github_env_for_remote(workspace, "origin")
-    proc = _run(["git", "push", "-u", "origin", branch], cwd=workspace, check=False,
+    if allow_force_with_lease is None:
+        allow_force_with_lease = branch.startswith("ai/issue-")
+    environment = (_github_env_for_url(remote) if "://" in remote
+                   else _github_env_for_remote(workspace, remote))
+    proc = _run(["git", "push", "-u", remote, branch], cwd=workspace, check=False,
                 env=environment)
-    if proc.returncode != 0:
+    if proc.returncode != 0 and allow_force_with_lease:
         proc = _run(
-            ["git", "push", "--force-with-lease", "-u", "origin", branch],
+            ["git", "push", "--force-with-lease", "-u", remote, branch],
             cwd=workspace,
             check=False, env=environment,
         )
