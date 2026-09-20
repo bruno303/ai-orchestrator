@@ -1,9 +1,9 @@
-IMAGE := bruno303/ai-orchestrator-agent:latest
-INSTALL_OPENCODE ?= 1
-INSTALL_CODEX ?= 0
-INSTALL_CLAUDE ?= 0
+IMAGE_PREFIX ?= bruno303/ai-orchestrator-agent
+OPENCODE_IMAGE := $(IMAGE_PREFIX)-opencode:latest
+CODEX_IMAGE := $(IMAGE_PREFIX)-codex:latest
+CLAUDE_IMAGE := $(IMAGE_PREFIX)-claude:latest
 
-.PHONY: help test run execute review triage logs smoke build-image publish-image
+.PHONY: help test run execute review triage logs smoke build-image build-images build-opencode-image build-codex-image build-claude-image publish-image publish-images
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | sort
@@ -29,11 +29,23 @@ logs:
 smoke:
 	bash /tmp/opencode/smoke.sh
 
-build-image:
-	docker build -f Dockerfile.agent -t $(IMAGE) \
-		--build-arg INSTALL_OPENCODE=$(INSTALL_OPENCODE) \
-		--build-arg INSTALL_CODEX=$(INSTALL_CODEX) \
-		--build-arg INSTALL_CLAUDE=$(INSTALL_CLAUDE) .
+build-opencode-image:
+	docker build -f Dockerfile.agent --target opencode -t $(OPENCODE_IMAGE) .
 
-publish-image: build-image
-	docker push $(IMAGE)
+build-codex-image:
+	docker build -f Dockerfile.agent --target codex -t $(CODEX_IMAGE) .
+
+build-claude-image:
+	docker build -f Dockerfile.agent --target claude -t $(CLAUDE_IMAGE) .
+
+build-images: build-opencode-image build-codex-image build-claude-image
+
+# Backward-compatible convenience alias.
+build-image: build-images
+
+publish-images: build-images
+	docker push $(OPENCODE_IMAGE)
+	docker push $(CODEX_IMAGE)
+	docker push $(CLAUDE_IMAGE)
+
+publish-image: publish-images

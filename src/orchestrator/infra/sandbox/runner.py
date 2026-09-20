@@ -16,23 +16,24 @@ from typing import Mapping, Sequence
 
 
 _WRITABLE_CLI_ENVIRONMENT = (
-    ("HOME", "/workspace/.home"),
-    ("XDG_CONFIG_HOME", "/workspace/.config"),
-    ("XDG_CACHE_HOME", "/workspace/.cache"),
-    ("XDG_DATA_HOME", "/workspace/.local/share"),
+    ("HOME", "/home/agent"),
+    ("XDG_CONFIG_HOME", "/home/agent/.config"),
+    ("XDG_CACHE_HOME", "/tmp/cache"),
+    ("XDG_DATA_HOME", "/home/agent/.local/share"),
 )
-
-_OPENCODE_HOST_MOUNTS = (
-    (".config/opencode", "/workspace/.config/opencode", "ro"),
-    (".local/share/opencode", "/workspace/.local/share/opencode", None),
-    (".agents/skills", "/workspace/.home/.agents/skills", "ro"),
-)
-
-_WRITABLE_DESTINATIONS = (".home", ".config", ".cache", ".local/share")
 
 
 class SandboxError(RuntimeError):
     """The sandbox could not be started or completed."""
+
+
+@dataclass(frozen=True)
+class SandboxMount:
+    """One explicitly allowed host bind mount."""
+
+    source: Path
+    target: str
+    read_only: bool = True
 
 
 @dataclass
@@ -48,7 +49,6 @@ def _drain_pipe(pipe, decoder: io.IncrementalNewlineDecoder | None) -> tuple[str
     try:
         file_descriptor = pipe.fileno()
     except (AttributeError, io.UnsupportedOperation):
-        # Small in-memory streams keep the runner straightforward to unit test.
         chunk = pipe.readline()
         return chunk, not chunk
     chunk = os.read(file_descriptor, 65536)
@@ -61,7 +61,6 @@ def _drain_pipe(pipe, decoder: io.IncrementalNewlineDecoder | None) -> tuple[str
 
 
 def _decoder_for_pipe(pipe) -> io.IncrementalNewlineDecoder | None:
-    """Create a decoder for a subprocess pipe, if it exposes text metadata."""
     encoding = getattr(pipe, "encoding", None)
     if encoding is None:
         return None
@@ -97,44 +96,31 @@ def _check_image(binary: str, image: str) -> None:
         raise SandboxError(f"sandbox image unavailable: {image}{suffix}")
 
 
-def _opencode_mount_args() -> list[str]:
-    """Return bind mounts for the invoking user's available OpenCode state."""
-    home = Path.home()
-    mounts: list[str] = []
-    for source_suffix, target, permissions in _OPENCODE_HOST_MOUNTS:
-        source = home / source_suffix
-        if source.is_dir():
-            mount = f"type=bind,source={source.resolve()},target={target}"
-            if permissions is not None:
-                mount += f",{permissions}"
-            mounts += [
-                "--mount",
-                mount,
-            ]
-    return mounts
+def _mount_args(mounts: Sequence[SandboxMount]) -> list[str]:
+    args: list[str] = []
+    for mount in mounts:
+        source = Path(mount.source)
+        if not source.exists():
+            continue
+        spec = f"type=bind,source={source.resolve()},target={mount.target}"
+        if mount.read_only:
+            spec += ",readonly"
+        args += ["--mount", spec]
+    return args
 
 
-def _ensure_workspace_directory(workspace: Path, relative_path: str) -> None:
-    """Create a container destination owned by the invoking user.
-
-    Docker creates missing bind targets as root, so every destination needed by
-    the non-root container is created before the runtime is started. Symlinks
-    and non-directories are rejected to avoid preparing an unexpected path.
-    """
-    current = workspace
-    for component in Path(relative_path).parts:
-        current = current / component
-        if current.is_symlink() or (current.exists() and not current.is_dir()):
-            raise SandboxError(f"sandbox mount destination is not a directory: {current}")
-        current.mkdir(exist_ok=True)
-
-
-def _prepare_mount_destinations(workspace: Path, opencode_mounts: Sequence[str]) -> None:
-    for destination in _WRITABLE_DESTINATIONS:
-        _ensure_workspace_directory(workspace, destination)
-    for mount in opencode_mounts[1::2]:
-        target = next(field.removeprefix("target=") for field in mount.split(",") if field.startswith("target="))
-        _ensure_workspace_directory(workspace, target.removeprefix("/workspace/"))
+def _docker_socket_args(runtime: str, docker_socket: str | None) -> list[str]:
+    if runtime != "docker" or not docker_socket:
+        return []
+    args = [
+        "--mount",
+        f"type=bind,source={docker_socket},target=/var/run/docker.sock,readonly",
+    ]
+    try:
+        socket_gid = os.stat(docker_socket).st_gid
+    except OSError:
+        return args
+    return ["--group-add", str(socket_gid), *args]
 
 
 def run_sandbox(
@@ -142,7 +128,7 @@ def run_sandbox(
     workspace: str | Path,
     *,
     runtime: str = "docker",
-    image: str = "bruno303/ai-orchestrator-agent:latest",
+    image: str = "bruno303/ai-orchestrator-agent-opencode:latest",
     network: str = "bridge",
     environment_allowlist: Sequence[str] = (),
     timeout: int | None = None,
@@ -151,8 +137,18 @@ def run_sandbox(
     environment: Mapping[str, str] | None = None,
     environment_allowlist_extra: Sequence[str] = (),
     log_header: str | None = None,
+    mounts: Sequence[SandboxMount] = (),
+    cpus: str = "4",
+    memory: str = "4g",
+    pids_limit: int = 512,
+    docker_socket: str | None = "/var/run/docker.sock",
 ) -> SandboxResult:
-    """Run a command in a workspace-only, non-root container."""
+    """Run a command in a hardened container with only explicit host mounts.
+
+    The host Docker socket is intentionally supported for builds/Compose. Its
+    presence means this protects against accidental host access, not malicious
+    code with intent to escape the container.
+    """
     if not enabled:
         raise SandboxError("sandboxing is disabled; host execution is not permitted")
     workspace = Path(workspace)
@@ -165,14 +161,26 @@ def run_sandbox(
     binary = _runtime_binary(runtime)
     _check_image(binary, image)
 
-    container_name = f"orchestrator-sandbox-{uuid.uuid4().hex}"
+    workspace_path = str(workspace.resolve())
+    container_id = uuid.uuid4().hex
+    container_name = f"orchestrator-sandbox-{container_id}"
+    compose_project = f"ai-{container_id[:12]}"
+    uid, gid = os.getuid(), os.getgid()
+
     env_args: list[str] = []
+    for name, value in _WRITABLE_CLI_ENVIRONMENT:
+        env_args += ["--env", f"{name}={value}"]
+    env_args += ["--env", f"COMPOSE_PROJECT_NAME={compose_project}"]
     for name in (*environment_allowlist, *environment_allowlist_extra):
         value = (environment or {}).get(name, os.environ.get(name))
         if value is not None:
             env_args += ["--env", f"{name}={value}"]
-    opencode_mounts = _opencode_mount_args()
-    _prepare_mount_destinations(workspace, opencode_mounts)
+
+    # Keep the same absolute workspace path inside the agent container. Docker
+    # Compose talks to the host daemon through docker.sock, so host-side bind
+    # mounts referenced by Compose must resolve to the same path.
+    command = [workspace_path if value == "/workspace" else value for value in command]
+
     cmd = [
         binary,
         "run",
@@ -180,22 +188,40 @@ def run_sandbox(
         "--name",
         container_name,
         "--user",
-        f"{os.getuid()}:{os.getgid()}",
+        f"{uid}:{gid}",
         "--network",
         network,
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--pids-limit",
+        str(pids_limit),
+        "--memory",
+        memory,
+        "--cpus",
+        str(cpus),
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,mode=1777",
+        "--tmpfs",
+        f"/home/agent:rw,nosuid,nodev,uid={uid},gid={gid},mode=0700",
         "--workdir",
-        "/workspace",
+        workspace_path,
         "--mount",
-        f"type=bind,source={workspace.resolve()},target=/workspace",
-        *opencode_mounts,
-        *sum((["--env", f"{name}={value}"] for name, value in _WRITABLE_CLI_ENVIRONMENT), []),
+        f"type=bind,source={workspace_path},target={workspace_path}",
+        *_mount_args(mounts),
+        *_docker_socket_args(runtime, docker_socket),
         *env_args,
         image,
         *command,
     ]
+
     timeout = int(timeout or 60 * 60)
     start = time.monotonic()
     fh = None
+    proc = None
+    completed = False
     if log_file is not None:
         try:
             log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -206,46 +232,37 @@ def run_sandbox(
             if fh is not None:
                 fh.close()
             raise
-    try:
-        proc = subprocess.Popen(
-            cmd,
-            cwd=workspace,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-        )
-    except FileNotFoundError as exc:
-        if fh is not None:
-            fh.close()
-        raise SandboxError(f"sandbox runtime not found: {binary}") from exc
-    except OSError as exc:
-        if fh is not None:
-            fh.close()
-        raise SandboxError(f"sandbox could not start with runtime {binary}: {exc}") from exc
 
-    assert proc.stdout is not None
-    pipes = {proc.stdout: "stdout"}
-    stderr_pipe = getattr(proc, "stderr", None)
-    if stderr_pipe is not None:
-        pipes[stderr_pipe] = "stderr"
-    decoders = {pipe: _decoder_for_pipe(pipe) for pipe in pipes}
-    streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
-    deadline = time.monotonic() + timeout
     try:
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=workspace,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+        except FileNotFoundError as exc:
+            raise SandboxError(f"sandbox runtime not found: {binary}") from exc
+        except OSError as exc:
+            raise SandboxError(f"sandbox could not start with runtime {binary}: {exc}") from exc
+
+        assert proc.stdout is not None
+        pipes = {proc.stdout: "stdout"}
+        stderr_pipe = getattr(proc, "stderr", None)
+        if stderr_pipe is not None:
+            pipes[stderr_pipe] = "stderr"
+        decoders = {pipe: _decoder_for_pipe(pipe) for pipe in pipes}
+        streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        deadline = time.monotonic() + timeout
         active = list(pipes)
-        while True:
+        while active:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                proc.kill()
-                proc.wait()
-                _cleanup_container(binary, container_name)
                 raise SandboxError(f"sandbox run timed out after {timeout}s")
             readable, _, _ = select.select(active, [], [], remaining)
             if not readable:
-                proc.kill()
-                proc.wait()
-                _cleanup_container(binary, container_name)
                 raise SandboxError(f"sandbox run timed out after {timeout}s")
             for pipe in readable:
                 chunk, eof = _drain_pipe(pipe, decoders[pipe])
@@ -256,32 +273,66 @@ def run_sandbox(
                         fh.flush()
                 if eof:
                     active.remove(pipe)
-            if not active:
-                break
         proc.wait()
-    except KeyboardInterrupt:
-        proc.kill()
-        proc.wait()
-        raise
+        completed = True
+        return SandboxResult(
+            proc.returncode,
+            "".join(streams["stdout"]),
+            "".join(streams["stderr"]),
+            time.monotonic() - start,
+        )
     finally:
+        if proc is not None:
+            if not completed:
+                try:
+                    proc.kill()
+                    proc.wait()
+                except (OSError, AttributeError):
+                    pass
+            _cleanup_container(binary, container_name)
+        if runtime == "docker" and docker_socket and Path(docker_socket).exists():
+            _cleanup_compose_resources(binary, compose_project)
         if fh is not None:
             fh.close()
-    return SandboxResult(
-        proc.returncode,
-        "".join(streams["stdout"]),
-        "".join(streams["stderr"]),
-        time.monotonic() - start,
-    )
 
 
 def _cleanup_container(binary: str, container_name: str) -> None:
-    """Stop and remove a container whose runtime client was terminated."""
+    """Stop and remove a container whose runtime client exited or was killed."""
     for args in (
         [binary, "stop", container_name],
         [binary, "rm", "--force", container_name],
     ):
         try:
             subprocess.run(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except OSError:
+            continue
+
+
+def _cleanup_compose_resources(binary: str, project_name: str) -> None:
+    """Best-effort cleanup limited to resources created by this Compose project."""
+    label = f"label=com.docker.compose.project={project_name}"
+    resources = (
+        ([binary, "ps", "-aq", "--filter", label], [binary, "rm", "-f"]),
+        ([binary, "network", "ls", "-q", "--filter", label], [binary, "network", "rm"]),
+        ([binary, "volume", "ls", "-q", "--filter", label], [binary, "volume", "rm", "-f"]),
+    )
+    for list_command, remove_command in resources:
+        try:
+            listed = subprocess.run(
+                list_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            ids = (listed.stdout or "").split()
+            if ids:
+                subprocess.run(
+                    [*remove_command, *ids],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
         except OSError:
             continue
 

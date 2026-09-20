@@ -30,6 +30,7 @@ from orchestrator.main.providers import (
     WORKSPACE_PROVIDERS,
 )
 from orchestrator.infra.sandbox import SandboxRunner
+from orchestrator.infra.sandbox.settings import load_provider_sandbox_settings
 
 
 def _create(registry, provider, *, overrides: dict | None = None):
@@ -47,12 +48,18 @@ def _create(registry, provider, *, overrides: dict | None = None):
         TRIAGE_EXECUTOR_PROVIDERS,
     ):
         sandbox = config.load_sandbox_config()
+        provider_sandbox = load_provider_sandbox_settings(provider.type, config.CONFIG_FILE)
         settings["sandbox_runner"] = SandboxRunner(
             enabled=sandbox.enabled,
             runtime=sandbox.runtime,
-            image=sandbox.image,
+            image=provider_sandbox.image,
             network=sandbox.network,
             environment_allowlist=sandbox.environment_allowlist,
+            mounts=provider_sandbox.mounts,
+            cpus=provider_sandbox.cpus,
+            memory=provider_sandbox.memory,
+            pids_limit=provider_sandbox.pids_limit,
+            docker_socket=provider_sandbox.docker_socket,
         )
     settings.update(overrides or {})
     return registry.create(

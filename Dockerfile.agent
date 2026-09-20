@@ -1,27 +1,29 @@
-# Build the image used by the mandatory agent sandbox.
-# This image contains no credentials. Pass provider credentials at runtime via
-# sandbox.environment_allowlist, not through Docker build arguments or ENV.
-FROM python:3.11-slim-bookworm
-
-ARG INSTALL_OPENCODE=1
-ARG INSTALL_CODEX=0
-ARG INSTALL_CLAUDE=0
+# Provider-specific images for the agent sandbox. No credentials are baked in.
+FROM python:3.11-slim-bookworm AS base
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y build-essential ca-certificates curl git nodejs npm \
+    && apt-get install --no-install-recommends -y build-essential ca-certificates curl git golang-go nodejs npm \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install --no-install-recommends -y docker-ce-cli docker-compose-plugin \
     && python -m pip install --no-cache-dir uv \
-    && if [ "$INSTALL_OPENCODE" = "1" ]; then npm install --global @opencode/cli; fi \
-    && if [ "$INSTALL_CODEX" = "1" ]; then npm install --global @openai/codex; fi \
-    && if [ "$INSTALL_CLAUDE" = "1" ]; then npm install --global @anthropic-ai/claude-code; fi \
     && rm -rf /var/lib/apt/lists/* /root/.cache
+
+ENV HOME=/home/agent \
+    XDG_CONFIG_HOME=/home/agent/.config \
+    XDG_CACHE_HOME=/tmp/cache \
+    XDG_DATA_HOME=/home/agent/.local/share
 
 WORKDIR /workspace
 
-# Runtime maps the invoking host uid/gid, so keep CLI state on the writable
-# workspace mount rather than relying on an image user's home directory.
-ENV HOME=/workspace/.home \
-    XDG_CONFIG_HOME=/workspace/.config \
-    XDG_CACHE_HOME=/workspace/.cache \
-    XDG_DATA_HOME=/workspace/.local/share
+FROM base AS opencode
+RUN npm install --global @opencode/cli
 
-# The orchestrator supplies the command and matching host uid/gid at runtime.
+FROM base AS codex
+RUN npm install --global @openai/codex
+
+FROM base AS claude
+RUN npm install --global @anthropic-ai/claude-code

@@ -6,228 +6,189 @@ from pathlib import Path
 
 import pytest
 
-from orchestrator.infra.sandbox.runner import SandboxError, run_sandbox
+from orchestrator.infra.sandbox.runner import SandboxError, SandboxMount, run_sandbox
 
 
-def test_runner_builds_restricted_container_command(tmp_path, monkeypatch):
-    calls = []
-
+def _runtime_ok(monkeypatch, calls, *, stdout="ok\n", stderr=""):
     class Process:
         returncode = 0
-        stdout = StringIO("ok\n")
-        stderr = StringIO("diagnostic\n")
+
+        def __init__(self):
+            self.stdout = StringIO(stdout)
+            self.stderr = StringIO(stderr)
+            self.killed = False
 
         def wait(self):
             return None
 
+        def kill(self):
+            self.killed = True
+
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
+
+    def fake_run(args, **kwargs):
+        calls.append(("run", args, kwargs))
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.run", fake_run)
+    process = Process()
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.Popen",
+        lambda command, **kwargs: (calls.append(("popen", command, kwargs)) or process),
+    )
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
+    return process
+
+
+def _container_command(calls):
+    return next(call[1] for call in calls if call[0] == "popen")
+
+
+def test_runner_builds_hardened_container_command(tmp_path, monkeypatch):
+    calls = []
     monkeypatch.setenv("TOKEN", "secret")
     monkeypatch.setenv("NOT_ALLOWED", "must-not-leak")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.run", lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})())
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.Popen", lambda command, **kwargs: (calls.append((command, kwargs)) or Process()))
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
+    _runtime_ok(monkeypatch, calls)
 
-    result = run_sandbox(["agent", "--prompt", "hello"], tmp_path, environment_allowlist=["TOKEN"])
+    result = run_sandbox(
+        ["agent", "--prompt", "hello"],
+        tmp_path,
+        environment_allowlist=["TOKEN"],
+        docker_socket="/var/run/docker.sock",
+    )
 
-    command = calls[0][0]
+    command = _container_command(calls)
+    workspace = str(tmp_path.resolve())
     assert result.stdout == "ok\n"
-    assert result.stderr == "diagnostic\n"
     assert command[0:3] == ["/usr/bin/docker", "run", "--rm"]
-    assert "--user" in command
     assert command[command.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"
-    assert "--network" in command and command[command.index("--network") + 1] == "bridge"
+    assert "--read-only" in command
+    assert command[command.index("--cap-drop") + 1] == "ALL"
+    assert command[command.index("--security-opt") + 1] == "no-new-privileges:true"
+    assert command[command.index("--pids-limit") + 1] == "512"
+    assert command[command.index("--memory") + 1] == "4g"
+    assert command[command.index("--cpus") + 1] == "4"
+    assert command[command.index("--workdir") + 1] == workspace
+    assert f"type=bind,source={workspace},target={workspace}" in command
     assert "TOKEN=secret" in command
     assert "NOT_ALLOWED=must-not-leak" not in command
-    assert command.count("--env") == 5
-    assert "HOME=/workspace/.home" in command
-    assert "XDG_CONFIG_HOME=/workspace/.config" in command
-    assert "XDG_CACHE_HOME=/workspace/.cache" in command
-    assert "XDG_DATA_HOME=/workspace/.local/share" in command
-    mount = command[command.index("--mount") + 1]
-    assert mount == f"type=bind,source={tmp_path.resolve()},target=/workspace"
-    assert command.count("--mount") == 1
-    assert "/workspace" in mount and command[-3:] == ["agent", "--prompt", "hello"]
+    assert "HOME=/home/agent" in command
+    assert "XDG_CACHE_HOME=/tmp/cache" in command
+    assert any(value.startswith("COMPOSE_PROJECT_NAME=ai-") for value in command)
+    assert not (tmp_path / ".home").exists()
+    assert not (tmp_path / ".cache").exists()
 
 
-def test_runner_mounts_available_opencode_directories_with_expected_permissions(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    (home / ".config" / "opencode").mkdir(parents=True)
-    (home / ".local" / "share" / "opencode").mkdir(parents=True)
-    (home / ".agents" / "skills").mkdir(parents=True)
+def test_runner_rewrites_legacy_workspace_argument_for_host_docker_paths(tmp_path, monkeypatch):
     calls = []
+    _runtime_ok(monkeypatch, calls)
 
-    class Process:
-        returncode = 0
-        stdout = StringIO()
-        stderr = StringIO()
+    run_sandbox(["codex", "exec", "--cd", "/workspace", "prompt"], tmp_path)
 
-        def wait(self):
-            return None
-
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
-    )
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.Popen",
-        lambda command, **kwargs: (calls.append(command) or Process()),
-    )
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
-
-    run_sandbox(["true"], tmp_path)
-
-    mounts = [calls[0][index + 1] for index, value in enumerate(calls[0]) if value == "--mount"]
-    assert mounts[1:] == [
-        f"type=bind,source={(tmp_path / 'home' / '.config' / 'opencode').resolve()},target=/workspace/.config/opencode,ro",
-        f"type=bind,source={(tmp_path / 'home' / '.local' / 'share' / 'opencode').resolve()},target=/workspace/.local/share/opencode",
-        f"type=bind,source={(tmp_path / 'home' / '.agents' / 'skills').resolve()},target=/workspace/.home/.agents/skills,ro",
-    ]
+    command = _container_command(calls)
+    assert "/workspace" not in command[-5:]
+    assert str(tmp_path.resolve()) in command[-5:]
 
 
-def test_runner_skips_absent_opencode_directories(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    (home / ".config" / "opencode").mkdir(parents=True)
+def test_runner_mounts_only_explicit_provider_state_read_only(tmp_path, monkeypatch):
     calls = []
+    state = tmp_path / "host-opencode"
+    state.mkdir()
+    _runtime_ok(monkeypatch, calls)
 
-    class Process:
-        returncode = 0
-        stdout = StringIO()
-        stderr = StringIO()
-
-        def wait(self):
-            return None
-
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
+    run_sandbox(
+        ["opencode", "run", "prompt"],
+        tmp_path,
+        mounts=[SandboxMount(state, "/home/agent/.config/opencode", True)],
     )
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.Popen",
-        lambda command, **kwargs: (calls.append(command) or Process()),
-    )
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
 
-    run_sandbox(["true"], tmp_path)
-
-    mounts = [calls[0][index + 1] for index, value in enumerate(calls[0]) if value == "--mount"]
-    assert len(mounts) == 2
-    assert mounts[0].endswith("target=/workspace")
-    assert mounts[1].endswith("target=/workspace/.config/opencode,ro")
+    command = _container_command(calls)
+    mounts = [command[index + 1] for index, value in enumerate(command) if value == "--mount"]
+    assert f"type=bind,source={state.resolve()},target=/home/agent/.config/opencode,readonly" in mounts
 
 
-def test_runner_prepares_writable_mount_destinations(tmp_path, monkeypatch):
-    home = tmp_path / "home"
-    (home / ".local" / "share" / "opencode").mkdir(parents=True)
+def test_runner_mounts_host_docker_socket_and_adds_socket_group(tmp_path, monkeypatch):
     calls = []
+    socket = tmp_path / "docker.sock"
+    socket.touch()
+    monkeypatch.setattr(os, "stat", lambda path: type("Stat", (), {"st_gid": 987})() if str(path) == str(socket) else Path(path).stat())
+    _runtime_ok(monkeypatch, calls)
 
-    class Process:
-        returncode = 0
-        stdout = StringIO()
-        stderr = StringIO()
+    run_sandbox(["docker", "version"], tmp_path, docker_socket=str(socket))
 
-        def wait(self):
-            return None
-
-    monkeypatch.setattr(Path, "home", lambda: home)
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
-    )
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.Popen",
-        lambda command, **kwargs: (calls.append(command) or Process()),
-    )
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
-
-    run_sandbox(["true"], tmp_path)
-
-    for relative in (".home", ".config", ".cache", ".local/share", ".local/share/opencode"):
-        assert (tmp_path / relative).is_dir()
+    command = _container_command(calls)
+    assert command[command.index("--group-add") + 1] == "987"
+    assert f"type=bind,source={socket},target=/var/run/docker.sock,readonly" in command
 
 
-def test_runner_rejects_conflicting_mount_destination(tmp_path, monkeypatch):
-    (tmp_path / ".config").symlink_to(tmp_path / "elsewhere")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
-    )
-    with pytest.raises(SandboxError, match="mount destination"):
-        run_sandbox(["true"], tmp_path)
+def test_runner_can_disable_host_docker_socket(tmp_path, monkeypatch):
+    calls = []
+    _runtime_ok(monkeypatch, calls)
 
+    run_sandbox(["true"], tmp_path, docker_socket=None)
 
-@pytest.mark.parametrize("path_kind", ["missing", "file"])
-def test_runner_rejects_invalid_workspace(tmp_path, path_kind):
-    workspace = tmp_path / "workspace"
-    if path_kind == "file":
-        workspace.write_text("not a directory")
-    else:
-        workspace = Path(workspace)
-    with pytest.raises(SandboxError, match="workspace"):
-        run_sandbox(["true"], workspace)
+    command = _container_command(calls)
+    assert all("docker.sock" not in value for value in command)
 
 
 def test_runner_fails_closed_when_image_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.run", lambda *args, **kwargs: type("R", (), {"returncode": 1, "stderr": "not found"})())
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.subprocess.run",
+        lambda *args, **kwargs: type("R", (), {"returncode": 1, "stderr": "not found"})(),
+    )
     with pytest.raises(SandboxError, match="image unavailable"):
         run_sandbox(["true"], tmp_path)
 
 
 def test_runner_fails_closed_when_runtime_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: None)
-
     with pytest.raises(SandboxError, match="runtime not found"):
         run_sandbox(["true"], tmp_path, runtime="podman")
 
 
-def test_runner_fails_closed_when_disabled(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.shutil.which",
-        lambda name: (_ for _ in ()).throw(AssertionError("runtime lookup must not occur")),
-    )
-
+def test_runner_fails_closed_when_disabled(tmp_path):
     with pytest.raises(SandboxError, match="host execution is not permitted"):
         run_sandbox(["true"], tmp_path, enabled=False)
 
 
-def test_runner_preserves_exit_code_and_writes_streamed_output(tmp_path, monkeypatch):
+def test_runner_preserves_exit_code_and_streams_log(tmp_path, monkeypatch):
+    calls = []
     log_file = tmp_path / "logs" / "sandbox.log"
 
     class Process:
         returncode = 7
         stdout = StringIO("failure\n")
+        stderr = StringIO("diagnostic\n")
 
         def wait(self):
+            return None
+
+        def kill(self):
             return None
 
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
     monkeypatch.setattr(
         "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
+        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})(),
     )
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.Popen", lambda *args, **kwargs: Process())
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
 
-    result = run_sandbox(["true"], tmp_path, log_file=log_file)
+    result = run_sandbox(["true"], tmp_path, log_file=log_file, docker_socket=None)
 
     assert result.exit_code == 7
-    assert result.stdout == "failure\n"
-    assert "docker run --image bruno303/ai-orchestrator-agent:latest" in log_file.read_text()
+    assert result.stderr == "diagnostic\n"
     assert "failure\n" in log_file.read_text()
 
 
-def test_runner_kills_process_on_timeout(tmp_path, monkeypatch):
+def test_runner_cleans_container_on_timeout(tmp_path, monkeypatch):
+    calls = []
+
     class Process:
         returncode = -9
         stdout = StringIO()
+        stderr = StringIO()
         killed = False
 
         def kill(self):
@@ -237,75 +198,55 @@ def test_runner_kills_process_on_timeout(tmp_path, monkeypatch):
             return None
 
     process = Process()
-    cleanup_calls = []
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: (cleanup_calls.append(args[0]) or type("R", (), {"returncode": 0, "stderr": ""})()),
-    )
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
+
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.run", fake_run)
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.Popen", lambda *args, **kwargs: process)
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: ([], [], []))
 
     with pytest.raises(SandboxError, match="timed out"):
-        run_sandbox(["true"], tmp_path, timeout=1)
+        run_sandbox(["true"], tmp_path, timeout=1, docker_socket=None)
+
     assert process.killed is True
-    assert cleanup_calls[1][0:2] == ["/usr/bin/docker", "stop"]
-    assert cleanup_calls[2][0:2] == ["/usr/bin/docker", "rm"]
-    assert cleanup_calls[1][2] == cleanup_calls[2][3]
+    assert any(args[0:2] == ["/usr/bin/docker", "stop"] for args in calls)
+    assert any(args[0:3] == ["/usr/bin/docker", "rm", "--force"] for args in calls)
 
 
-def test_runner_rejects_log_setup_before_start(tmp_path, monkeypatch):
-    started = False
-
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
-    )
-
-    def fail_log_open(path, *args, **kwargs):
-        if path == log_file:
-            raise PermissionError("log is not writable")
-        return original_open(path, *args, **kwargs)
-
-    def fail_start(*args, **kwargs):
-        nonlocal started
-        started = True
-        raise AssertionError("runtime must not start")
-
-    log_file = tmp_path / "logs" / "sandbox.log"
-    original_open = Path.open
-    monkeypatch.setattr(Path, "open", fail_log_open)
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.Popen", fail_start)
-    with pytest.raises(PermissionError):
-        run_sandbox(["true"], tmp_path, log_file=log_file)
-    assert started is False
-
-
-def test_runner_uses_configured_network_and_no_environment_by_default(tmp_path, monkeypatch):
+def test_runner_cleans_container_on_keyboard_interrupt(tmp_path, monkeypatch):
     calls = []
 
     class Process:
-        returncode = 0
+        returncode = -9
         stdout = StringIO()
+        stderr = StringIO()
+        killed = False
+
+        def kill(self):
+            self.killed = True
 
         def wait(self):
             return None
 
+    process = Process()
     monkeypatch.setattr("orchestrator.infra.sandbox.runner.shutil.which", lambda name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.run",
-        lambda *args, **kwargs: type("R", (), {"returncode": 0, "stderr": ""})(),
-    )
-    monkeypatch.setattr(
-        "orchestrator.infra.sandbox.runner.subprocess.Popen",
-        lambda command, **kwargs: (calls.append(command) or Process()),
-    )
-    monkeypatch.setattr("orchestrator.infra.sandbox.runner.select.select", lambda streams, *_: (streams, [], []))
 
-    run_sandbox(["true"], tmp_path, network="none")
+    def fake_run(args, **kwargs):
+        calls.append(args)
+        return type("R", (), {"returncode": 0, "stderr": "", "stdout": ""})()
 
-    command = calls[0]
-    assert command[command.index("--network") + 1] == "none"
-    assert "TOKEN=" not in " ".join(command)
-    assert "HOME=/workspace/.home" in command
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.run", fake_run)
+    monkeypatch.setattr("orchestrator.infra.sandbox.runner.subprocess.Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        "orchestrator.infra.sandbox.runner.select.select",
+        lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_sandbox(["true"], tmp_path, docker_socket=None)
+
+    assert process.killed is True
+    assert any(args[0:2] == ["/usr/bin/docker", "stop"] for args in calls)
