@@ -9,9 +9,28 @@ from typing import Any
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.github import auth as github_auth
 from orchestrator.infra.github import client as github
+from orchestrator.infra.github.discussion import publication_marker
 from orchestrator.domain import Context, WorkItem
 from orchestrator.application.ports import InputEvent
 
+
+COMMENT_IMPL = "impl"
+COMMENT_DISCUSS = "discuss"
+COMMENT_COMMANDS = {
+    "/ai-agent-impl": COMMENT_IMPL,
+    "/ai-agent-discuss": COMMENT_DISCUSS,
+}
+
+
+def parse_comment_command(body: str) -> tuple[str, str] | None:
+    """Return the explicit comment intent and instruction, if supported."""
+    text = body.strip()
+    for command, intent in COMMENT_COMMANDS.items():
+        if text.startswith(command):
+            suffix = text[len(command):]
+            if not suffix or suffix[0].isspace():
+                return intent, suffix.strip()
+    return None
 
 
 def _pr_context_block(pr: github.PullRequestDetail) -> str:
@@ -26,6 +45,21 @@ def _pr_context_block(pr: github.PullRequestDetail) -> str:
         f"changed files: {files}\n"
         "</pr>"
     )
+
+
+def _review_context_block(reviews: list[Any], comments: list[Any]) -> str:
+    lines = ["<pr-reviews>"]
+    for review in reviews:
+        link = f" [{review.url}]" if review.url else ""
+        lines.append(f"review {review.id} ({review.state}) by {review.user_login}: {review.body}{link}")
+    for comment in comments:
+        location = comment.path or ""
+        if comment.line is not None:
+            location += f":{comment.line}"
+        link = f" [{comment.url}]" if comment.url else ""
+        lines.append(f"inline {comment.id} {location}: {comment.body}{link}")
+    lines.append("</pr-reviews>")
+    return "\n".join(lines) if len(lines) > 2 else ""
 
 
 class GitHubSourceFeedback:
@@ -72,6 +106,35 @@ class GitHubPollingInputSource:
     feedback: Any = None
 
     @property
+    def verbosity(self) -> str:
+        value = self.options.get("verbosity", "normal")
+        return value if value in {"quiet", "normal", "verbose"} else "normal"
+
+    def _log(self, message: str, *, level: str = "normal") -> None:
+        if self.verbosity == "quiet" and level != "error":
+            return
+        if level == "verbose" and self.verbosity != "verbose":
+            return
+        print(f"[poll] {message}", flush=True)
+
+    @staticmethod
+    def _safe_error(error: Exception) -> str:
+        message = str(error).replace("\n", " ")
+        # Error messages can contain request URLs, query-string credentials, or
+        # headers echoed by an HTTP client.  Keep only a short, useful reason.
+        message = re.sub(r"https?://[^\s\"']+", "<url>", message, flags=re.IGNORECASE)
+        message = re.sub(
+            r"(?i)(\b(?:token|access_token|auth_token|api[_-]?key|secret|password|passwd)\s*[=:]\s*)[^\s,;&]+",
+            r"\1<redacted>", message,
+        )
+        message = re.sub(
+            r"(?i)(\bauthorization\s*:\s*(?:bearer|basic)\s+)[^\s,;]+",
+            r"\1<redacted>", message,
+        )
+        message = re.sub(r"(?i)(\bbearer\s+)[^\s,;]+", r"\1<redacted>", message)
+        return message[:200]
+
+    @property
     def select_labels(self) -> tuple[str, ...]:
         configured = self.options.get("select_labels")
         if configured is None:
@@ -105,36 +168,48 @@ class GitHubPollingInputSource:
         if self.config_module is None:
             raise RuntimeError("GitHubPollingInputSource requires an allowlist configuration")
         events: list[InputEvent] = []
+        self._log("scan start", level="verbose")
         for repository in self.config_module.allowed_repositories():
+            self._log(f"repository={repository} scan start", level="verbose")
             repository_state = self._repository_state(repository)
+            repository_events = 0
+            issue_count = pr_count = unassigned_count = 0
+            errors = 0
             try:
                 issues = self.github_client.list_open_issues(repository)
             except self.github_client.GitHubError as exc:
-                print(f"[poll] {repository}: {exc}", flush=True)
-                continue
+                self._log(f"repository={repository} issues error={self._safe_error(exc)}", level="error")
+                # A transient issue-list failure must not hide PR commands.
+                issues = []
+                errors += 1
+            issue_count = len(issues)
 
             for issue in issues:
-                events.extend(self._comment_events(
+                found = self._comment_events(
                     repository, issue.number, f"{repository}#{issue.number}",
                     git_context=repository_state,
-                ))
+                )
+                events.extend(found)
+                repository_events += len(found)
 
             try:
                 prs = self.github_client.list_open_pull_requests(repository)
             except self.github_client.GitHubError as exc:
-                print(f"[poll] {repository}: prs: {exc}", flush=True)
+                self._log(f"repository={repository} pull_requests error={self._safe_error(exc)}", level="error")
                 prs = []
+                errors += 1
+            pr_count = len(prs)
             for pr in prs:
-                match = re.match(r"^ai/issue-(\d+)$", pr.head_ref)
-                if match:
-                    issue_number = int(match.group(1))
-                    events.extend(
-                        self._comment_events(
-                            repository, pr.number, f"{repository}#{issue_number}",
-                            task_number=issue_number, pr_number=pr.number,
-                            git_context=repository_state,
-                        )
-                    )
+                self._log(
+                    f"repository={repository} pr={pr.number} branch={getattr(pr, 'head_ref', '<unknown>')} discovered",
+                    level="verbose",
+                )
+                found = self._comment_events(
+                    repository, pr.number, f"{repository}#pr-{pr.number}",
+                    pr_number=pr.number, git_context=repository_state, pull_request=True,
+                )
+                events.extend(found)
+                repository_events += len(found)
 
             try:
                 issues = self.github_client.list_open_issues(
@@ -143,8 +218,10 @@ class GitHubPollingInputSource:
                     assignee="none",
                 )
             except self.github_client.GitHubError as exc:
-                print(f"[poll] {repository}: unassigned issues: {exc}", flush=True)
-                continue
+                self._log(f"repository={repository} unassigned_issues error={self._safe_error(exc)}", level="error")
+                issues = []
+                errors += 1
+            unassigned_count = len(issues)
             for issue in issues:
                 labels = set(issue.labels)
                 if not set(self.select_labels).issubset(labels):
@@ -171,6 +248,19 @@ class GitHubPollingInputSource:
                         trigger="new",
                     )
                 )
+                repository_events += 1
+                self._log(
+                    f"repository={repository} issue={issue.number} supported_command=issue discovered",
+                    level="normal",
+                )
+            self._log(f"repository={repository} scan complete events={repository_events}", level="normal")
+            self._log(
+                f"repository={repository} scan complete status={'partial' if errors else 'ok'} "
+                f"issues={issue_count} prs={pr_count} unassigned={unassigned_count} "
+                f"events={repository_events} errors={errors}",
+                level="verbose",
+            )
+        self._log(f"scan complete events={len(events)}", level="verbose")
         return events
 
     def _comment_events(
@@ -181,72 +271,176 @@ class GitHubPollingInputSource:
         pr_number: int | None = None,
         task_number: int | None = None,
         git_context: dict[str, Any] | None = None,
+        pull_request: bool = False,
     ) -> list[InputEvent]:
         try:
             comments = self.github_client.list_issue_comments(repository, number)
         except self.github_client.GitHubError as exc:
-            print(f"[poll] {repository}#{number}: comments: {exc}", flush=True)
+            self._log(f"repository={repository} number={number} comments error={self._safe_error(exc)}", level="error")
             return []
-        command = self.config_module.repository_command(repository)
-        task_number = task_number or int(task_id.rsplit("#", 1)[1])
-        eligible = [
-            comment
-            for comment in comments
-            if comment.body.strip().startswith(command)
-            and self._comment_is_eligible(repository, comment.id)
-        ]
+        task_number = task_number or (None if pull_request else int(task_id.rsplit("#", 1)[1]))
+        eligible: list[tuple[Any, str, str]] = []
+        skipped = 0
+        for comment in comments:
+            parsed = parse_comment_command(comment.body)
+            if parsed is None:
+                skipped += 1
+                self._log(
+                    f"repository={repository} number={number} comment={comment.id} skip=unsupported_command",
+                    level="verbose",
+                )
+            elif (
+                self._comment_is_eligible(repository, comment.id)
+                and not self._discussion_response_published(parsed[0], comment.id, comments)
+            ):
+                intent, instruction = parsed
+                eligible.append((comment, intent, instruction))
+                self._log(
+                    f"repository={repository} number={number} comment={comment.id} supported_command={intent}",
+                    level="normal",
+                )
+            else:
+                skipped += 1
+                self._log(
+                    f"repository={repository} number={number} comment={comment.id} skip=terminal_reaction",
+                    level="verbose",
+                )
+        self._log(
+            f"repository={repository} number={number} comments={len(comments)} "
+            f"eligible={len(eligible)} skipped={skipped}",
+            level="verbose",
+        )
         if not eligible:
             return []
-        try:
-            issue = self.github_client.get_issue(repository, task_number)
-        except self.github_client.GitHubError as exc:
-            print(f"[poll] {repository}#{task_number}: issue: {exc}", flush=True)
-            return []
+        if pull_request:
+            try:
+                issue = self.github_client.get_pull_request(repository, pr_number)
+            except self.github_client.GitHubError as exc:
+                self._log(f"repository={repository} pr={pr_number} metadata error={self._safe_error(exc)}", level="error")
+                return []
+        else:
+            try:
+                issue = self.github_client.get_issue(repository, task_number)
+            except self.github_client.GitHubError as exc:
+                self._log(f"repository={repository} issue={task_number} metadata error={self._safe_error(exc)}", level="error")
+                return []
         if pr_number is None:
             try:
                 pr_number = self.github_client.find_open_pr(repository, f"ai/issue-{task_number}")
             except self.github_client.GitHubError:
                 pr_number = None
         context: list[str] = []
-        if pr_number is not None:
+        pr_detail = None
+        if pr_number is not None and not pull_request:
             try:
-                context.append(_pr_context_block(self.github_client.get_pull_request(repository, pr_number)))
+                pr_detail = self.github_client.get_pull_request(repository, pr_number)
+                context.append(_pr_context_block(pr_detail))
             except self.github_client.GitHubError:
                 pass
         events: list[InputEvent] = []
-        for comment in eligible:
+        base_git_context = dict(git_context or {})
+        if pull_request:
+            pr_detail = issue
+            if not pr_detail.head_clone_url:
+                self._log(
+                    f"repository={repository} pr={pr_number} metadata error="
+                    "head repository push URL unavailable",
+                    level="error",
+                )
+                return []
+            base_git_context.update({
+                "branch": pr_detail.head_ref,
+                "base_branch": pr_detail.base_ref,
+                "revision": pr_detail.head_sha,
+                "fetch_url": pr_detail.head_clone_url,
+                "push_url": pr_detail.head_clone_url,
+                "base_repository_url": base_git_context.get("repository_url", ""),
+            })
+            # Keep the head URL explicit for fetch/push; it must not be
+            # inferred from a missing value later in publication.
+            base_git_context["repository_url"] = pr_detail.head_clone_url
+            context.append(_pr_context_block(pr_detail))
+            try:
+                review_block = _review_context_block(
+                    self.github_client.list_pull_request_reviews(repository, pr_number),
+                    self.github_client.list_pull_request_review_comments(repository, pr_number),
+                )
+                if review_block:
+                    context.append(review_block)
+            except (AttributeError, self.github_client.GitHubError):
+                pass
+        for comment, intent, instruction in eligible:
+            comment_task_id = f"{task_id}:{comment.id}"
+            comment_workspace = (
+                workspace.task_workspace(task_id)
+                if intent == COMMENT_IMPL
+                else workspace.discussion_workspace(comment_task_id)
+            )
+            comment_git_context = {
+                **base_git_context,
+                "branch": (pr_detail.head_ref if pull_request else f"ai/issue-{task_number}"),
+                "workspace": str(comment_workspace),
+            }
+            if pr_detail is not None:
+                comment_git_context.update({
+                    "base_branch": pr_detail.base_ref,
+                    "revision": pr_detail.head_sha,
+                    "fetch_url": pr_detail.head_clone_url or comment_git_context.get("repository_url", ""),
+                    "push_url": pr_detail.head_clone_url or comment_git_context.get("repository_url", ""),
+                    "base_repository_url": comment_git_context.get("base_repository_url")
+                    or comment_git_context.get("repository_url", ""),
+                })
             events.append(
                 InputEvent(
                     event_id=f"comment:{comment.id}",
                     work_item=WorkItem(
-                        task_id, repository, issue.title, comment.body,
+                        task_id, repository, issue.title, issue.body,
                         tuple([*context, comment.body]), self.provider_type,
                         Context({
-                            "github": {"issue_number": task_number},
-                            "git": {
-                                **(git_context or {}),
-                                "branch": f"ai/issue-{task_number}",
-                                "workspace": str(workspace.task_workspace(task_id)),
-                            },
+                            "github": (
+                                {
+                                    "pr_number": pr_number,
+                                    "head_branch": pr_detail.head_ref,
+                                    "head_sha": pr_detail.head_sha,
+                                    "base_branch": pr_detail.base_ref,
+                                    "head_repository": pr_detail.head_repository,
+                                    "fetch_url": pr_detail.head_clone_url,
+                                }
+                                if pull_request else {"issue_number": task_number}
+                            ),
+                            "git": comment_git_context,
                         }),
                     ),
                     metadata={
                         "kind": "comment",
+                        "intent": intent,
+                        "instruction": instruction,
                     },
-                    trigger="rerun",
+                    trigger="comment",
                     context=Context({"github": {
                         "comment_id": comment.id,
+                        "conversation_number": number,
                         **({"pr_number": pr_number} if pr_number is not None else {}),
                     }}),
                 )
             )
         return events
 
+    @staticmethod
+    def _discussion_response_published(intent: str, comment_id: int, comments: list[Any]) -> bool:
+        if intent != COMMENT_DISCUSS:
+            return False
+        marker = publication_marker(comment_id)
+        return any(marker in str(getattr(comment, "body", "")) for comment in comments)
+
     def _comment_is_eligible(self, repository: str, comment_id: int) -> bool:
         try:
             reactions = self.github_client.list_issue_comment_reactions(repository, comment_id)
         except self.github_client.GitHubError as exc:
-            print(f"[poll] {repository} comment {comment_id}: reactions: {exc}", flush=True)
+            self._log(
+                f"repository={repository} comment={comment_id} reactions error={self._safe_error(exc)}",
+                level="error",
+            )
             return False
         return not any(
             reaction.user_login == self.bot_login and reaction.content in {"rocket", "-1"}

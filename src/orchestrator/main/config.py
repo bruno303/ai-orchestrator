@@ -115,6 +115,37 @@ def load_sandbox_config() -> SandboxConfig:
 
 
 @dataclass(frozen=True)
+class LoggingConfig:
+    """Application-wide logging verbosity."""
+
+    verbosity: str = "normal"
+
+
+LOGGING_VERBOSITIES = {"quiet", "normal", "verbose"}
+
+
+@lru_cache(maxsize=1)
+def load_logging_config() -> LoggingConfig:
+    """Load and validate the global logging configuration."""
+    if not CONFIG_FILE.exists():
+        data = {}
+    else:
+        with CONFIG_FILE.open() as fh:
+            data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise ValueError("configuration must be a mapping")
+    raw = data.get("logging") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("logging must be a mapping with verbosity quiet, normal, or verbose")
+    verbosity = raw.get("verbosity", "normal")
+    if verbosity not in LOGGING_VERBOSITIES:
+        raise ValueError(
+            f"logging.verbosity must be one of quiet, normal, verbose; got {verbosity!r}"
+        )
+    return LoggingConfig(verbosity=verbosity)
+
+
+@dataclass(frozen=True)
 class ProviderConfig:
     type: str
     options: dict[str, Any]
@@ -451,11 +482,6 @@ def load_repository_config() -> dict[str, dict]:
 
 def is_repository_allowed(repository: str) -> bool:
     return repository in load_repository_config()
-
-
-def repository_command(repository: str) -> str:
-    """Comment prefix that triggers a re-run for the repo (default /ai-agent)."""
-    return load_repository_config().get(repository, {}).get("command") or "/ai-agent"
 
 
 def allowed_repositories() -> list[str]:

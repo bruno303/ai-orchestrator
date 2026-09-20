@@ -76,6 +76,33 @@ def test_prepare_recreates_existing_execution_workspace(remote_repo, tmp_path):
     assert not workspace_path.exists()
 
 
+def test_prepare_reuses_existing_execution_workspace_when_requested(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    request = WorkspaceRequest(
+        "company/backend#8-retry", "company/backend", "ai/issue-8", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    )
+
+    first = manager.prepare(request)
+    sentinel = workspace_path / "unfinished.txt"
+    sentinel.write_text("preserve this work\n")
+
+    second = manager.prepare(
+        WorkspaceRequest(
+            "company/backend#8-retry", "company/backend", "ai/issue-8", "main",
+            workspace=str(workspace_path), reuse_workspace=True,
+            context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+        )
+    )
+
+    assert second.workspace == first.workspace
+    assert sentinel.read_text() == "preserve this work\n"
+    manager.cleanup(second)
+    assert not workspace_path.exists()
+
+
 def test_prepare_removes_existing_plain_directory(remote_repo, tmp_path):
     manager = GitWorkspaceManager()
     workspace_path = tmp_path / "workspace"
@@ -151,6 +178,38 @@ def test_review_prepare_fetches_fork_commit_and_falls_back_to_origin(monkeypatch
     ))
     assert fetched == [("fork-sha", "origin")]
     assert result.branch == ""
+
+
+def test_pr_execution_fetches_head_sha_from_fork_and_attaches_branch(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeGit:
+        def ensure_base_clone(self, repository, url):
+            calls.append(("clone", repository, url))
+            return tmp_path / "repo"
+
+        def fetch_commit(self, repo, commit, remote):
+            calls.append(("fetch", commit, remote))
+
+        def create_worktree(self, repo, path, branch, base, **kwargs):
+            calls.append(("worktree", branch, base, kwargs["start_point"]))
+
+    result = GitWorkspaceManager(git_client=FakeGit()).prepare(WorkspaceRequest(
+        "owner/repo#pr-4", "owner/repo", "topic", "main",
+        workspace=str(tmp_path / "ws"),
+        context=Context({"git": {
+            "repository_url": "https://github.com/fork/repo.git",
+            "base_repository_url": "https://github.com/owner/repo.git",
+            "fetch_url": "https://github.com/fork/repo.git",
+            "revision": "head-sha",
+        }}),
+    ))
+    assert calls == [
+        ("clone", "owner/repo", "https://github.com/owner/repo.git"),
+        ("fetch", "head-sha", "https://github.com/fork/repo.git"),
+        ("worktree", "topic", "main", "head-sha"),
+    ]
+    assert result.branch == "topic"
 
 
 def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):

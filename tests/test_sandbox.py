@@ -15,6 +15,7 @@ def test_runner_builds_restricted_container_command(tmp_path, monkeypatch):
     class Process:
         returncode = 0
         stdout = StringIO("ok\n")
+        stderr = StringIO("diagnostic\n")
 
         def wait(self):
             return None
@@ -30,6 +31,7 @@ def test_runner_builds_restricted_container_command(tmp_path, monkeypatch):
 
     command = calls[0][0]
     assert result.stdout == "ok\n"
+    assert result.stderr == "diagnostic\n"
     assert command[0:3] == ["/usr/bin/docker", "run", "--rm"]
     assert "--user" in command
     assert command[command.index("--user") + 1] == f"{os.getuid()}:{os.getgid()}"

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from orchestrator.application.execution.agent import AgentSettings
 from orchestrator.application.execution.service import ExecutionRuntime
+from orchestrator.application.discussion import DiscussionRuntime
 from orchestrator.application.polling import Runtime
 from orchestrator.application.ports import NoopContextPresenter
 from orchestrator.application.review import ReviewApplication
@@ -15,6 +16,8 @@ from orchestrator.application.triage import TriageApplication
 from orchestrator.main import config
 from orchestrator.main.providers import (
     DESTINATION_PROVIDERS,
+    DISCUSSION_DESTINATION_PROVIDERS,
+    DISCUSSION_EXECUTOR_PROVIDERS,
     EXECUTOR_PROVIDERS,
     INPUT_PROVIDERS,
     REVIEW_DESTINATION_PROVIDERS,
@@ -37,7 +40,12 @@ def _create(registry, provider, *, overrides: dict | None = None):
         settings["model_config"] = config.load_review_model_config()
     if registry is TRIAGE_EXECUTOR_PROVIDERS:
         settings["model_config"] = config.load_triage_model_config()
-    if registry in (EXECUTOR_PROVIDERS, REVIEW_EXECUTOR_PROVIDERS, TRIAGE_EXECUTOR_PROVIDERS):
+    if registry in (
+        EXECUTOR_PROVIDERS,
+        DISCUSSION_EXECUTOR_PROVIDERS,
+        REVIEW_EXECUTOR_PROVIDERS,
+        TRIAGE_EXECUTOR_PROVIDERS,
+    ):
         sandbox = config.load_sandbox_config()
         settings["sandbox_runner"] = SandboxRunner(
             enabled=sandbox.enabled,
@@ -97,12 +105,33 @@ def compose_execution_runtime(*, executor=None, workspace_manager=None, destinat
     )
 
 
+def compose_discussion_runtime() -> DiscussionRuntime:
+    from orchestrator.infra.filesystem import workspace
+
+    pipeline = config.load_pipeline_config().execution
+    return DiscussionRuntime(
+        _create(
+            DISCUSSION_EXECUTOR_PROVIDERS,
+            pipeline.executor,
+            overrides={"model_config": config.load_execution_model_config()},
+        ),
+        _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager),
+        _create(DISCUSSION_DESTINATION_PROVIDERS, pipeline.destination),
+        repository_allowed=config.is_repository_allowed,
+        model_config=config.load_execution_model_config(),
+        task_log_path=workspace.task_log_path,
+    )
+
+
 def compose_runtime() -> Runtime:
     pipeline = config.load_pipeline_config().execution
     source = _create(
         INPUT_PROVIDERS,
         pipeline.input_source,
-        overrides=_label_filter_options(pipeline.labels),
+        overrides={
+            **_label_filter_options(pipeline.labels),
+            "verbosity": config.load_logging_config().verbosity,
+        },
     )
     executor = _create(EXECUTOR_PROVIDERS, pipeline.executor)
     manager = _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager)
@@ -114,6 +143,7 @@ def compose_runtime() -> Runtime:
     execution_runtime = compose_execution_runtime(
         executor=executor, workspace_manager=manager, destination=destination
     )
+    discussion_runtime = compose_discussion_runtime()
     return Runtime(
         source,
         executor,
@@ -123,6 +153,7 @@ def compose_runtime() -> Runtime:
         pipeline.input_source.type,
         execution_runtime,
         getattr(source, "context_presenter", NoopContextPresenter()),
+        discussion_runtime,
     )
 
 

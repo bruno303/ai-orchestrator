@@ -7,11 +7,24 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orchestrator.application.ports import ExecutorError, ExecutionRequest, ExecutionResult, ReviewRequest, TriageRequest
-from orchestrator.domain import ReviewOutcome
+from orchestrator.application.ports import (
+    DiscussionRequest,
+    DiscussionResult,
+    ExecutorError,
+    ExecutionRequest,
+    ExecutionResult,
+    ReviewRequest,
+    TriageRequest,
+)
+from orchestrator.domain import ReviewOutcome, TriageOutcome
 from orchestrator.infra.review.parser import parse_review_output
 from orchestrator.infra.triage.parser import parse_triage_output
 from orchestrator.infra.sandbox import SandboxError, SandboxRunner
+
+
+def _failure_diagnostic(stdout: str, stderr: str, fallback: str = "") -> str:
+    """Keep both provider streams available without treating failure output as a response."""
+    return "\n".join(stream for stream in (stdout, stderr) if stream) or fallback
 
 
 class ClaudeError(ExecutorError):
@@ -62,6 +75,42 @@ class ClaudeExecutor:
         )
 
 
+class ClaudeDiscussionExecutor:
+    """Run a discussion through Claude Code's read-only plan mode."""
+
+    provider_type = "claude"
+
+    def __init__(self, options: dict[str, Any] | None = None) -> None:
+        self.options = dict(options or {})
+        self.sandbox_runner = self.options.pop("sandbox_runner", None)
+
+    def execute(self, request: DiscussionRequest) -> DiscussionResult:
+        options = {**self.options, **dict(request.context.namespace("claude"))}
+        model_config = options.get("model_config")
+        log_value = request.log_file or options.get("log_file")
+        try:
+            result = run_claude(
+                workspace=request.workspace,
+                agent=None,
+                prompt=request.prompt,
+                log_file=Path(log_value) if log_value else None,
+                model=request.model or (model_config.name if model_config else None),
+                variant=request.variant or (model_config.variant if model_config else None),
+                timeout=options.get("timeout"),
+                permission_mode="plan",
+                runner=self.sandbox_runner or options.get("sandbox_runner"),
+            )
+        except ClaudeError as exc:
+            raise ExecutorError(str(exc)) from exc
+        return DiscussionResult(
+            success=result.exit_code == 0,
+            response=result.stdout if result.exit_code == 0 else "",
+            stderr=result.stderr if result.exit_code == 0 else _failure_diagnostic(result.stdout, result.stderr),
+            duration_seconds=result.duration_seconds,
+            context=request.context,
+        )
+
+
 class ClaudeReviewExecutor:
     """Run Claude Code in its read-only planning mode for pull-request reviews."""
 
@@ -89,7 +138,7 @@ class ClaudeReviewExecutor:
         if result.exit_code != 0:
             return ReviewOutcome(
                 False,
-                summary=result.stdout or result.stderr,
+                summary=_failure_diagnostic(result.stdout, result.stderr),
                 context=request.context.merge_namespace("claude", {"exit_code": result.exit_code}),
             )
         return parse_review_output(result.stdout, request.context)
@@ -117,7 +166,8 @@ class ClaudeTriageExecutor:
             runner=self.sandbox_runner or options.get("sandbox_runner"),
         )
         if result.exit_code != 0:
-            return parse_triage_output("", request.context.merge_namespace("claude", {"exit_code": result.exit_code}))
+            context = request.context.merge_namespace("claude", {"exit_code": result.exit_code})
+            return TriageOutcome(False, summary=_failure_diagnostic(result.stdout, result.stderr, "Claude triage executor failed"), context=context)
         return parse_triage_output(result.stdout, request.context)
 
 

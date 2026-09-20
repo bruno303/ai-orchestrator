@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import io
 import os
 import select
 import shutil
@@ -31,6 +33,34 @@ class SandboxResult:
     stdout: str
     stderr: str
     duration_seconds: float
+
+
+def _drain_pipe(pipe, decoder: io.IncrementalNewlineDecoder | None) -> tuple[str, bool]:
+    """Read available output without waiting for a line delimiter."""
+    try:
+        file_descriptor = pipe.fileno()
+    except (AttributeError, io.UnsupportedOperation):
+        # Small in-memory streams keep the runner straightforward to unit test.
+        chunk = pipe.readline()
+        return chunk, not chunk
+    chunk = os.read(file_descriptor, 65536)
+    if chunk:
+        assert decoder is not None
+        return decoder.decode(chunk), False
+    if decoder is None:
+        return "", True
+    return decoder.decode(b"", final=True), True
+
+
+def _decoder_for_pipe(pipe) -> io.IncrementalNewlineDecoder | None:
+    """Create a decoder for a subprocess pipe, if it exposes text metadata."""
+    encoding = getattr(pipe, "encoding", None)
+    if encoding is None:
+        return None
+    return io.IncrementalNewlineDecoder(
+        codecs.getincrementaldecoder(encoding)(errors=getattr(pipe, "errors", None) or "strict"),
+        translate=True,
+    )
 
 
 def _runtime_binary(runtime: str) -> str:
@@ -130,7 +160,7 @@ def run_sandbox(
             cmd,
             cwd=workspace,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
         )
@@ -143,10 +173,16 @@ def run_sandbox(
             fh.close()
         raise SandboxError(f"sandbox could not start with runtime {binary}: {exc}") from exc
 
-    lines: list[str] = []
+    assert proc.stdout is not None
+    pipes = {proc.stdout: "stdout"}
+    stderr_pipe = getattr(proc, "stderr", None)
+    if stderr_pipe is not None:
+        pipes[stderr_pipe] = "stderr"
+    decoders = {pipe: _decoder_for_pipe(pipe) for pipe in pipes}
+    streams: dict[str, list[str]] = {"stdout": [], "stderr": []}
     deadline = time.monotonic() + timeout
     try:
-        assert proc.stdout is not None
+        active = list(pipes)
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -154,19 +190,23 @@ def run_sandbox(
                 proc.wait()
                 _cleanup_container(binary, container_name)
                 raise SandboxError(f"sandbox run timed out after {timeout}s")
-            readable, _, _ = select.select([proc.stdout], [], [], remaining)
+            readable, _, _ = select.select(active, [], [], remaining)
             if not readable:
                 proc.kill()
                 proc.wait()
                 _cleanup_container(binary, container_name)
                 raise SandboxError(f"sandbox run timed out after {timeout}s")
-            line = proc.stdout.readline()
-            if not line:
+            for pipe in readable:
+                chunk, eof = _drain_pipe(pipe, decoders[pipe])
+                if chunk:
+                    streams[pipes[pipe]].append(chunk)
+                    if fh is not None:
+                        fh.write(chunk)
+                        fh.flush()
+                if eof:
+                    active.remove(pipe)
+            if not active:
                 break
-            lines.append(line)
-            if fh is not None:
-                fh.write(line)
-                fh.flush()
         proc.wait()
     except KeyboardInterrupt:
         proc.kill()
@@ -175,7 +215,12 @@ def run_sandbox(
     finally:
         if fh is not None:
             fh.close()
-    return SandboxResult(proc.returncode, "".join(lines), "", time.monotonic() - start)
+    return SandboxResult(
+        proc.returncode,
+        "".join(streams["stdout"]),
+        "".join(streams["stderr"]),
+        time.monotonic() - start,
+    )
 
 
 def _cleanup_container(binary: str, container_name: str) -> None:

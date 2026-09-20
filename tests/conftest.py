@@ -81,11 +81,10 @@ FAKE_OPENCODE = r"""#!/usr/bin/env bash
 # Fake opencode: dispatches on prompt content. Env overrides:
 #   FAKE_OPCODE_FAIL=1            -> exit 1
 #   FAKE_OPCODE_SLEEP=N           -> sleep N seconds first
-#   FAKE_OPCODE_ARGS_FILE=<path>  -> append "agent=<agent> dir=<dir>" per run
-#   FAKE_OPCODE_MODEL_FILE=<path> -> append "model=<model> variant=<variant>" per run
+#   FAKE_OPCODE_ARGS_FILE=<path>  -> append "agent=<agent> dir=<cwd>" per run
+#   FAKE_OPCODE_MODEL_FILE=<path> -> append the parsed model reference per run
 set -e
 AGENT=""
-DIR="."
 MODEL=""
 VARIANT=""
 ARGS_FILE="${FAKE_OPCODE_ARGS_FILE:-}"
@@ -93,21 +92,26 @@ MODEL_FILE="${FAKE_OPCODE_MODEL_FILE:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --agent) AGENT="$2"; shift 2 ;;
-    --dir) DIR="$2"; shift 2 ;;
-    -m) MODEL="$2"; shift 2 ;;
-    --variant) VARIANT="$2"; shift 2 ;;
+    --auto) shift ;;
+    --dir) shift 2 ;;
+    -m) MODEL="$2"; shift 2; MODEL_NAME="${MODEL%%#*}"; if [[ "$MODEL" == *#* ]]; then VARIANT="${MODEL#*#}"; fi ;;
+    --*|-*) echo "unsupported option: $1" >&2; exit 2 ;;
     *) PROMPT="$1"; shift ;;
   esac
 done
+if [[ -n "${FAKE_OPCODE_EXPECTED_CWD:-}" && "$(pwd)" != "$FAKE_OPCODE_EXPECTED_CWD" ]]; then
+  echo "unexpected cwd: $(pwd)" >&2
+  exit 3
+fi
 if [[ -n "$ARGS_FILE" ]]; then
-  echo "agent=$AGENT dir=$DIR" >> "$ARGS_FILE"
+  echo "agent=$AGENT dir=$(pwd)" >> "$ARGS_FILE"
 fi
 if [[ -n "$MODEL_FILE" ]]; then
-  echo "model=$MODEL variant=$VARIANT" >> "$MODEL_FILE"
+  echo "model=$MODEL_NAME variant=$VARIANT reference=$MODEL" >> "$MODEL_FILE"
 fi
 if [[ -n "$FAKE_OPCODE_SLEEP" ]]; then sleep "$FAKE_OPCODE_SLEEP"; fi
-if [[ -n "$FAKE_OPCODE_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
-cd "$DIR"
+if [[ -n "$FAKE_OPCODE_FAIL" ]]; then echo "simulated stdout failure"; echo "simulated stderr failure" >&2; exit 1; fi
+echo "diagnostic from stderr" >&2
 case "$PROMPT" in
   *"enough_context"*)
     echo '{"enough_context":true,"confidence":"high","summary":"ready","missing_context":[]}'
@@ -178,7 +182,8 @@ if [[ -n "$MODEL_FILE" ]]; then
   echo "model=$MODEL reasoning=$REASONING" >> "$MODEL_FILE"
 fi
 if [[ -n "$FAKE_CODEX_SLEEP" ]]; then sleep "$FAKE_CODEX_SLEEP"; fi
-if [[ -n "$FAKE_CODEX_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
+if [[ -n "$FAKE_CODEX_FAIL" ]]; then echo "simulated stdout failure"; echo "simulated stderr failure" >&2; exit 1; fi
+echo "diagnostic from stderr" >&2
 cd "$DIR"
 case "$PROMPT" in
   *"enough_context"*)
@@ -248,7 +253,8 @@ if [[ -n "$MODEL_FILE" ]]; then
   echo "model=$MODEL env_effort=${CLAUDE_CODE_EFFORT_LEVEL:-}" >> "$MODEL_FILE"
 fi
 if [[ -n "$FAKE_CLAUDE_SLEEP" ]]; then sleep "$FAKE_CLAUDE_SLEEP"; fi
-if [[ -n "$FAKE_CLAUDE_FAIL" ]]; then echo "simulated failure" >&2; exit 1; fi
+if [[ -n "$FAKE_CLAUDE_FAIL" ]]; then echo "simulated stdout failure"; echo "simulated stderr failure" >&2; exit 1; fi
+echo "diagnostic from stderr" >&2
 case "$PROMPT" in
   *"enough_context"*)
     echo '{"enough_context":true,"confidence":"high","summary":"ready","missing_context":[]}'
@@ -358,7 +364,7 @@ def fake_sandbox_runner(monkeypatch):
             path = Path(log_file)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text((options.get("log_header") or "") + "\n" + result.stdout + result.stderr)
-        return SandboxResult(result.returncode, result.stdout + result.stderr, "", 0.0)
+        return SandboxResult(result.returncode, result.stdout, result.stderr, 0.0)
 
     monkeypatch.setattr(SandboxRunner, "run", run)
     yield
@@ -424,6 +430,7 @@ def clean_env(monkeypatch):
         "FAKE_OPCODE_SLEEP",
         "FAKE_OPCODE_ARGS_FILE",
         "FAKE_OPCODE_MODEL_FILE",
+        "FAKE_OPCODE_EXPECTED_CWD",
         "FAKE_CODEX_FAIL",
         "FAKE_CODEX_SLEEP",
         "FAKE_CODEX_ARGS_FILE",

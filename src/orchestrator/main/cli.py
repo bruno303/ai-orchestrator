@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 
 from orchestrator.main import config
+from orchestrator.application.discussion import DiscussionRunRequest
+from orchestrator.application.execution.models import IncrementalExecutionRequest, WorkContext
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.git import client as git
 from orchestrator.infra.github import assignees as github_assignees
@@ -91,6 +93,72 @@ def _run_graph(seed: dict, task_id: str, *, executor=None, workspace_manager=Non
                 workspace.append_event(task_id, event="node_end", node=node, status=state_mod.FAILED,
                                        duration_s=duration, error=str(error)[:200])
     return result
+
+
+def _work_from_seed(seed: dict) -> tuple[WorkContext, Context]:
+    value = seed.get("input") or {}
+    data = value.get("data") or {}
+    context = Context.from_dict(data.get("context") or value.get("context") or {})
+    item = WorkItem(
+        data["id"],
+        data["repository"],
+        data.get("title", ""),
+        data.get("description", ""),
+        tuple(data.get("extra_context", ())),
+        data.get("input_provider", value.get("provider", "")),
+        context,
+    )
+    return WorkContext(item), context
+
+
+def _comment_instruction(seed: dict) -> str:
+    event = (seed.get("input") or {}).get("event") or {}
+    metadata = event.get("metadata") or {}
+    return str(metadata.get("instruction", ""))
+
+
+def _run_incremental_comment(seed: dict, task_id: str, *, runtime) -> dict:
+    try:
+        work, context = _work_from_seed(seed)
+        git_context = context.namespace("git")
+        publication = runtime.run_incremental(IncrementalExecutionRequest(
+            work=work,
+            instruction=_comment_instruction(seed),
+            branch=str(git_context.get("branch", "")),
+            base_branch=str(git_context.get("base_branch", "")),
+            workspace=str(git_context.get("workspace", "")),
+            context=context,
+        )).publication
+        output = {"provider": publication.provider}
+        if publication.id is not None:
+            output["external_id"] = publication.id
+        if publication.url is not None:
+            output["url"] = publication.url
+        return {"task_id": task_id, "status": state_mod.COMPLETED, "output": output}
+    except Exception as exc:
+        return {"task_id": task_id, "status": state_mod.FAILED, "error": str(exc)}
+
+
+def _run_discussion_comment(seed: dict, task_id: str, *, runtime) -> dict:
+    try:
+        work, context = _work_from_seed(seed)
+        git_context = context.namespace("git")
+        result = runtime.run(DiscussionRunRequest(
+            work=work,
+            branch=str(git_context.get("branch", "")),
+            base_branch=str(git_context.get("base_branch", "")),
+            workspace=str(git_context.get("workspace", "")),
+            revision=str(git_context.get("revision", "")),
+            fetch_url=str(git_context.get("fetch_url", "")),
+            context=context,
+        ))
+        return {
+            "task_id": task_id,
+            "status": state_mod.COMPLETED,
+            "output": {"response": result.response},
+        }
+    except Exception as exc:
+        return {"task_id": task_id, "status": state_mod.FAILED, "error": str(exc)}
 
 
 def _report_result(result: dict) -> None:
@@ -241,7 +309,14 @@ def cmd_execute(args: argparse.Namespace) -> None:
             lambda seed, task_id: _run_graph(seed, task_id, executor=runtime.executor,
                 workspace_manager=runtime.workspace_manager, destination=runtime.destination, runtime=runtime.execution_runtime),
             _report_result, _remove_event_workspace, now=_now, input_provider=runtime.input_provider,
-            feedback=runtime.feedback)
+            feedback=runtime.feedback,
+            run_comment_impl=lambda seed, task_id: _run_incremental_comment(
+                seed, task_id, runtime=runtime.execution_runtime
+            ),
+            run_comment_discuss=lambda seed, task_id: _run_discussion_comment(
+                seed, task_id, runtime=runtime.discussion_runtime
+            ),
+        )
         while True:
             application.poll_once(args.once)
             _poll_reviews(reviews)

@@ -62,10 +62,39 @@ class ExecutionResult:
 
 
 @dataclass
+class DiscussionRequest:
+    """Read-only agent request for a comment discussion."""
+
+    task_id: str
+    repository: str
+    workspace: str
+    prompt: str
+    model: str | None = None
+    variant: str | None = None
+    context: Context = field(default_factory=Context)
+    log_file: str = ""
+
+    def to_dict(self) -> dict[str, Any]: return _json_dict(self)
+
+
+@dataclass
+class DiscussionResult:
+    """Plain-text result returned by a read-only discussion executor."""
+
+    success: bool
+    response: str = ""
+    stderr: str = ""
+    duration_seconds: float = 0.0
+    context: Context = field(default_factory=Context)
+
+    def to_dict(self) -> dict[str, Any]: return _json_dict(self)
+
+
+@dataclass
 class WorkspaceRequest:
     task_id: str; repository: str; branch: str; base_branch: str; purpose: str = "execution"
     repository_url: str = ""; fetch_url: str = ""; target_ref: str = ""; revision: str = ""; checkout_mode: str = "branch"; workspace: str = ""
-    context: Context = field(default_factory=Context)
+    context: Context = field(default_factory=Context); reuse_workspace: bool = False
     def to_dict(self) -> dict[str, Any]: return _json_dict(self)
 
 
@@ -78,6 +107,18 @@ class WorkspaceResult:
 @dataclass
 class ReviewRequest:
     task_id: str; repository: str; workspace: str; prompt: str; context: Context = field(default_factory=Context); log_file: str = ""
+    def to_dict(self) -> dict[str, Any]: return _json_dict(self)
+
+
+@dataclass
+class DiscussionPublicationRequest:
+    """Provider-neutral request to publish a discussion response."""
+
+    task_id: str
+    repository: str
+    response: str
+    context: Context = field(default_factory=Context)
+
     def to_dict(self) -> dict[str, Any]: return _json_dict(self)
 
 
@@ -100,6 +141,11 @@ class SourceFeedback(Protocol):
 @runtime_checkable
 class Executor(Protocol):
     def execute(self, request: ExecutionRequest) -> ExecutionResult: ...
+
+
+@runtime_checkable
+class DiscussionExecutor(Protocol):
+    def execute(self, request: DiscussionRequest) -> DiscussionResult: ...
 @runtime_checkable
 class WorkspaceManager(Protocol):
     def prepare(self, request: WorkspaceRequest) -> WorkspaceResult: ...
@@ -116,6 +162,11 @@ class ReviewExecutor(Protocol):
 @runtime_checkable
 class ReviewDestination(Protocol):
     def publish(self, target: ReviewTarget, outcome: ReviewOutcome) -> PublishedReview: ...
+
+
+@runtime_checkable
+class DiscussionDestination(Protocol):
+    def publish(self, request: DiscussionPublicationRequest) -> None: ...
 
 
 @dataclass

@@ -39,6 +39,11 @@ def review_workspace(task_id: str) -> Path:
     return WORKSPACES_DIR / safe_task_token(task_id)
 
 
+def discussion_workspace(task_id: str) -> Path:
+    """Return an isolated checkout path for one read-only discussion."""
+    return WORKSPACES_DIR / "discussion-" / safe_task_token(task_id)
+
+
 def task_logs_dir(task_id: str) -> Path:
     return LOGS_DIR / safe_task_token(task_id)
 
