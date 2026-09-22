@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 from orchestrator.domain import ChangeRequest, Context, PublishedChange
@@ -252,10 +253,14 @@ class ExecutionRuntime:
 
         try:
             self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
-        except CleanupError:
-            # Cleanup is best effort after a successful comment publication
-            # and must not hide the publication result.
-            pass
+        except CleanupError as exc:
+            # Cleanup is best effort after a successful comment publication;
+            # report the leftover path and cause without masking publication.
+            print(
+                f"workspace cleanup failed for {prepared.workspace.workspace}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
         return published
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
