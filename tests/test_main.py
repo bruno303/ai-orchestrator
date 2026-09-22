@@ -215,3 +215,13 @@ def test_keyboard_interrupt_prints_generic_stop_message(monkeypatch, capsys):
 
     assert exc_info.value.code == 130
     assert capsys.readouterr().out == "\nprocess stopped.\n"
+
+
+def test_main_runs_log_retention_at_startup(monkeypatch):
+    calls = []
+    monkeypatch.setattr(cli.workspace, "expire_task_logs", lambda: calls.append("sweep"))
+    monkeypatch.setattr(cli, "cmd_logs", lambda _args: calls.append("command"))
+
+    main(["logs", "repo#1"])
+
+    assert calls == ["sweep", "command"]

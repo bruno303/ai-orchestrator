@@ -255,6 +255,7 @@ def _acquire_poll_lock(lock_name: str = "poll"):
 
 
 def _poll_reviews(application) -> None:
+    workspace.expire_task_logs()
     try:
         application.poll_once()
     except Exception as exc:
@@ -264,6 +265,7 @@ def _poll_reviews(application) -> None:
 
 
 def _poll_triage(application) -> None:
+    workspace.expire_task_logs()
     try:
         application.poll_once()
     except Exception as exc:
@@ -328,6 +330,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    workspace.expire_task_logs()
     parser = argparse.ArgumentParser(prog="orchestrator", description="GitHub Issue -> agent -> PR")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run a task for an issue (owner/repo#number)")

@@ -6,7 +6,8 @@ import json
 import hashlib
 import os
 import re
-from datetime import datetime, timezone
+import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 WORKSPACES_DIR = Path(
@@ -94,3 +95,21 @@ def write_task_log(task_id: str, node: str, content: str) -> Path:
         if not content.endswith("\n"):
             fh.write("\n")
     return log_path
+
+
+def expire_task_logs(*, now: datetime | None = None, retention_days: int = 7) -> None:
+    """Remove task log directories whose newest file is older than retention."""
+    cutoff = (now or datetime.now(timezone.utc)).timestamp() - timedelta(days=retention_days).total_seconds()
+    if not LOGS_DIR.exists():
+        return
+    for directory in LOGS_DIR.iterdir():
+        if not directory.is_dir():
+            continue
+        try:
+            files = [path for path in directory.rglob("*") if path.is_file()]
+            if files and max(path.stat().st_mtime for path in files) < cutoff:
+                shutil.rmtree(directory)
+            elif not files and directory.stat().st_mtime < cutoff:
+                shutil.rmtree(directory)
+        except OSError as exc:
+            print(f"log retention: could not remove {directory}: {exc}", flush=True)

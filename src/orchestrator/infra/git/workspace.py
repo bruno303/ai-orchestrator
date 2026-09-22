@@ -112,6 +112,12 @@ class GitWorkspaceManager:
     def cleanup(self, result: WorkspaceResult) -> None:
         git_context = dict(result.context.namespace("git"))
         repo_dir = Path(git_context.get("repo_dir") or git.base_repo_dir(git_context["repository"]))
-        self.git_client.remove_worktree(repo_dir, Path(result.workspace), result.branch)
-        if Path(result.workspace).exists():
-            shutil.rmtree(Path(result.workspace), ignore_errors=True)
+        workspace_path = Path(result.workspace)
+        self.git_client.remove_worktree(repo_dir, workspace_path, result.branch)
+        if workspace_path.exists() or workspace_path.is_symlink():
+            if workspace_path.is_dir() and not workspace_path.is_symlink():
+                shutil.rmtree(workspace_path)
+            else:
+                workspace_path.unlink()
+        if workspace_path.exists() or workspace_path.is_symlink():
+            raise git.GitError(f"workspace remains after cleanup: {workspace_path}")

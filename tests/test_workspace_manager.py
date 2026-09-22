@@ -40,6 +40,22 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     assert not workspace_path.exists()
 
 
+def test_cleanup_fails_when_symlink_remains(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    actual = tmp_path / "actual"
+    actual.mkdir()
+    link = tmp_path / "workspace-link"
+    link.symlink_to(actual, target_is_directory=True)
+    class FakeGit:
+        def remove_worktree(self, repo, path, branch):
+            pass
+
+    result = type("Result", (), {"context": Context({"git": {"repo_dir": str(tmp_path), "repository": "company/backend"}}), "workspace": str(link), "branch": ""})()
+    GitWorkspaceManager(git_client=FakeGit()).cleanup(result)
+    assert not link.exists()
+    assert not link.is_symlink()
+
+
 def test_prepare_derives_branch_and_workspace_from_task_id(remote_repo):
     manager = GitWorkspaceManager()
     result = manager.prepare(WorkspaceRequest(

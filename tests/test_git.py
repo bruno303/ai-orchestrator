@@ -160,6 +160,34 @@ def test_workspace_exists_raises(repo_dir, tmp_path):
         git.create_worktree(repo_dir, ws, "ai/issue-4", "main")
 
 
+def test_remove_worktree_keeps_base_clone_and_remote_branch(repo_dir, remote_repo, tmp_path):
+    ws = tmp_path / "ws-cleanup"
+    git.create_worktree(repo_dir, ws, "ai/issue-cleanup", "main")
+    (ws / "work.txt").write_text("published\n")
+    git.commit_all(ws, "published")
+    git.push_branch(ws, "ai/issue-cleanup")
+
+    git.remove_worktree(repo_dir, ws, "ai/issue-cleanup")
+
+    assert not ws.exists()
+    assert (repo_dir / ".git").exists()
+    assert subprocess.run(["git", "ls-remote", "origin", "refs/heads/ai/issue-cleanup"], cwd=repo_dir, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_remove_worktree_surfaces_branch_deletion_failure(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, cwd, *, check=True, env=None):
+        calls.append(args)
+        if args[:3] == ["git", "branch", "--list"]:
+            return subprocess.CompletedProcess(args, 0, "topic\n", "")
+        return subprocess.CompletedProcess(args, 1, "", "branch is checked out")
+
+    monkeypatch.setattr(git, "_run", fake_run)
+    with pytest.raises(git.GitError, match="branch -D failed.*checked out"):
+        git.remove_worktree(tmp_path, tmp_path / "gone", "topic")
+
+
 def test_has_changes_ignores_agents_dir(repo_dir, tmp_path):
     ws = tmp_path / "ws"
     git.create_worktree(repo_dir, ws, "ai/issue-5", "main")
