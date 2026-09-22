@@ -114,6 +114,8 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
+| `ORCHESTRATOR_LOG_RETENTION_DAYS` | `7` (days; `0` disables pruning) |
+| `ORCHESTRATOR_CLEAN_INTERVAL` | `86400` (seconds between cleanup sweeps) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
 | `ORCHESTRATOR_CODEX_BIN` | `codex` |
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
@@ -150,6 +152,10 @@ orchestrator reset company/backend#123
 # Observability
 orchestrator logs company/backend#123                 # list the task's node logs
 orchestrator logs company/backend#123 --node plan     # read a node log
+
+# Prune old task logs, empty workspace directories, and stale worktrees
+orchestrator clean
+orchestrator clean --days 3                           # override log retention
 ```
 
 ## Comment triggers
@@ -351,7 +357,10 @@ Context namespace. Do not put service-specific values in generic fields.
 
 - **Isolation**: each task gets its own `git worktree` under
   `~/agent-workspaces/<owner>-<repo>-<issue>/` on branch `ai/issue-<n>`,
-  created from a shared base clone in `~/agent-repos/`.
+  created from a shared base clone in `~/agent-repos/`. Reviews and discussions
+  use detached checkouts; discussion checkouts live directly under
+  `~/agent-workspaces/discussion-<token>/` with no shared `discussion-/` group
+  directory left behind.
 - **Assignment**: polling selects only unassigned issues matching the
   execution stage's labels and assigns the authenticated GitHub user
   before starting work. A failed assignment is logged and the issue is skipped
@@ -369,10 +378,12 @@ Context namespace. Do not put service-specific values in generic fields.
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
-- **Cleanup**: after a successful PR, the task worktree and local branch are
-  removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging until a rerun starts; reruns discard and recreate the
-  task workspace from the base branch.
+- **Cleanup**: after a successful PR, the task worktree, local branch, stale
+  git worktree metadata, and empty leftover directories are removed (logs and
+  the remote branch are kept). The shared base clone in `~/agent-repos/` is
+  retained. Failed tasks keep their worktree for debugging until a rerun starts;
+  reruns discard and recreate the task workspace from the base branch. Cleanup
+  failures are logged as warnings and never fail an already-published task.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use `/ai-agent-impl` for an incremental implementation request

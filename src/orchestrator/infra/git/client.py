@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import os
 from contextvars import ContextVar
@@ -129,14 +130,30 @@ def detect_default_branch(repo_dir: Path) -> str:
     raise GitError(f"could not detect default branch in {repo_dir}")
 
 
+def prune_worktrees(repo_dir: Path) -> None:
+    """Best-effort removal of stale worktree metadata under ``repo_dir``."""
+    _run(["git", "worktree", "prune"], cwd=repo_dir, check=False)
+
+
 def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
-    """Remove a task worktree and its branch (used for clean re-runs)."""
-    if workspace.exists():
-        _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
+    """Remove a task worktree, its branch, and any stale worktree metadata.
+
+    ``git worktree remove`` is always attempted, even for an already-deleted
+    directory, so the administrative entry is cleaned up instead of lingering
+    as a stale ``.git/worktrees/<name>`` record. Any residual path is removed
+    directly so a plain directory or symlink left behind is still cleared.
+    """
+    _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
+    if workspace.exists() or workspace.is_symlink():
+        if workspace.is_dir() and not workspace.is_symlink():
+            shutil.rmtree(workspace, ignore_errors=True)
+        else:
+            workspace.unlink(missing_ok=True)
     if branch:
         proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
         if branch in proc.stdout.split():
             _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+    prune_worktrees(repo_dir)
 
 
 def remote_branch_exists(repo_dir: Path, branch: str) -> bool:

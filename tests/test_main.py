@@ -1,11 +1,16 @@
 """CLI stateless behavior."""
 
 import json
+import os
+import time
 from types import SimpleNamespace
 
 import pytest
 
+from orchestrator.infra.filesystem import workspace
+from orchestrator.infra.git import client as git
 from orchestrator.infra.github import client as github
+from orchestrator.infra.langgraph import state as state_mod
 from orchestrator.main import cli
 from orchestrator.main.cli import _poll_reviews, main
 
@@ -215,3 +220,133 @@ def test_keyboard_interrupt_prints_generic_stop_message(monkeypatch, capsys):
 
     assert exc_info.value.code == 130
     assert capsys.readouterr().out == "\nprocess stopped.\n"
+
+
+def _age_file(path, days):
+    stale = time.time() - days * 24 * 60 * 60
+    os.utime(path, (stale, stale))
+
+
+def _redirect_clean_paths(monkeypatch, tmp_path):
+    logs_dir = tmp_path / "logs"
+    workspaces_dir = tmp_path / "workspaces"
+    repos_dir = tmp_path / "repos"
+    monkeypatch.setattr(workspace, "LOGS_DIR", logs_dir)
+    monkeypatch.setattr(workspace, "WORKSPACES_DIR", workspaces_dir)
+    monkeypatch.setattr(git, "REPOS_DIR", repos_dir)
+    return logs_dir, workspaces_dir
+
+
+def test_prune_logs_deletes_only_expired_task_dirs(tmp_path, monkeypatch, capsys):
+    logs_dir, _ = _redirect_clean_paths(monkeypatch, tmp_path)
+    old, fresh = logs_dir / "old-task", logs_dir / "fresh-task"
+    old.mkdir(parents=True); fresh.mkdir(parents=True)
+    (old / "events.jsonl").write_text("old")
+    (fresh / "events.jsonl").write_text("fresh")
+    _age_file(old / "events.jsonl", 10)
+
+    removed = workspace.prune_logs(7)
+
+    assert removed == [old]
+    assert not old.exists()
+    assert fresh.exists()
+    assert "old-task" not in capsys.readouterr().out
+
+
+def test_prune_logs_keeps_everything_when_disabled(tmp_path, monkeypatch):
+    logs_dir, _ = _redirect_clean_paths(monkeypatch, tmp_path)
+    task = logs_dir / "stale-task"
+    task.mkdir(parents=True)
+    (task / "events.jsonl").write_text("stale")
+    _age_file(task / "events.jsonl", 30)
+
+    assert workspace.prune_logs(0) == []
+    assert task.exists()
+
+
+def test_prune_logs_does_not_report_failed_deletion(tmp_path, monkeypatch):
+    logs_dir, _ = _redirect_clean_paths(monkeypatch, tmp_path)
+    old = logs_dir / "old-task"
+    old.mkdir(parents=True)
+    (old / "events.jsonl").write_text("old")
+    _age_file(old / "events.jsonl", 10)
+    # Simulate a deletion that silently fails (rmtree is best effort).
+    monkeypatch.setattr(workspace.shutil, "rmtree", lambda *args, **kwargs: None)
+
+    assert workspace.prune_logs(7) == []
+    assert old.exists()
+
+
+def _incremental_seed(task_id: str) -> dict:
+    return {
+        "input": {
+            "provider": "github",
+            "event": {"metadata": {"instruction": "also validate the email"}},
+            "data": {
+                "id": task_id,
+                "repository": "company/backend",
+                "title": "Add feature",
+                "description": "Implement it",
+                "context": {"git": {"branch": "ai/issue-42", "base_branch": "main", "workspace": "/tmp/ws"}},
+            },
+        },
+    }
+
+
+def test_incremental_comment_event_failure_keeps_completed(monkeypatch):
+    task_id = "company/backend#42"
+
+    class Runtime:
+        def run_incremental(self, request):
+            publication = SimpleNamespace(provider="github", id="17", url="https://example/pr/17")
+            return SimpleNamespace(publication=publication, warnings=("residual path: /tmp/ws",))
+
+    def fail_event(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cli.workspace, "append_event", fail_event)
+
+    result = cli._run_incremental_comment(_incremental_seed(task_id), task_id, runtime=Runtime())
+
+    assert result["status"] == state_mod.COMPLETED
+    assert result["output"]["external_id"] == "17"
+    assert result["warnings"] == ["residual path: /tmp/ws"]
+
+
+def test_clean_removes_old_logs_and_empty_dirs(tmp_path, monkeypatch, capsys):
+    logs_dir, workspaces_dir = _redirect_clean_paths(monkeypatch, tmp_path)
+    old = logs_dir / "old-task"
+    old.mkdir(parents=True)
+    (old / "events.jsonl").write_text("old")
+    _age_file(old / "events.jsonl", 10)
+    empty = workspaces_dir / "stale-task"
+    empty.mkdir(parents=True)
+
+    cli.cmd_clean(SimpleNamespace(days=None))
+
+    assert not old.exists()
+    assert not empty.exists()
+    output = capsys.readouterr().out
+    assert "removed 1 log dir(s)" in output
+
+
+def test_clean_days_overrides_default_retention(tmp_path, monkeypatch):
+    logs_dir, _ = _redirect_clean_paths(monkeypatch, tmp_path)
+    recent = logs_dir / "recent-task"
+    recent.mkdir(parents=True)
+    (recent / "events.jsonl").write_text("recent")
+    _age_file(recent / "events.jsonl", 3)
+
+    cli.cmd_clean(SimpleNamespace(days=None))
+    assert recent.exists()
+
+    cli.cmd_clean(SimpleNamespace(days=1))
+    assert not recent.exists()
+
+
+def test_clean_is_safe_with_missing_directories(tmp_path, monkeypatch, capsys):
+    _redirect_clean_paths(monkeypatch, tmp_path)
+
+    cli.cmd_clean(SimpleNamespace(days=7))
+
+    assert "removed 0 log dir(s)" in capsys.readouterr().out

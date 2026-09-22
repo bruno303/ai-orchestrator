@@ -126,6 +126,7 @@ class PublishRequest:
 @dataclass(frozen=True)
 class PublishResult:
     publication: PublishedChange
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -137,6 +138,7 @@ class CleanupRequest:
 @dataclass(frozen=True)
 class CleanupResult:
     workspace: str
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

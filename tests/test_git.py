@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -113,6 +114,42 @@ def test_ensure_base_clone_and_fetch(repo_dir):
 
 def test_detect_default_branch(repo_dir):
     assert git.detect_default_branch(repo_dir) == "main"
+
+
+def test_remove_worktree_prunes_stale_metadata_when_directory_deleted(repo_dir, tmp_path):
+    ws = tmp_path / "ws"
+    git.create_worktree(repo_dir, ws, "ai/issue-12", "main")
+    worktrees_dir = repo_dir / ".git" / "worktrees"
+    assert worktrees_dir.exists()
+    assert any(worktrees_dir.iterdir())
+
+    # Simulate a crash/cleanup that deleted the working directory but left the
+    # administrative ``.git/worktrees/<name>`` record behind.
+    shutil.rmtree(ws)
+    assert not ws.exists()
+
+    git.remove_worktree(repo_dir, ws, "ai/issue-12")
+
+    assert not worktrees_dir.exists() or not any(worktrees_dir.iterdir())
+    proc = subprocess.run(
+        ["git", "branch", "--list", "ai/issue-12"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert "ai/issue-12" not in proc.stdout
+
+
+def test_prune_worktrees_is_noop_on_clean_repository(repo_dir):
+    git.prune_worktrees(repo_dir)
+
+    proc = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert proc.returncode == 0
 
 
 def test_create_worktree_commits_and_pushes(repo_dir, remote_repo, tmp_path):

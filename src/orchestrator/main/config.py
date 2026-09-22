@@ -34,6 +34,10 @@ def _environment_path(name: str, default: str | Path) -> Path:
     return Path(os.environ.get(name, default)).expanduser()
 
 
+def _environment_int(name: str, default: int) -> int:
+    return int(os.environ.get(name, str(default)))
+
+
 def load_environment() -> bool:
     """Load local deployment overrides without replacing exported variables."""
     if os.environ.get("ORCHESTRATOR_LOAD_DOTENV", "1") != "1":
@@ -72,6 +76,11 @@ POLL_INTERVAL_SECONDS = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", str(5 *
 MAX_CONCURRENT_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_CONCURRENT", "1"))
 # A task/comment with no activity for this long is considered dead (process died).
 STALE_SECONDS = int(os.environ.get("ORCHESTRATOR_STALE_SECONDS", str(2 * 60 * 60)))
+
+# Per-task logs older than this are pruned by the retention sweep (0 disables).
+LOG_RETENTION_DAYS = _environment_int("ORCHESTRATOR_LOG_RETENTION_DAYS", 7)
+# Minimum gap between background cleanup sweeps during polling.
+CLEAN_INTERVAL_SECONDS = _environment_int("ORCHESTRATOR_CLEAN_INTERVAL", 24 * 60 * 60)
 
 
 @dataclass
