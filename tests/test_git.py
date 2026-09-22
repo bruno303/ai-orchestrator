@@ -160,6 +160,36 @@ def test_workspace_exists_raises(repo_dir, tmp_path):
         git.create_worktree(repo_dir, ws, "ai/issue-4", "main")
 
 
+def test_remove_worktree_raises_when_path_persists(monkeypatch, repo_dir, tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr(git, "_run", lambda *args, **kwargs: subprocess.CompletedProcess(
+        args[0], 0, "", ""
+    ))
+
+    with pytest.raises(git.GitError, match="still exists"):
+        git.remove_worktree(repo_dir, ws, "")
+
+
+def test_list_and_prune_worktrees(repo_dir, tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    git.create_worktree(repo_dir, ws, "ai/list-worktrees", "main")
+
+    assert ws in git.list_worktrees(repo_dir)
+
+    calls = []
+    original_run = git._run
+
+    def record_run(args, cwd, **kwargs):
+        calls.append(args)
+        return original_run(args, cwd, **kwargs)
+
+    monkeypatch.setattr(git, "_run", record_run)
+    git.prune_worktrees(repo_dir)
+    assert ["git", "worktree", "prune"] in calls
+    git.remove_worktree(repo_dir, ws, "ai/list-worktrees")
+
+
 def test_has_changes_ignores_agents_dir(repo_dir, tmp_path):
     ws = tmp_path / "ws"
     git.create_worktree(repo_dir, ws, "ai/issue-5", "main")

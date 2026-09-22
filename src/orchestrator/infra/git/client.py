@@ -133,10 +133,28 @@ def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
     """Remove a task worktree and its branch (used for clean re-runs)."""
     if workspace.exists():
         _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
+    prune_worktrees(repo_dir)
     if branch:
         proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
         if branch in proc.stdout.split():
             _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+    if workspace.exists() or workspace.is_symlink():
+        raise GitError(f"worktree removal failed; workspace still exists: {workspace}")
+
+
+def list_worktrees(repo_dir: Path) -> list[Path]:
+    """Return paths registered as worktrees for a repository."""
+    proc = _run(["git", "worktree", "list", "--porcelain"], cwd=repo_dir)
+    return [
+        Path(line.removeprefix("worktree "))
+        for line in proc.stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+def prune_worktrees(repo_dir: Path) -> None:
+    """Remove stale worktree registrations from a repository."""
+    _run(["git", "worktree", "prune"], cwd=repo_dir)
 
 
 def remote_branch_exists(repo_dir: Path, branch: str) -> bool:

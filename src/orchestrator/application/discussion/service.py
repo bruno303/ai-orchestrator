@@ -71,6 +71,7 @@ class DiscussionRuntime:
         repository_allowed: Callable[[str], bool] = lambda _repository: True,
         model_config=None,
         task_log_path: Callable[[str, str], Path] | None = None,
+        on_cleanup_error: Callable[[str, Exception], None] | None = None,
     ) -> None:
         self.executor = executor
         self.workspace_manager = workspace_manager
@@ -78,6 +79,15 @@ class DiscussionRuntime:
         self.repository_allowed = repository_allowed
         self.model_config = model_config
         self.task_log_path = task_log_path or (lambda task_id, node: Path(f"{task_id}-{node}.log"))
+        self.on_cleanup_error = on_cleanup_error or (
+            lambda task_id, error: print(f"[cleanup] {task_id}: {error}", flush=True)
+        )
+
+    def report_cleanup_error(self, task_id: str, error: Exception) -> None:
+        try:
+            self.on_cleanup_error(task_id, error)
+        except Exception:
+            pass
 
     def run(self, request: DiscussionRunRequest) -> DiscussionResult:
         if not self.repository_allowed(request.work.repository):
@@ -151,7 +161,7 @@ class DiscussionRuntime:
         finally:
             try:
                 self.workspace_manager.cleanup(prepared)
-            except Exception:
+            except Exception as exc:
                 # A discussion has no local changes to preserve. Cleanup is
                 # best effort and must not hide an already published answer.
-                pass
+                self.report_cleanup_error(request.work.task_id, exc)

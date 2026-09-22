@@ -146,9 +146,20 @@ def test_review_poll_continues_after_cleanup_failure():
             raise RuntimeError("cleanup failed")
 
     destination = FakeDestination()
-    app = ReviewApplication(type("Input", (), {"poll": lambda self: events})(), FakeExecutor(ReviewOutcome(True, verdict="comment")), Workspace(), destination)
+    logs = []
+    app = ReviewApplication(
+        type("Input", (), {"poll": lambda self: events})(),
+        FakeExecutor(ReviewOutcome(True, verdict="comment")),
+        Workspace(),
+        destination,
+        write_task_log=lambda task_id, node, message: logs.append((task_id, node, message)),
+    )
     assert app.poll_once() == events
     assert len(destination.published) == 2
+    # Cleanup failures are recorded in the task log, not only printed.
+    failures = [message for task_id, node, message in logs if "cleanup failed" in message]
+    assert len(failures) == 2
+    assert all("review:r#" in message for message in failures)
 
 
 def test_review_runtime_uses_registries_without_store(monkeypatch):

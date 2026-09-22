@@ -83,5 +83,11 @@ class ReviewApplication:
                     try:
                         self.runtime.cleanup_review(CleanupReviewRequest(prepared))
                     except Exception as exc:
+                        self.write_task_log(
+                            task_id,
+                            "review",
+                            f"[review] cleanup failed: repository={target.repository} "
+                            f"id={target.id}: {exc}",
+                        )
                         print(f"[review] cleanup {target.id}: {exc}", flush=True)
         return processed

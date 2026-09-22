@@ -68,6 +68,13 @@ def _label_output_options(output) -> dict:
     }
 
 
+def _cleanup_error_reporter(workspace):
+    def report(task_id, error):
+        workspace.append_event(task_id, event="cleanup_failed", error=str(error))
+        print(f"[cleanup] {task_id}: {error}", flush=True)
+    return report
+
+
 def compose_execution_runtime(*, executor=None, workspace_manager=None, destination=None) -> ExecutionRuntime:
     from orchestrator.infra.filesystem import workspace
 
@@ -87,6 +94,7 @@ def compose_execution_runtime(*, executor=None, workspace_manager=None, destinat
         repository_allowed=config.is_repository_allowed,
         agent_settings=_agent_settings(),
         task_log_path=workspace.task_log_path,
+        on_cleanup_error=_cleanup_error_reporter(workspace),
     )
 
 
@@ -105,6 +113,7 @@ def compose_discussion_runtime() -> DiscussionRuntime:
         repository_allowed=config.is_repository_allowed,
         model_config=config.load_execution_model_config(),
         task_log_path=workspace.task_log_path,
+        on_cleanup_error=_cleanup_error_reporter(workspace),
     )
 
 

@@ -121,6 +121,47 @@ def test_prepare_removes_existing_plain_directory(remote_repo, tmp_path):
     manager.cleanup(result)
 
 
+def test_cleanup_removes_empty_discussion_parent(remote_repo):
+    manager = GitWorkspaceManager()
+    workspace_path = workspace.WORKSPACES_DIR / "discussion-" / "cleanup-test"
+    result = manager.prepare(WorkspaceRequest(
+        "company/backend#discussion", "company/backend", "ai/discussion", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+
+    manager.cleanup(result)
+
+    assert not workspace_path.exists()
+    assert not workspace_path.parent.exists()
+    repo_dir = Path(result.context.namespace("git")["repo_dir"])
+    branch = git._run(
+        ["git", "branch", "--list", result.branch],
+        cwd=repo_dir,
+    )
+    assert not branch.stdout.strip()
+
+
+def test_cleanup_raises_when_git_and_fallback_removal_fail(remote_repo, monkeypatch):
+    manager = GitWorkspaceManager()
+    result = manager.prepare(WorkspaceRequest(
+        "company/backend#cleanup-failure", "company/backend", "ai/cleanup-failure", "main",
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+    monkeypatch.setattr(
+        manager.git_client, "remove_worktree",
+        lambda *args: (_ for _ in ()).throw(git.GitError("remove failed")),
+    )
+    monkeypatch.setattr(manager.git_client, "prune_worktrees", lambda *args: None)
+    monkeypatch.setattr(
+        "orchestrator.infra.git.workspace.shutil.rmtree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("rmtree failed")),
+    )
+
+    with pytest.raises(git.GitError, match="still exists"):
+        manager.cleanup(result)
+
+
 def test_prepare_requires_explicit_repository_url(monkeypatch):
     cloned = False
 

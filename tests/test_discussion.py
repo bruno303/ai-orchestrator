@@ -223,6 +223,41 @@ def test_discussion_runtime_is_read_only_and_publishes_only_response(tmp_path):
     assert captured["cleaned"] is True
 
 
+def test_discussion_cleanup_failure_reports_and_run_still_succeeds(tmp_path):
+    captured = {}
+    reported = []
+
+    class Workspace:
+        def prepare(self, request):
+            return WorkspaceResult(str(tmp_path), "", request.context, "main")
+
+        def cleanup(self, result):
+            captured["cleaned"] = True
+            raise RuntimeError("residual discussion worktree")
+
+    class Executor:
+        def execute(self, request):
+            return DiscussionResult(True, "The abstraction still holds.", context=request.context)
+
+    class Destination:
+        def publish(self, request):
+            captured["publication"] = request
+
+    runtime = DiscussionRuntime(
+        Executor(), Workspace(), Destination(),
+        on_cleanup_error=lambda task_id, error: reported.append((task_id, error)),
+    )
+    result = runtime.run(DiscussionRunRequest(work=_work(), workspace=str(tmp_path)))
+
+    # The published answer survives a cleanup failure and the failure is reported.
+    assert result.response == "The abstraction still holds."
+    assert captured["cleaned"] is True
+    assert captured["publication"].response == result.response
+    assert len(reported) == 1
+    assert reported[0][0] == "owner/repo#7"
+    assert "residual discussion worktree" in str(reported[0][1])
+
+
 def test_github_discussion_destination_posts_only_to_originating_conversation():
     calls = []
 

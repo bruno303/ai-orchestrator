@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Callable
 
 from orchestrator.domain import ChangeRequest, Context, PublishedChange
 from orchestrator.application.ports import Destination, Executor, WorkspaceManager, WorkspaceRequest, WorkspaceResult
@@ -108,11 +109,21 @@ only in this workspace and do not push or create a pull request yourself.
 class ExecutionRuntime:
     """Perform execution steps without interpreting provider-owned context."""
 
-    def __init__(self, executor: Executor, workspace_manager: WorkspaceManager, destination: Destination, *, repository_allowed=lambda _repository: True, agent_settings: AgentSettings = AgentSettings(), task_log_path=None) -> None:
+    def __init__(self, executor: Executor, workspace_manager: WorkspaceManager, destination: Destination, *, repository_allowed=lambda _repository: True, agent_settings: AgentSettings = AgentSettings(), task_log_path=None, on_cleanup_error: Callable[[str, Exception], None] | None = None) -> None:
         self.workspace_manager = workspace_manager
         self.destination = destination
         self.repository_allowed = repository_allowed
         self.agent = IssueAgentRunner(executor, agent_settings, task_log_path)
+        self.on_cleanup_error = on_cleanup_error or (
+            lambda task_id, error: print(f"[cleanup] {task_id}: {error}", flush=True)
+        )
+
+    def report_cleanup_error(self, task_id: str, error: Exception) -> None:
+        """Report cleanup without allowing reporting failures to affect the task."""
+        try:
+            self.on_cleanup_error(task_id, error)
+        except Exception:
+            pass
 
     def prepare(self, request: PrepareExecutionRequest) -> PrepareExecutionResult:
         if not self.repository_allowed(request.work.repository):
@@ -252,10 +263,10 @@ class ExecutionRuntime:
 
         try:
             self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
-        except CleanupError:
+        except CleanupError as exc:
             # Cleanup is best effort after a successful comment publication
             # and must not hide the publication result.
-            pass
+            self.report_cleanup_error(request.work.task_id, exc)
         return published
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:

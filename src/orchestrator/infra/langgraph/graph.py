@@ -195,6 +195,20 @@ def cleanup(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
         ))
     except Exception as exc:
         print(f"[{_now()}] cleanup: ERROR {exc}", flush=True)
+        task_id = state.get("task_id")
+        if not task_id:
+            try:
+                task_id = _item(state).id
+            except Exception:
+                task_id = ""
+        reporter = getattr(runtime, "report_cleanup_error", None)
+        if reporter is None:
+            reporter = getattr(runtime, "on_cleanup_error", None)
+        if reporter is not None and task_id:
+            try:
+                reporter(task_id, exc)
+            except Exception:
+                pass
     return {"status": state_mod.COMPLETED}
 
 

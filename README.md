@@ -112,6 +112,8 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_REPOS_DIR` | `~/agent-repos` (base clones) |
 | `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task worktrees) |
 | `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
+| `ORCHESTRATOR_RETENTION_DAYS` | `7` (sweep window for expired workspaces and logs; `< 1` disables) |
+| `ORCHESTRATOR_SWEEP_INTERVAL` | `3600` (seconds between automatic sweeps in `execute`) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
@@ -150,6 +152,10 @@ orchestrator reset company/backend#123
 # Observability
 orchestrator logs company/backend#123                 # list the task's node logs
 orchestrator logs company/backend#123 --node plan     # read a node log
+
+# Retention (expired workspaces, logs, stale worktree registrations)
+orchestrator sweep                                   # manual sweep with the configured retention
+orchestrator sweep --retention-days 3                # override the window for this run
 ```
 
 ## Comment triggers
@@ -369,10 +375,21 @@ Context namespace. Do not put service-specific values in generic fields.
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
-- **Cleanup**: after a successful PR, the task worktree and local branch are
-  removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging until a rerun starts; reruns discard and recreate the
-  task workspace from the base branch.
+- **Cleanup**: after a successful PR, the task worktree, local branch, and any
+  empty workspace parent are removed. Cleanup failures do not fail the task:
+  a `cleanup_failed` event is written to the task's `events.jsonl` and a
+  warning is printed, leaving the residue to the retention sweep. Failed tasks
+  keep their worktree for debugging until a rerun starts; reruns discard and
+  recreate the task workspace from the base branch.
+- **Retention**: workspaces kept after failed or crashed runs, per-task logs,
+  and stale `git worktree` registrations are swept after
+  `ORCHESTRATOR_RETENTION_DAYS` (default 7 days) of inactivity on both the
+  workspace and its event log — active runs are never swept. Base clones
+  (`~/agent-repos`) and `data/state/` are never deleted. `execute` sweeps
+  automatically at most once per `ORCHESTRATOR_SWEEP_INTERVAL`; run
+  `orchestrator sweep [--retention-days N]` for a manual pass. Logs for tasks
+  older than the retention window are removed, so `orchestrator logs <task>`
+  only works within that window.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use `/ai-agent-impl` for an incremental implementation request

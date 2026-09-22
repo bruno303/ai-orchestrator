@@ -9,13 +9,14 @@ from orchestrator.domain import Context, PublishedChange, PublishedReview, Revie
 from orchestrator.application.ports import ExecutionResult, WorkspaceResult
 from orchestrator.main.composition import compose_execution_runtime
 from orchestrator.application.execution.errors import AgentExecutionError, ReviewExecutionError
-from orchestrator.application.execution.service import implement_prompt
+from orchestrator.application.execution.service import ExecutionRuntime, implement_prompt
 from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
     CleanupReviewRequest,
     ExecuteReviewRequest,
     ImplementationRequest,
+    IncrementalExecutionRequest,
     PlanRequest,
     PrepareExecutionRequest,
     PrepareReviewRequest,
@@ -153,6 +154,48 @@ def test_cleanup_preserves_custom_workspace_context(tmp_path):
 
     assert captured["context"] is original_context
     assert captured["context"] == original_context
+
+
+def test_run_incremental_returns_publication_and_reports_cleanup_failure(tmp_path):
+    reported = []
+
+    class FailingCleanupWorkspace(ExecutionWorkspace):
+        def cleanup(self, result):
+            super().cleanup(result)
+            raise RuntimeError("residual worktree")
+
+    runtime = ExecutionRuntime(
+        ExecutionAgent(),
+        FailingCleanupWorkspace(str(tmp_path)),
+        type("Destination", (), {"publish": lambda self, request: PublishedChange("17")})(),
+        on_cleanup_error=lambda task_id, error: reported.append((task_id, error)),
+    )
+
+    published = runtime.run_incremental(IncrementalExecutionRequest(
+        work=_context(),
+        instruction="also validate the email",
+        branch="ai/issue-7",
+        base_branch="main",
+        workspace=str(tmp_path),
+        context=_context().item.context,
+    ))
+
+    # The publication result survives a cleanup failure and the failure is reported.
+    assert published.publication.id == "17"
+    assert len(reported) == 1
+    assert reported[0][0] == "repo#7"
+    assert "residual worktree" in str(reported[0][1])
+
+
+def test_report_cleanup_error_never_raises_when_reporter_fails(tmp_path):
+    runtime = ExecutionRuntime(
+        ExecutionAgent(),
+        ExecutionWorkspace(str(tmp_path)),
+        object(),
+        on_cleanup_error=lambda task_id, error: (_ for _ in ()).throw(RuntimeError("reporter down")),
+    )
+
+    runtime.report_cleanup_error("repo#7", RuntimeError("cleanup failed"))  # must not raise
 
 
 def test_review_runtime_keeps_review_workspace_mode_explicit(tmp_path):
