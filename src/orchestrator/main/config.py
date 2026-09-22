@@ -72,6 +72,11 @@ POLL_INTERVAL_SECONDS = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", str(5 *
 MAX_CONCURRENT_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_CONCURRENT", "1"))
 # A task/comment with no activity for this long is considered dead (process died).
 STALE_SECONDS = int(os.environ.get("ORCHESTRATOR_STALE_SECONDS", str(2 * 60 * 60)))
+# Expired workspaces, logs, and empty parents are swept after this many days.
+# Values below 1 disable the sweeper.
+RETENTION_DAYS = int(os.environ.get("ORCHESTRATOR_RETENTION_DAYS", "7"))
+# Minimum seconds between automatic sweeps inside the execute loop.
+SWEEP_INTERVAL_SECONDS = int(os.environ.get("ORCHESTRATOR_SWEEP_INTERVAL", str(60 * 60)))
 
 
 @dataclass

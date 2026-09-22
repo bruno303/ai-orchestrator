@@ -301,6 +301,26 @@ def cmd_review(args: argparse.Namespace) -> None:
         lock.close()
 
 
+def _sweep_retention() -> None:
+    """Run one retention sweep; never let sweep failures break the poll loop."""
+    if config.RETENTION_DAYS < 1:
+        return
+    try:
+        from orchestrator.main.maintenance import sweep_once
+        sweep_once(config.RETENTION_DAYS)
+    except Exception as exc:
+        print(f"[{_now()}] sweep error (continuing): {exc}", flush=True)
+
+
+def cmd_sweep(args: argparse.Namespace) -> None:
+    from orchestrator.main.maintenance import sweep_once
+
+    retention = args.retention_days if args.retention_days is not None else config.RETENTION_DAYS
+    report = sweep_once(retention)
+    for error in report.errors:
+        print(f"[{_now()}] sweep: {error}", flush=True)
+
+
 def cmd_execute(args: argparse.Namespace) -> None:
     lock = _acquire_poll_lock()
     try:
@@ -317,7 +337,11 @@ def cmd_execute(args: argparse.Namespace) -> None:
                 seed, task_id, runtime=runtime.discussion_runtime
             ),
         )
+        last_sweep = 0.0
         while True:
+            if time.time() - last_sweep >= config.SWEEP_INTERVAL_SECONDS:
+                _sweep_retention()
+                last_sweep = time.time()
             application.poll_once(args.once)
             _poll_reviews(reviews)
             if args.once: return
@@ -342,6 +366,15 @@ def main(argv: list[str] | None = None) -> None:
     reset.add_argument("issue_ref"); reset.set_defaults(func=cmd_reset)
     logs = sub.add_parser("logs", help="list a task's node logs")
     logs.add_argument("task_id"); logs.add_argument("--node"); logs.add_argument("--lines", "-n", type=int, default=50); logs.set_defaults(func=cmd_logs)
+    sweep = sub.add_parser(
+        "sweep",
+        help="remove expired workspaces, logs, and stale worktree registrations",
+    )
+    sweep.add_argument(
+        "--retention-days", type=int, default=None,
+        help=f"retention window in days (default: {config.RETENTION_DAYS}; <1 disables)",
+    )
+    sweep.set_defaults(func=cmd_sweep)
     args = parser.parse_args(argv)
     try:
         args.func(args)

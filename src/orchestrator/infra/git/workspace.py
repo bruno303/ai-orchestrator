@@ -74,7 +74,12 @@ class GitWorkspaceManager:
             )
             if not reusable:
                 if workspace_path.exists() or workspace_path.is_symlink():
-                    self.git_client.remove_worktree(repo_dir, workspace_path, branch)
+                    try:
+                        self.git_client.remove_worktree(repo_dir, workspace_path, branch)
+                    except git.GitError:
+                        # A stale plain directory is not a registered worktree;
+                        # remove_worktree deliberately reports that it persists.
+                        pass
                     if workspace_path.exists() or workspace_path.is_symlink():
                         if workspace_path.is_dir() and not workspace_path.is_symlink():
                             shutil.rmtree(workspace_path)
@@ -112,6 +117,23 @@ class GitWorkspaceManager:
     def cleanup(self, result: WorkspaceResult) -> None:
         git_context = dict(result.context.namespace("git"))
         repo_dir = Path(git_context.get("repo_dir") or git.base_repo_dir(git_context["repository"]))
-        self.git_client.remove_worktree(repo_dir, Path(result.workspace), result.branch)
-        if Path(result.workspace).exists():
-            shutil.rmtree(Path(result.workspace), ignore_errors=True)
+        workspace_path = Path(result.workspace)
+        removal_error: Exception | None = None
+        try:
+            self.git_client.remove_worktree(repo_dir, workspace_path, result.branch)
+        except git.GitError as exc:
+            removal_error = exc
+        if workspace_path.exists() or workspace_path.is_symlink():
+            try:
+                if workspace_path.is_dir() and not workspace_path.is_symlink():
+                    shutil.rmtree(workspace_path)
+                else:
+                    workspace_path.unlink()
+            except OSError as exc:
+                removal_error = removal_error or exc
+        self.git_client.prune_worktrees(repo_dir)
+        workspace.remove_empty_parents(workspace_path, workspace.WORKSPACES_DIR)
+        if workspace_path.exists() or workspace_path.is_symlink():
+            raise git.GitError(
+                f"workspace cleanup failed; path still exists: {workspace_path}"
+            ) from removal_error
