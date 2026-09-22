@@ -195,6 +195,7 @@ def cleanup(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
         ))
     except Exception as exc:
         print(f"[{_now()}] cleanup: ERROR {exc}", flush=True)
+        return _runtime_error(exc)
     return {"status": state_mod.COMPLETED}
 
 

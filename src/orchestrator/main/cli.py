@@ -174,6 +174,16 @@ def _report_result(result: dict) -> None:
         print(f"[{_now()}] {status}: {result.get('error', 'no error')}")
 
 
+def _prune_expired_task_logs() -> None:
+    try:
+        removed = workspace.prune_expired_task_logs()
+    except OSError as exc:
+        print(f"[{_now()}] log retention warning: {exc}", flush=True)
+        return
+    if removed:
+        print(f"[{_now()}] log retention: removed {removed} expired task log(s)", flush=True)
+
+
 def _remove_event_workspace(event: InputEvent) -> None:
     context = event.work_item.context.namespace("git")
     path = context.get("workspace")
@@ -197,6 +207,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     developed_label = _developed_label()
     if developed_label in issue.labels and not args.force:
         sys.exit(f"issue {repository}#{number} is already labeled {developed_label}; use --force to run again")
+    _prune_expired_task_logs()
     _report_result(_run_graph(
         _seed_state(repository, number, github_client=github_client), f"{repository}#{number}",
         executor=runtime.executor, workspace_manager=runtime.workspace_manager,
@@ -229,6 +240,7 @@ def cmd_reset(args: argparse.Namespace) -> None:
 
 
 def cmd_logs(args: argparse.Namespace) -> None:
+    _prune_expired_task_logs()
     directory = workspace.task_logs_dir(args.task_id)
     if args.node:
         path = directory / f"{args.node}.log"
@@ -277,6 +289,7 @@ def cmd_triage(args: argparse.Namespace) -> None:
     try:
         triage = compose_triage_runtime()
         while True:
+            _prune_expired_task_logs()
             _poll_triage(triage)
             if args.once: return
             print(f"[{_now()}] triage: next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
@@ -290,6 +303,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     try:
         reviews = compose_review_runtime()
         while True:
+            _prune_expired_task_logs()
             _poll_reviews(reviews)
             if args.once: return
             print(
@@ -318,6 +332,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
             ),
         )
         while True:
+            _prune_expired_task_logs()
             application.poll_once(args.once)
             _poll_reviews(reviews)
             if args.once: return

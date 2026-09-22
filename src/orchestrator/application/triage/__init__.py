@@ -23,6 +23,7 @@ class TriageApplication:
     context_presenter: ContextPresenter
     task_log_path: Callable[[str, str], Path]
     write_task_log: Callable[[str, str, str], None]
+    write_task_event: Callable[..., None]
 
     def __init__(
         self,
@@ -33,6 +34,7 @@ class TriageApplication:
         context_presenter: ContextPresenter | None = None,
         task_log_path: Callable[[str, str], Path] | None = None,
         write_task_log: Callable[[str, str, str], None] | None = None,
+        write_task_event: Callable[..., None] | None = None,
     ) -> None:
         self.input_source = input_source
         self.executor = executor
@@ -42,6 +44,7 @@ class TriageApplication:
         )
         self.task_log_path = task_log_path or (lambda task_id, node: Path(f"{task_id}-{node}.log"))
         self.write_task_log = write_task_log or (lambda _task_id, _node, _message: None)
+        self.write_task_event = write_task_event or (lambda _task_id, **_fields: None)
 
     def poll_once(self) -> list[TriageTarget]:
         processed: list[TriageTarget] = []
@@ -76,6 +79,10 @@ class TriageApplication:
                     self.destination.publish(target, outcome)
                 processed.append(target)
                 self.write_task_log(target.id, "triage", f"[triage] finished: repository={target.repository} id={target.id}")
+                try:
+                    self.write_task_event(target.id, event="task_end", status="COMPLETED")
+                except Exception as exc:
+                    print(f"[triage] event log {target.id}: {exc}", flush=True)
                 print(f"[triage] finished: repository={target.repository} id={target.id}", flush=True)
             except Exception as exc:
                 print(f"[triage] {target.id}: {exc}", flush=True)

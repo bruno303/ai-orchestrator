@@ -73,3 +73,26 @@ def test_graph_routes_implementation_directly_to_publication():
     assert runtime.nodes == started
     assert result["status"] == state_mod.COMPLETED
     assert result["output"]["external_id"] == "17"
+
+
+def test_graph_does_not_report_success_when_cleanup_fails():
+    runtime = FakeRuntime()
+
+    def fail_cleanup(_request):
+        raise RuntimeError("workspace cleanup failed")
+
+    runtime.cleanup = fail_cleanup
+    result = build_graph(runtime=runtime).invoke({
+        "input": {
+            "provider": "fake",
+            "data": {
+                "id": "repo#1",
+                "repository": "company/backend",
+                "title": "Add feature",
+                "description": "Implement it",
+            },
+        },
+    })
+
+    assert result["status"] == state_mod.FAILED
+    assert result["error"] == "workspace cleanup failed"

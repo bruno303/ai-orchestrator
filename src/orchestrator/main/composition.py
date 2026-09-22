@@ -164,6 +164,7 @@ def compose_review_runtime() -> ReviewApplication:
             task_log_path=workspace.task_log_path,
         ),
         write_task_log=workspace.write_task_log,
+        write_task_event=workspace.append_event,
     )
 
 
@@ -197,4 +198,5 @@ def compose_triage_runtime() -> TriageApplication:
         context_presenter=getattr(source, "context_presenter", NoopContextPresenter()),
         task_log_path=workspace.task_log_path,
         write_task_log=workspace.write_task_log,
+        write_task_event=workspace.append_event,
     )

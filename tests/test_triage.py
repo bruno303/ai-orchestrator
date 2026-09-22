@@ -173,6 +173,7 @@ def test_github_triage_destination_does_not_duplicate_identical_comment():
 def test_triage_application_isolates_failed_targets():
     targets = [target(1), target(2)]
     published = []
+    events = []
 
     class Source:
         def poll(self): return targets
@@ -186,10 +187,14 @@ def test_triage_application_isolates_failed_targets():
     class Destination:
         def publish(self, target, result): published.append(target.id)
 
-    processed = TriageApplication(Source(), Executor(), Destination()).poll_once()
+    processed = TriageApplication(
+        Source(), Executor(), Destination(),
+        write_task_event=lambda task_id, **fields: events.append((task_id, fields)),
+    ).poll_once()
 
     assert [item.id for item in processed] == [targets[1].id]
     assert published == [targets[1].id]
+    assert events == [(targets[1].id, {"event": "task_end", "status": "COMPLETED"})]
 
 
 def test_opencode_triage_uses_model_and_parses_result(monkeypatch, tmp_path):

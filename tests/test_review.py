@@ -51,9 +51,15 @@ def test_review_application_cleans_up_publishes_and_logs_completion(capsys):
         target_ref="main", revision="abc", context=Context({"github": {"pr_number": 4}}),
     )
     destination = FakeDestination()
-    app = ReviewApplication(FakeInput(review_event), FakeExecutor(ReviewOutcome(True, verdict="approve")), FakeWorkspace(), destination)
+    events = []
+    app = ReviewApplication(
+        FakeInput(review_event), FakeExecutor(ReviewOutcome(True, verdict="approve")),
+        FakeWorkspace(), destination,
+        write_task_event=lambda task_id, **fields: events.append((task_id, fields)),
+    )
     assert app.poll_once() == [review_event]
     assert destination.published[0][0].id == "review:company/backend#4"
+    assert events == [(review_event.id, {"event": "task_end", "status": "COMPLETED"})]
     assert "[review] finished: repository=company/backend id=review:company/backend#4" in capsys.readouterr().out
 
 
@@ -147,7 +153,7 @@ def test_review_poll_continues_after_cleanup_failure():
 
     destination = FakeDestination()
     app = ReviewApplication(type("Input", (), {"poll": lambda self: events})(), FakeExecutor(ReviewOutcome(True, verdict="comment")), Workspace(), destination)
-    assert app.poll_once() == events
+    assert app.poll_once() == []
     assert len(destination.published) == 2
 
 
