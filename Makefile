@@ -1,4 +1,4 @@
-.PHONY: help test run execute review triage logs smoke
+.PHONY: help test run execute review triage logs gc smoke
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | sed 's/:.*//' | sort
@@ -20,6 +20,9 @@ triage:
 
 logs:
 	uv run orchestrator logs $(TASK) $(if $(NODE),--node $(NODE),)
+
+gc:
+	uv run orchestrator gc $(if $(DRY),--dry-run,)
 
 smoke:
 	bash /tmp/opencode/smoke.sh

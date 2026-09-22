@@ -8,7 +8,7 @@ from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.git import client as git
 from orchestrator.domain import Context
 from orchestrator.infra.git.workspace import GitWorkspaceManager
-from orchestrator.application.ports import WorkspaceRequest
+from orchestrator.application.ports import WorkspaceRequest, WorkspaceResult
 from orchestrator.infra.github import auth as github_auth
 
 
@@ -221,3 +221,54 @@ def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):
             purpose="review", revision="missing", workspace=str(tmp_path / "ws"),
             context=Context({"git": {"repository_url": "origin-url"}}),
         ))
+
+
+def test_cleanup_removes_the_empty_workspace_group_folder(remote_repo, monkeypatch, tmp_path):
+    monkeypatch.setattr(workspace, "WORKSPACES_DIR", tmp_path / "workspaces")
+    nested = workspace.discussion_group_dir() / "owner-repo-7"
+
+    result = GitWorkspaceManager().prepare(WorkspaceRequest(
+        "company/backend#11", "company/backend", "ai/issue-11", "main",
+        workspace=str(nested),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+    assert nested.exists()
+
+    GitWorkspaceManager().cleanup(result)
+
+    assert not nested.exists()
+    assert not workspace.discussion_group_dir().exists()
+    assert workspace.WORKSPACES_DIR.exists()
+
+
+def test_cleanup_removes_the_local_branch(remote_repo, tmp_path):
+    workspace_path = tmp_path / "workspace"
+    result = GitWorkspaceManager().prepare(WorkspaceRequest(
+        "company/backend#12", "company/backend", "ai/issue-12", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+    repo_dir = Path(result.context.namespace("git")["repo_dir"])
+    assert "ai/issue-12" in git.list_local_branches(repo_dir)
+
+    GitWorkspaceManager().cleanup(result)
+
+    assert "ai/issue-12" not in git.list_local_branches(repo_dir)
+    assert all(path.resolve() != workspace_path.resolve() for path in git.list_worktrees(repo_dir))
+
+
+def test_cleanup_reports_a_surviving_workspace(tmp_path, monkeypatch):
+    repo_dir = tmp_path / "repo"
+    (repo_dir / ".git").mkdir(parents=True)
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    result = WorkspaceResult(
+        str(workspace_path), "ai/issue-13",
+        Context({"git": {"repo_dir": str(repo_dir)}}), "main",
+    )
+
+    # Simulate an undeletable workspace so the post-conditions must fire.
+    monkeypatch.setattr("shutil.rmtree", lambda *args, **kwargs: None)
+
+    with pytest.raises(git.GitError, match="cleanup left behind: workspace"):
+        GitWorkspaceManager().cleanup(result)

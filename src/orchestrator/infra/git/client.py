@@ -133,9 +133,61 @@ def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
     """Remove a task worktree and its branch (used for clean re-runs)."""
     if workspace.exists():
         _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
+    # Drop stale .git/worktrees metadata so no residual registration survives
+    # after the workspace folder is gone.
+    _run(["git", "worktree", "prune"], cwd=repo_dir, check=False)
     if branch:
-        proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
-        if branch in proc.stdout.split():
+        remove_branch(repo_dir, branch)
+
+
+def remove_branch(repo_dir: Path, branch: str) -> None:
+    """Delete a local branch when it exists."""
+    if branch in list_local_branches(repo_dir):
+        _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+
+
+def list_local_branches(repo_dir: Path) -> list[str]:
+    proc = _run(["git", "branch", "--list"], cwd=repo_dir, check=False)
+    branches: list[str] = []
+    for line in proc.stdout.splitlines():
+        name = line.strip()
+        # "* " marks the current branch, "+ " a branch checked out in another
+        # worktree.
+        if name.startswith(("* ", "+ ")):
+            name = name[2:].strip()
+        if name:
+            branches.append(name)
+    return branches
+
+
+def list_worktrees(repo_dir: Path) -> list[Path]:
+    """Return every worktree path registered in the base clone."""
+    proc = _run(["git", "worktree", "list", "--porcelain"], cwd=repo_dir, check=False)
+    return [
+        Path(line.removeprefix("worktree ").strip())
+        for line in proc.stdout.splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+def prune_base_clone(repo_dir: Path) -> None:
+    """Drop cache residue from a base clone without touching usable state.
+
+    The base clone is a long-lived cache: only stale worktree metadata and
+    local `ai/*` branches that are identical to their remote counterpart (the
+    pushed branch is the deliverable) are removed. Branches with unpushed
+    commits are kept.
+    """
+    _run(["git", "worktree", "prune"], cwd=repo_dir, check=False)
+    for branch in list_local_branches(repo_dir):
+        if not branch.startswith("ai/"):
+            continue
+        local = _run(["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+                     cwd=repo_dir, check=False)
+        remote = _run(["git", "rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+                      cwd=repo_dir, check=False)
+        if (local.returncode == 0 and remote.returncode == 0
+                and local.stdout.strip() == remote.stdout.strip()):
             _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
 
 

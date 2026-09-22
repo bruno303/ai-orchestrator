@@ -110,8 +110,32 @@ class GitWorkspaceManager:
         )
 
     def cleanup(self, result: WorkspaceResult) -> None:
+        """Remove the task worktree, branch, and workspace folder on any outcome.
+
+        Raises GitError when something survives, so a failed deletion is
+        visible instead of silently leaving storage behind.
+        """
         git_context = dict(result.context.namespace("git"))
         repo_dir = Path(git_context.get("repo_dir") or git.base_repo_dir(git_context["repository"]))
-        self.git_client.remove_worktree(repo_dir, Path(result.workspace), result.branch)
-        if Path(result.workspace).exists():
-            shutil.rmtree(Path(result.workspace), ignore_errors=True)
+        workspace_path = Path(result.workspace)
+        self.git_client.remove_worktree(repo_dir, workspace_path, result.branch)
+        if workspace_path.exists() or workspace_path.is_symlink():
+            if workspace_path.is_dir() and not workspace_path.is_symlink():
+                shutil.rmtree(workspace_path, ignore_errors=True)
+            else:
+                workspace_path.unlink(missing_ok=True)
+        workspace.remove_empty_parent(workspace_path)
+        self._verify_removed(repo_dir, workspace_path, result.branch)
+
+    def _verify_removed(self, repo_dir: Path, workspace_path: Path, branch: str) -> None:
+        leftovers = []
+        if workspace_path.exists() or workspace_path.is_symlink():
+            leftovers.append(f"workspace {workspace_path}")
+        if repo_dir.is_dir():
+            resolved = workspace_path.resolve()
+            if any(Path(path).resolve() == resolved for path in git.list_worktrees(repo_dir)):
+                leftovers.append(f"worktree metadata {workspace_path}")
+            if branch and branch in git.list_local_branches(repo_dir):
+                leftovers.append(f"branch {branch}")
+        if leftovers:
+            raise git.GitError("cleanup left behind: " + ", ".join(leftovers))

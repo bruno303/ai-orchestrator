@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from orchestrator.application.maintenance import GCReport
 from orchestrator.infra.github import client as github
 from orchestrator.main import cli
 from orchestrator.main.cli import _poll_reviews, main
@@ -215,3 +216,83 @@ def test_keyboard_interrupt_prints_generic_stop_message(monkeypatch, capsys):
 
     assert exc_info.value.code == 130
     assert capsys.readouterr().out == "\nprocess stopped.\n"
+
+
+def test_gc_command_reports_removed_artifacts(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "compose_maintenance_application", lambda: SimpleNamespace(
+        collect=lambda dry_run=False: GCReport(("owner-repo-1",), ("/tmp/ws-1",), (), dry_run),
+    ))
+
+    main(["gc"])
+
+    output = capsys.readouterr().out
+    assert "removed task logs: 1" in output
+    assert "removed workspaces: 1" in output
+
+
+def test_gc_command_dry_run_lists_without_deleting(monkeypatch, capsys):
+    collected = []
+
+    def collect(dry_run=False):
+        collected.append(dry_run)
+        return GCReport(("owner-repo-1",), (), (), dry_run)
+
+    monkeypatch.setattr(cli, "compose_maintenance_application", lambda: SimpleNamespace(collect=collect))
+
+    main(["gc", "--dry-run"])
+
+    assert collected == [True]
+    assert "would remove task logs: 1" in capsys.readouterr().out
+
+
+def test_gc_command_exits_nonzero_on_errors(monkeypatch):
+    monkeypatch.setattr(cli, "compose_maintenance_application", lambda: SimpleNamespace(
+        collect=lambda dry_run=False: GCReport((), (), ("logs owner-repo-1: boom",), dry_run),
+    ))
+
+    with pytest.raises(SystemExit):
+        main(["gc"])
+
+
+def test_execute_sweeps_artifacts_at_startup(monkeypatch):
+    calls = []
+
+    class Lock:
+        def close(self):
+            calls.append("close")
+
+    class Application:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def poll_once(self, once):
+            calls.append("execute")
+
+    runtime = SimpleNamespace(
+        input_source=object(),
+        executor=object(),
+        workspace_manager=object(),
+        destination=object(),
+        execution_runtime=object(),
+        input_provider="github_polling",
+        feedback=None,
+    )
+    monkeypatch.setattr(cli, "_acquire_poll_lock", lambda: Lock())
+    monkeypatch.setattr(cli, "_sweep_artifacts", lambda: calls.append("gc"))
+    monkeypatch.setattr(cli, "compose_runtime", lambda: runtime)
+    monkeypatch.setattr(cli, "compose_review_runtime", lambda: object())
+    monkeypatch.setattr(cli, "PollingApplication", Application)
+    monkeypatch.setattr(cli, "_poll_reviews", lambda _reviews: calls.append("review"))
+
+    cli.cmd_execute(SimpleNamespace(once=True))
+
+    assert calls == ["gc", "execute", "review", "close"]
+
+
+def test_sweep_artifacts_never_blocks_a_run(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "compose_maintenance_application",
+                        lambda: (_ for _ in ()).throw(RuntimeError("disk offline")))
+
+    cli._sweep_artifacts()
+
+    assert "gc: skipped (disk offline)" in capsys.readouterr().out

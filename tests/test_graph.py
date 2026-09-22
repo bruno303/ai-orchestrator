@@ -73,3 +73,72 @@ def test_graph_routes_implementation_directly_to_publication():
     assert runtime.nodes == started
     assert result["status"] == state_mod.COMPLETED
     assert result["output"]["external_id"] == "17"
+
+
+def _seed():
+    return {
+        "input": {
+            "provider": "fake",
+            "data": {
+                "id": "repo#1",
+                "repository": "company/backend",
+                "title": "Add feature",
+                "description": "Implement it",
+            },
+        },
+    }
+
+
+def test_graph_cleans_up_and_keeps_failed_status_after_implementation_error():
+    class FailingRuntime(FakeRuntime):
+        def implement(self, request):
+            self.nodes.append("implement")
+            raise RuntimeError("agent failed")
+
+    runtime = FailingRuntime()
+    started = []
+    graph = build_graph(
+        runtime=runtime,
+        on_node_start=lambda name, _state: started.append(name),
+    )
+
+    result = graph.invoke(_seed())
+
+    assert started == ["prepare_workspace", "plan", "implement", "cleanup"]
+    assert runtime.nodes == started
+    assert result["status"] == state_mod.FAILED
+
+
+def test_graph_cleanup_without_a_prepared_workspace_is_a_noop():
+    class BrokenPrepare(FakeRuntime):
+        def prepare(self, request):
+            self.nodes.append("prepare_workspace")
+            raise RuntimeError("clone failed")
+
+    runtime = BrokenPrepare()
+    started = []
+    graph = build_graph(
+        runtime=runtime,
+        on_node_start=lambda name, _state: started.append(name),
+    )
+
+    result = graph.invoke(_seed())
+
+    assert started == ["prepare_workspace", "cleanup"]
+    assert runtime.nodes == ["prepare_workspace"]
+    assert result["status"] == state_mod.FAILED
+
+
+def test_graph_keeps_completed_status_when_cleanup_fails():
+    class FailingCleanup(FakeRuntime):
+        def cleanup(self, request):
+            self.nodes.append("cleanup")
+            raise RuntimeError("cleanup failed")
+
+    runtime = FailingCleanup()
+    graph = build_graph(runtime=runtime)
+
+    result = graph.invoke(_seed())
+
+    assert "cleanup" in runtime.nodes
+    assert result["status"] == state_mod.COMPLETED
