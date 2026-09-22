@@ -6,6 +6,8 @@ import json
 import hashlib
 import os
 import re
+import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,8 +42,12 @@ def review_workspace(task_id: str) -> Path:
 
 
 def discussion_workspace(task_id: str) -> Path:
-    """Return an isolated checkout path for one read-only discussion."""
-    return WORKSPACES_DIR / "discussion-" / safe_task_token(task_id)
+    """Return an isolated checkout path for one read-only discussion.
+
+    Uses a flat sibling directory (``discussion-<token>``) so cleanup leaves no
+    always-present ``discussion-`` group directory behind.
+    """
+    return WORKSPACES_DIR / f"discussion-{safe_task_token(task_id)}"
 
 
 def task_logs_dir(task_id: str) -> Path:
@@ -94,3 +100,39 @@ def write_task_log(task_id: str, node: str, content: str) -> Path:
         if not content.endswith("\n"):
             fh.write("\n")
     return log_path
+
+
+def prune_logs(retention_days: int) -> list[Path]:
+    """Remove task log directories whose newest file is older than the cutoff.
+
+    ``retention_days <= 0`` disables pruning. A missing ``LOGS_DIR`` is a no-op.
+    """
+    if retention_days <= 0 or not LOGS_DIR.is_dir():
+        return []
+    cutoff = time.time() - retention_days * 24 * 60 * 60
+    removed: list[Path] = []
+    for entry in sorted(LOGS_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        newest = max(
+            (path.stat().st_mtime for path in entry.rglob("*") if path.is_file()),
+            default=entry.stat().st_mtime,
+        )
+        if newest < cutoff:
+            shutil.rmtree(entry, ignore_errors=True)
+            if not entry.exists():
+                removed.append(entry)
+    return removed
+
+
+def prune_empty_dirs() -> list[Path]:
+    """Remove empty leftover directories under ``WORKSPACES_DIR`` (never the root)."""
+    if not WORKSPACES_DIR.is_dir():
+        return []
+    removed: list[Path] = []
+    # Deepest paths first so nested leftovers collapse into their parent.
+    for path in sorted(WORKSPACES_DIR.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+        if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
+            path.rmdir()
+            removed.append(path)
+    return removed

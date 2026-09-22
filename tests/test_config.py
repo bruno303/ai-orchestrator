@@ -14,6 +14,13 @@ def test_environment_path_expands_home_directory(monkeypatch):
     assert config._environment_path("ORCHESTRATOR_REPOS_DIR", "/unused") == Path.home() / "agent-repos"
 
 
+def test_environment_int_reads_environment_and_falls_back(monkeypatch):
+    monkeypatch.setenv("ORCHESTRATOR_LOG_RETENTION_DAYS", "3")
+
+    assert config._environment_int("ORCHESTRATOR_LOG_RETENTION_DAYS", 7) == 3
+    assert config._environment_int("ORCHESTRATOR_MISSING_INT", 7) == 7
+
+
 def test_load_environment_reads_env_file_without_overwriting_exported_values(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("ORCHESTRATOR_POLL_INTERVAL=17\nORCHESTRATOR_OPENCODE_BIN=from-env\n")

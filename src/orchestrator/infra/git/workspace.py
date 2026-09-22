@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +23,19 @@ class GitWorkspaceManager:
         self.options = dict(options or {})
         self.git_client = git_client or git.GitClient(github_auth.identity_from_options(self.options))
         self.provider_type = "git"
+
+    def _remove_workspace(self, repo_dir: Path, workspace_path: Path, branch: str) -> None:
+        """Fully remove a worktree: path, branch, and stale metadata.
+
+        Delegates to the git adapter so the same cleanup applies to recreated
+        execution workspaces and to detached review/discussion checkouts
+        (``branch == ""``). Injected git clients that do not expose
+        ``remove_worktree`` are tolerated so the removal can be attempted
+        unconditionally, even when the worktree directory is already gone.
+        """
+        remove = getattr(self.git_client, "remove_worktree", None)
+        if remove is not None:
+            remove(repo_dir, workspace_path, branch)
 
     def prepare(self, request: WorkspaceRequest) -> WorkspaceResult:
         git_context = {**self.options, **dict(request.context.namespace("git"))}
@@ -73,13 +85,11 @@ class GitWorkspaceManager:
                 and (workspace_path / ".git").exists()
             )
             if not reusable:
-                if workspace_path.exists() or workspace_path.is_symlink():
-                    self.git_client.remove_worktree(repo_dir, workspace_path, branch)
-                    if workspace_path.exists() or workspace_path.is_symlink():
-                        if workspace_path.is_dir() and not workspace_path.is_symlink():
-                            shutil.rmtree(workspace_path)
-                        else:
-                            workspace_path.unlink()
+                # Always attempt removal so a stale worktree registration or
+                # local branch left behind by a prior crash is self-healed even
+                # when the working directory is already gone (the adapter always
+                # runs ``git worktree remove`` and prunes metadata).
+                self._remove_workspace(repo_dir, workspace_path, branch)
                 revision = request.revision or git_context.get("revision")
                 fetch_url = request.fetch_url or git_context.get("fetch_url")
                 if revision:
@@ -112,6 +122,7 @@ class GitWorkspaceManager:
     def cleanup(self, result: WorkspaceResult) -> None:
         git_context = dict(result.context.namespace("git"))
         repo_dir = Path(git_context.get("repo_dir") or git.base_repo_dir(git_context["repository"]))
-        self.git_client.remove_worktree(repo_dir, Path(result.workspace), result.branch)
-        if Path(result.workspace).exists():
-            shutil.rmtree(Path(result.workspace), ignore_errors=True)
+        workspace_path = Path(result.workspace)
+        self._remove_workspace(repo_dir, workspace_path, result.branch)
+        if workspace_path.exists():
+            raise git.GitError(f"workspace removal left residual path: {workspace_path}")

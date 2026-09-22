@@ -1,5 +1,7 @@
 """Tests for the Git workspace provider adapter."""
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -36,7 +38,9 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     )
     assert Path(result.workspace).exists()
     GitWorkspaceManager().cleanup(result)
-    assert calls == ["create", "remove"]
+    # prepare always attempts removal first (self-healing stale state), then
+    # creates; cleanup removes again.
+    assert calls == ["remove", "create", "remove"]
     assert not workspace_path.exists()
 
 
@@ -70,6 +74,30 @@ def test_prepare_recreates_existing_execution_workspace(remote_repo, tmp_path):
 
     assert second.workspace == first.workspace
     assert not sentinel.exists()
+    assert workspace_path.exists()
+    assert (workspace_path / ".git").exists()
+    manager.cleanup(second)
+    assert not workspace_path.exists()
+
+
+def test_prepare_self_heals_when_worktree_directory_deleted(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    request = WorkspaceRequest(
+        "company/backend#stale", "company/backend", "ai/issue-stale", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    )
+
+    first = manager.prepare(request)
+    # Simulate a crash that deleted the working directory but left the worktree
+    # registration and local branch behind.
+    shutil.rmtree(workspace_path)
+    assert not workspace_path.exists()
+
+    second = manager.prepare(request)
+
+    assert second.workspace == first.workspace
     assert workspace_path.exists()
     assert (workspace_path / ".git").exists()
     manager.cleanup(second)
@@ -210,6 +238,97 @@ def test_pr_execution_fetches_head_sha_from_fork_and_attaches_branch(monkeypatch
         ("worktree", "topic", "main", "head-sha"),
     ]
     assert result.branch == "topic"
+
+
+def test_cleanup_removes_worktree_and_leaves_no_entry(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    result = manager.prepare(WorkspaceRequest(
+        "company/backend#clean", "company/backend", "ai/issue-clean", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+    repo_dir = Path(result.context.namespace("git")["repo_dir"])
+
+    manager.cleanup(result)
+
+    assert not workspace_path.exists()
+    proc = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert str(workspace_path) not in proc.stdout
+    proc = subprocess.run(
+        ["git", "branch", "--list", "ai/issue-clean"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+    )
+    assert "ai/issue-clean" not in proc.stdout
+
+
+def test_cleanup_raises_when_removal_leaves_residual_path(remote_repo, monkeypatch, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    result = manager.prepare(WorkspaceRequest(
+        "company/backend#residual", "company/backend", "ai/issue-residual", "main",
+        workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+
+    monkeypatch.setattr(git, "remove_worktree", lambda repo, path, branch: None)
+
+    with pytest.raises(git.GitError, match="residual"):
+        manager.cleanup(result)
+    assert workspace_path.exists()
+
+
+def test_cleanup_detached_review_workspace(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "review-ws"
+    repo_dir = git.ensure_base_clone("company/backend", f"file://{remote_repo}")
+    revision = subprocess.run(
+        ["git", "rev-parse", "origin/main"],
+        cwd=repo_dir,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    result = manager.prepare(WorkspaceRequest(
+        "review:company/backend#4", "company/backend", "", "main",
+        purpose="review", revision=revision, workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+
+    assert result.branch == ""
+    assert workspace_path.exists()
+    manager.cleanup(result)
+    assert not workspace_path.exists()
+
+
+def test_discussion_workspace_is_flat_and_fully_cleaned(remote_repo, monkeypatch, tmp_path):
+    monkeypatch.setattr(workspace, "WORKSPACES_DIR", tmp_path / "workspaces")
+    task_id = "discussion:company/backend#4"
+    workspace_path = workspace.discussion_workspace(task_id)
+
+    assert workspace_path.parent == tmp_path / "workspaces"
+    assert workspace_path.name == f"discussion-{workspace.safe_task_token(task_id)}"
+
+    manager = GitWorkspaceManager()
+    result = manager.prepare(WorkspaceRequest(
+        task_id, "company/backend", "", "main",
+        purpose="discussion", workspace=str(workspace_path),
+        context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+    ))
+    assert workspace_path.exists()
+
+    manager.cleanup(result)
+
+    assert not workspace_path.exists()
+    assert not (tmp_path / "workspaces" / "discussion-").exists()
 
 
 def test_review_prepare_propagates_unavailable_commit(monkeypatch, tmp_path):

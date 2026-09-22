@@ -10,6 +10,7 @@ from orchestrator.application.execution.models import (
 )
 from orchestrator.application.ports import ExecutionResult, WorkspaceResult
 from orchestrator.domain import PublishedChange
+from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.langgraph.graph import build_graph
 from orchestrator.infra.langgraph import state as state_mod
 
@@ -73,3 +74,36 @@ def test_graph_routes_implementation_directly_to_publication():
     assert runtime.nodes == started
     assert result["status"] == state_mod.COMPLETED
     assert result["output"]["external_id"] == "17"
+
+
+def test_cleanup_failure_keeps_completed_and_records_warning():
+    class FailingCleanupRuntime(FakeRuntime):
+        def cleanup(self, request):
+            self.nodes.append("cleanup")
+            raise RuntimeError("residual worktree")
+
+    runtime = FailingCleanupRuntime()
+    graph = build_graph(runtime=runtime)
+    task_id = "repo#cleanup-warning"
+
+    result = graph.invoke({
+        "task_id": task_id,
+        "input": {
+            "provider": "fake",
+            "data": {
+                "id": task_id,
+                "repository": "company/backend",
+                "title": "Add feature",
+                "description": "Implement it",
+            },
+        },
+    })
+
+    assert result["status"] == state_mod.COMPLETED
+    assert result["output"]["external_id"] == "17"
+    warnings = [
+        event for event in workspace.read_events(task_id)
+        if event.get("event") == "cleanup_warning"
+    ]
+    assert warnings
+    assert "residual worktree" in warnings[-1]["detail"]

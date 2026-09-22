@@ -251,16 +251,21 @@ class ExecutionRuntime:
         ))
 
         try:
-            self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
-        except CleanupError:
-            # Cleanup is best effort after a successful comment publication
-            # and must not hide the publication result.
-            pass
-        return published
+            cleanup = self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
+        except CleanupError as exc:
+            # Cleanup is best effort after a successful comment publication.
+            # Surface the failure as a warning instead of hiding the published
+            # result; the worktree is preserved for inspection or retry.
+            print(f"[incremental] cleanup warning: {exc}", flush=True)
+            return PublishResult(published.publication, (*published.warnings, str(exc)))
+        return PublishResult(published.publication, (*published.warnings, *cleanup.warnings))
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
         try:
-            self.workspace_manager.cleanup(request.workspace)
+            result = self.workspace_manager.cleanup(request.workspace)
         except Exception as exc:
             raise CleanupError(str(exc)) from exc
-        return CleanupResult(request.workspace.workspace)
+        return CleanupResult(
+            request.workspace.workspace,
+            tuple(getattr(result, "warnings", ()) or ()),
+        )

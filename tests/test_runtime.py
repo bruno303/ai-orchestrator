@@ -16,6 +16,7 @@ from orchestrator.application.execution.models import (
     CleanupReviewRequest,
     ExecuteReviewRequest,
     ImplementationRequest,
+    IncrementalExecutionRequest,
     PlanRequest,
     PrepareExecutionRequest,
     PrepareReviewRequest,
@@ -153,6 +154,31 @@ def test_cleanup_preserves_custom_workspace_context(tmp_path):
 
     assert captured["context"] is original_context
     assert captured["context"] == original_context
+
+
+def test_run_incremental_returns_publication_with_cleanup_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "is_repository_allowed", lambda repository: True)
+
+    class FailingCleanupWorkspace(ExecutionWorkspace):
+        def cleanup(self, result):
+            raise RuntimeError("residual path: /tmp/workspace")
+
+    runtime = compose_execution_runtime(
+        executor=ExecutionAgent(),
+        workspace_manager=FailingCleanupWorkspace(str(tmp_path)),
+        destination=type("Destination", (), {"publish": lambda self, request: PublishedChange("17")})(),
+    )
+    published = runtime.run_incremental(IncrementalExecutionRequest(
+        work=_context(),
+        instruction="also validate the email before saving",
+        branch="ai/issue-7",
+        base_branch="main",
+        workspace=str(tmp_path),
+        context=_context().item.context,
+    ))
+
+    assert published.publication.id == "17"
+    assert "residual path" in published.warnings[0]
 
 
 def test_review_runtime_keeps_review_workspace_mode_explicit(tmp_path):

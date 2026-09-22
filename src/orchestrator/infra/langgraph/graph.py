@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from langgraph.graph import END, START, StateGraph
 
+from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.langgraph import state as state_mod
 from orchestrator.domain import Context, WorkItem
 from orchestrator.application.ports import WorkspaceResult
@@ -183,10 +184,18 @@ def create_pr(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     return {"status": state_mod.COMPLETED, "output": output}
 
 
+def _record_cleanup_warning(state: TaskState, detail: str) -> None:
+    task_id = str(state.get("task_id") or _work(state).task_id)
+    try:
+        workspace.append_event(task_id, event="cleanup_warning", detail=detail[:200])
+    except Exception:
+        pass
+
+
 def cleanup(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
     try:
         current = _workspace(state)
-        runtime.cleanup(CleanupRequest(
+        result = runtime.cleanup(CleanupRequest(
             _work(state).repository,
             WorkspaceResult(
                 current["path"], current["branch"],
@@ -195,6 +204,11 @@ def cleanup(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
         ))
     except Exception as exc:
         print(f"[{_now()}] cleanup: ERROR {exc}", flush=True)
+        _record_cleanup_warning(state, str(exc))
+        return {"status": state_mod.COMPLETED}
+    for warning in result.warnings:
+        print(f"[{_now()}] cleanup: warning: {warning}", flush=True)
+        _record_cleanup_warning(state, warning)
     return {"status": state_mod.COMPLETED}
 
 

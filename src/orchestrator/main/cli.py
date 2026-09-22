@@ -117,24 +117,40 @@ def _comment_instruction(seed: dict) -> str:
     return str(metadata.get("instruction", ""))
 
 
+def _record_cleanup_warning(task_id: str, detail: str) -> None:
+    """Best-effort cleanup warning event; never changes the task result."""
+    try:
+        workspace.append_event(task_id, event="cleanup_warning", detail=detail[:200])
+    except Exception:
+        pass
+
+
 def _run_incremental_comment(seed: dict, task_id: str, *, runtime) -> dict:
     try:
         work, context = _work_from_seed(seed)
         git_context = context.namespace("git")
-        publication = runtime.run_incremental(IncrementalExecutionRequest(
+        published = runtime.run_incremental(IncrementalExecutionRequest(
             work=work,
             instruction=_comment_instruction(seed),
             branch=str(git_context.get("branch", "")),
             base_branch=str(git_context.get("base_branch", "")),
             workspace=str(git_context.get("workspace", "")),
             context=context,
-        )).publication
+        ))
+        publication = published.publication
+        warnings = tuple(published.warnings)
+        for warning in warnings:
+            print(f"[{_now()}] cleanup warning: {warning}", flush=True)
+            _record_cleanup_warning(task_id, warning)
         output = {"provider": publication.provider}
         if publication.id is not None:
             output["external_id"] = publication.id
         if publication.url is not None:
             output["url"] = publication.url
-        return {"task_id": task_id, "status": state_mod.COMPLETED, "output": output}
+        result = {"task_id": task_id, "status": state_mod.COMPLETED, "output": output}
+        if warnings:
+            result["warnings"] = list(warnings)
+        return result
     except Exception as exc:
         return {"task_id": task_id, "status": state_mod.FAILED, "error": str(exc)}
 
@@ -172,6 +188,8 @@ def _report_result(result: dict) -> None:
         print(f"[{_now()}] COMPLETED: {external_id or publication_url or 'published result'} for {task_id}")
     else:
         print(f"[{_now()}] {status}: {result.get('error', 'no error')}")
+    for warning in result.get("warnings") or ():
+        print(f"[{_now()}] warning: {warning}")
 
 
 def _remove_event_workspace(event: InputEvent) -> None:
@@ -254,6 +272,44 @@ def _acquire_poll_lock(lock_name: str = "poll"):
     return handle
 
 
+def _maybe_prune_logs() -> None:
+    """Best-effort log/workspace pruning, throttled to once per clean interval."""
+    marker = config.STATE_DIR / "last_prune"
+    try:
+        if marker.exists() and time.time() - marker.stat().st_mtime < config.CLEAN_INTERVAL_SECONDS:
+            return
+        removed_logs = workspace.prune_logs(config.LOG_RETENTION_DAYS)
+        removed_dirs = workspace.prune_empty_dirs()
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(str(int(time.time())))
+        if removed_logs or removed_dirs:
+            print(
+                f"[{_now()}] pruned {len(removed_logs)} log dir(s), "
+                f"{len(removed_dirs)} empty dir(s)",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"[{_now()}] cleanup sweep skipped: {exc}", flush=True)
+
+
+def cmd_clean(args: argparse.Namespace) -> None:
+    days = args.days if args.days is not None else config.LOG_RETENTION_DAYS
+    removed_logs = workspace.prune_logs(days)
+    removed_dirs = workspace.prune_empty_dirs()
+    print(f"[{_now()}] clean: removed {len(removed_logs)} log dir(s) older than {days} day(s)", flush=True)
+    for path in removed_logs:
+        print(f"  log {path}")
+    for path in removed_dirs:
+        print(f"  empty dir {path}")
+    pruned = 0
+    if git.REPOS_DIR.is_dir():
+        for repo_dir in sorted(git.REPOS_DIR.iterdir()):
+            if repo_dir.is_dir():
+                git.prune_worktrees(repo_dir)
+                pruned += 1
+    print(f"[{_now()}] clean: pruned {pruned} base clone(s)", flush=True)
+
+
 def _poll_reviews(application) -> None:
     try:
         application.poll_once()
@@ -277,6 +333,7 @@ def cmd_triage(args: argparse.Namespace) -> None:
     try:
         triage = compose_triage_runtime()
         while True:
+            _maybe_prune_logs()
             _poll_triage(triage)
             if args.once: return
             print(f"[{_now()}] triage: next check in {config.POLL_INTERVAL_SECONDS}s", flush=True)
@@ -290,6 +347,7 @@ def cmd_review(args: argparse.Namespace) -> None:
     try:
         reviews = compose_review_runtime()
         while True:
+            _maybe_prune_logs()
             _poll_reviews(reviews)
             if args.once: return
             print(
@@ -318,6 +376,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
             ),
         )
         while True:
+            _maybe_prune_logs()
             application.poll_once(args.once)
             _poll_reviews(reviews)
             if args.once: return
@@ -342,6 +401,8 @@ def main(argv: list[str] | None = None) -> None:
     reset.add_argument("issue_ref"); reset.set_defaults(func=cmd_reset)
     logs = sub.add_parser("logs", help="list a task's node logs")
     logs.add_argument("task_id"); logs.add_argument("--node"); logs.add_argument("--lines", "-n", type=int, default=50); logs.set_defaults(func=cmd_logs)
+    clean = sub.add_parser("clean", help="prune old logs, empty workspaces, and stale worktrees")
+    clean.add_argument("--days", type=int, default=None, help="log retention in days (0 disables pruning)"); clean.set_defaults(func=cmd_clean)
     args = parser.parse_args(argv)
     try:
         args.func(args)
