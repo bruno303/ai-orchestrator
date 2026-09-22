@@ -8,6 +8,7 @@ from __future__ import annotations
 from orchestrator.application.execution.agent import AgentSettings
 from orchestrator.application.execution.service import ExecutionRuntime
 from orchestrator.application.discussion import DiscussionRuntime
+from orchestrator.application.maintenance import MaintenanceApplication
 from orchestrator.application.polling import Runtime
 from orchestrator.application.ports import NoopContextPresenter
 from orchestrator.application.review import ReviewApplication
@@ -197,4 +198,13 @@ def compose_triage_runtime() -> TriageApplication:
         context_presenter=getattr(source, "context_presenter", NoopContextPresenter()),
         task_log_path=workspace.task_log_path,
         write_task_log=workspace.write_task_log,
+    )
+
+
+def compose_maintenance_application() -> MaintenanceApplication:
+    from orchestrator.infra.filesystem.artifacts import FilesystemArtifactStore
+
+    return MaintenanceApplication(
+        FilesystemArtifactStore(),
+        retention_days=config.ARTIFACT_RETENTION_DAYS,
     )

@@ -78,8 +78,8 @@ def test_polling_routes_comment_intents_to_dedicated_callbacks():
     app.poll_once()
 
     assert calls == ["impl", "discuss"]
-    # Incremental retries must retain the prior worktree so the next agent run
-    # can inspect and continue uncommitted changes.
+    # Polling never resets workspaces itself; workspace removal is owned by the
+    # runtime's cleanup on every finished run.
     assert resets == []
 
 
@@ -124,7 +124,7 @@ def test_incremental_execution_skips_planning(tmp_path):
     assert len(cleaned) == 1
 
 
-def test_incremental_execution_preserves_workspace_when_publication_fails(tmp_path):
+def test_incremental_execution_cleans_up_when_publication_fails(tmp_path):
     cleaned = []
 
     class Workspace:
@@ -154,10 +154,12 @@ def test_incremental_execution_preserves_workspace_when_publication_fails(tmp_pa
             context=_work().item.context,
         ))
 
-    assert cleaned == []
+    # A finished task leaves no residual workspace behind, even when its
+    # publication failed.
+    assert len(cleaned) == 1
 
 
-def test_incremental_execution_preserves_workspace_when_implementation_fails(tmp_path):
+def test_incremental_execution_cleans_up_when_implementation_fails(tmp_path):
     cleaned = []
 
     class Workspace:
@@ -183,7 +185,7 @@ def test_incremental_execution_preserves_workspace_when_implementation_fails(tmp
             context=_work().item.context,
         ))
 
-    assert cleaned == []
+    assert len(cleaned) == 1
 
 
 def test_discussion_runtime_is_read_only_and_publishes_only_response(tmp_path):

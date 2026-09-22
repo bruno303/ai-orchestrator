@@ -8,6 +8,7 @@ from typing import Any, Callable
 from langgraph.graph import END, START, StateGraph
 
 from orchestrator.infra.langgraph import state as state_mod
+from orchestrator.infra.filesystem import workspace
 from orchestrator.domain import Context, WorkItem
 from orchestrator.application.ports import WorkspaceResult
 from orchestrator.application.execution.errors import RuntimeOperationError
@@ -184,10 +185,18 @@ def create_pr(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
 
 
 def cleanup(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
+    """Remove the task workspace on every outcome, preserving the status."""
+    status = state.get("status", state_mod.COMPLETED)
     try:
+        item = _item(state)
         current = _workspace(state)
+    except Exception:
+        return {"status": status}
+    if not current["path"]:
+        return {"status": status}
+    try:
         runtime.cleanup(CleanupRequest(
-            _work(state).repository,
+            item.repository,
             WorkspaceResult(
                 current["path"], current["branch"],
                 Context.from_dict(current["context"]), current["base_branch"],
@@ -195,7 +204,11 @@ def cleanup(state: TaskState, runtime: ExecutionRuntime) -> dict[str, Any]:
         ))
     except Exception as exc:
         print(f"[{_now()}] cleanup: ERROR {exc}", flush=True)
-    return {"status": state_mod.COMPLETED}
+        try:
+            workspace.append_event(item.id, event="cleanup_error", error=str(exc)[:200])
+        except Exception:
+            pass
+    return {"status": status}
 
 
 def plan_prompt(state: TaskState) -> str:
@@ -207,7 +220,8 @@ def implement_prompt(state: TaskState) -> str:
 
 
 def _route(next_node: str) -> Callable[[TaskState], str]:
-    return lambda state: "end" if state.get("status") == state_mod.FAILED else next_node
+    """Advance to the next node, or to cleanup when the node failed."""
+    return lambda state: "cleanup" if state.get("status") == state_mod.FAILED else next_node
 
 
 def build_graph(
@@ -239,10 +253,12 @@ def build_graph(
     for name, fn in nodes.items():
         builder.add_node(name, guard(name, fn))
     builder.add_edge(START, "prepare_workspace")
-    builder.add_conditional_edges("prepare_workspace", _route("plan"), {"plan": "plan", "end": END})
-    builder.add_conditional_edges("plan", _route("implement"), {"implement": "implement", "end": END})
-    builder.add_conditional_edges("implement", _route("create_pr"), {"create_pr": "create_pr", "end": END})
-    builder.add_conditional_edges("create_pr", _route("cleanup"), {"cleanup": "cleanup", "end": END})
+    builder.add_conditional_edges("prepare_workspace", _route("plan"), {"plan": "plan", "cleanup": "cleanup"})
+    builder.add_conditional_edges("plan", _route("implement"), {"implement": "implement", "cleanup": "cleanup"})
+    builder.add_conditional_edges("implement", _route("create_pr"), {"create_pr": "create_pr", "cleanup": "cleanup"})
+    # Cleanup runs on every outcome so a finished task never leaves a residual
+    # workspace behind.
+    builder.add_edge("create_pr", "cleanup")
     builder.add_edge("cleanup", END)
     # Execution is deliberately process-local. GitHub publication markers are
     # the durable source of truth, not LangGraph checkpoints.

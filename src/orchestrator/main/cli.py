@@ -19,7 +19,7 @@ from orchestrator.infra.github import assignees as github_assignees
 from orchestrator.infra.github import client as github
 from orchestrator.infra.langgraph import state as state_mod
 from orchestrator.application import PollingApplication, _input_seed
-from orchestrator.main.composition import compose_execution_runtime, compose_review_runtime, compose_runtime, compose_triage_runtime
+from orchestrator.main.composition import compose_execution_runtime, compose_maintenance_application, compose_review_runtime, compose_runtime, compose_triage_runtime
 from orchestrator.domain import Context, WorkItem
 from orchestrator.infra.langgraph.graph import build_graph
 from orchestrator.application.ports import InputEvent
@@ -188,6 +188,7 @@ def _developed_label() -> str:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    _sweep_artifacts()
     repository, number = _parse_ref(args.issue_ref)
     if not config.is_repository_allowed(repository):
         sys.exit(f"repository {repository} is not in the allowlist ({config.CONFIG_FILE})")
@@ -226,6 +227,38 @@ def cmd_reset(args: argparse.Namespace) -> None:
         )
     else:
         print(f"[{_now()}] reset {task_id}: skipped; target is a pull request", flush=True)
+
+
+def _sweep_artifacts() -> None:
+    """Reclaim expired artifacts at startup; a sweep failure never blocks a run."""
+    try:
+        report = compose_maintenance_application().collect()
+    except Exception as exc:
+        print(f"[{_now()}] gc: skipped ({exc})", flush=True)
+        return
+    if report.logs_removed or report.workspaces_removed:
+        print(
+            f"[{_now()}] gc: removed {len(report.logs_removed)} task log set(s), "
+            f"{len(report.workspaces_removed)} stale workspace(s)",
+            flush=True,
+        )
+    for error in report.errors:
+        print(f"[{_now()}] gc: ERROR {error}", flush=True)
+
+
+def cmd_gc(args: argparse.Namespace) -> None:
+    report = compose_maintenance_application().collect(dry_run=args.dry_run)
+    action = "would remove" if report.dry_run else "removed"
+    print(f"{action} task logs: {len(report.logs_removed)}")
+    for task_id in report.logs_removed:
+        print(f"  logs {task_id}")
+    print(f"{action} workspaces: {len(report.workspaces_removed)}")
+    for path in report.workspaces_removed:
+        print(f"  workspace {path}")
+    for error in report.errors:
+        print(f"gc error: {error}", flush=True)
+    if report.errors:
+        sys.exit(1)
 
 
 def cmd_logs(args: argparse.Namespace) -> None:
@@ -275,6 +308,7 @@ def _poll_triage(application) -> None:
 def cmd_triage(args: argparse.Namespace) -> None:
     lock = _acquire_poll_lock("triage")
     try:
+        _sweep_artifacts()
         triage = compose_triage_runtime()
         while True:
             _poll_triage(triage)
@@ -288,6 +322,7 @@ def cmd_triage(args: argparse.Namespace) -> None:
 def cmd_review(args: argparse.Namespace) -> None:
     lock = _acquire_poll_lock()
     try:
+        _sweep_artifacts()
         reviews = compose_review_runtime()
         while True:
             _poll_reviews(reviews)
@@ -304,6 +339,7 @@ def cmd_review(args: argparse.Namespace) -> None:
 def cmd_execute(args: argparse.Namespace) -> None:
     lock = _acquire_poll_lock()
     try:
+        _sweep_artifacts()
         runtime, reviews = compose_runtime(), compose_review_runtime()
         application = PollingApplication(runtime.input_source,
             lambda seed, task_id: _run_graph(seed, task_id, executor=runtime.executor,
@@ -342,6 +378,9 @@ def main(argv: list[str] | None = None) -> None:
     reset.add_argument("issue_ref"); reset.set_defaults(func=cmd_reset)
     logs = sub.add_parser("logs", help="list a task's node logs")
     logs.add_argument("task_id"); logs.add_argument("--node"); logs.add_argument("--lines", "-n", type=int, default=50); logs.set_defaults(func=cmd_logs)
+    gc = sub.add_parser("gc", help="delete expired task logs, events, and stale workspaces")
+    gc.add_argument("--dry-run", action="store_true", help="list what would be deleted without deleting")
+    gc.set_defaults(func=cmd_gc)
     args = parser.parse_args(argv)
     try:
         args.func(args)

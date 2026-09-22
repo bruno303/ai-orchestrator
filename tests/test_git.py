@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -246,3 +247,41 @@ def test_push_branch_does_not_force_arbitrary_pr_branch(monkeypatch, tmp_path):
         git.push_branch(tmp_path, "contributors/topic", "https://github.com/fork/repo.git",
                         allow_force_with_lease=False)
     assert calls == [["git", "push", "-u", "https://github.com/fork/repo.git", "contributors/topic"]]
+
+
+def test_remove_worktree_prunes_stale_metadata(repo_dir, tmp_path):
+    ws = tmp_path / "ws"
+    git.create_worktree(repo_dir, ws, "ai/issue-20", "main")
+    shutil.rmtree(ws)  # simulate a crash that left the folder behind
+
+    git.remove_worktree(repo_dir, ws, "ai/issue-20")
+
+    registered = {path.resolve() for path in git.list_worktrees(repo_dir)}
+    assert ws.resolve() not in registered  # stale metadata is pruned too
+    assert "ai/issue-20" not in git.list_local_branches(repo_dir)
+
+
+def test_prune_base_clone_removes_only_pushed_branches(repo_dir, remote_repo, tmp_path):
+    pushed = tmp_path / "pushed"
+    git.create_worktree(repo_dir, pushed, "ai/issue-21", "main")
+    (pushed / "work.txt").write_text("pushed\n")
+    git.commit_all(pushed, "feat: pushed")
+    git.push_branch(pushed, "ai/issue-21")
+    git.remove_worktree(repo_dir, pushed, "")
+
+    unpushed = tmp_path / "unpushed"
+    git.create_worktree(repo_dir, unpushed, "ai/issue-22", "main")
+    (unpushed / "work.txt").write_text("unpushed\n")
+    git.commit_all(unpushed, "feat: unpushed")
+    git.remove_worktree(repo_dir, unpushed, "")
+
+    other = tmp_path / "other"
+    git.create_worktree(repo_dir, other, "topic", "main")
+    git.remove_worktree(repo_dir, other, "")
+
+    git.prune_base_clone(repo_dir)
+
+    branches = git.list_local_branches(repo_dir)
+    assert "ai/issue-21" not in branches  # pushed work survives on the remote
+    assert "ai/issue-22" in branches  # unpushed commits must never be dropped
+    assert "topic" in branches  # non-ai branches are not orchestrator residue

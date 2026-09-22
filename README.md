@@ -119,6 +119,7 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_CLAUDE_BIN` | `claude` |
 | `ORCHESTRATOR_CLAUDE_TIMEOUT` | `3600` (seconds) |
+| `ORCHESTRATOR_ARTIFACT_RETENTION_DAYS` | `7` (days logs and events are kept) |
 | `ORCHESTRATOR_EXECUTOR_EXECUTION` | `pipeline.execution.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_REVIEW` | `pipeline.review.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_TRIAGE` | `pipeline.triage.executor.type` |
@@ -150,6 +151,10 @@ orchestrator reset company/backend#123
 # Observability
 orchestrator logs company/backend#123                 # list the task's node logs
 orchestrator logs company/backend#123 --node plan     # read a node log
+
+# Reclaim storage (also runs automatically at the start of every run)
+orchestrator gc                                       # delete expired logs and stale workspaces
+orchestrator gc --dry-run                             # list what would be deleted
 ```
 
 ## Comment triggers
@@ -369,10 +374,15 @@ Context namespace. Do not put service-specific values in generic fields.
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
-- **Cleanup**: after a successful PR, the task worktree and local branch are
-  removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging until a rerun starts; reruns discard and recreate the
-  task workspace from the base branch.
+- **Cleanup**: when a task finishes — successful or failed — its worktree,
+  local branch, and workspace folder are removed immediately so no residual
+  repo folder stays behind. Task logs and events (`data/logs/<task>/`) are
+  kept for `ORCHESTRATOR_ARTIFACT_RETENTION_DAYS` (default 7) so failures can
+  be investigated, then deleted. Base clones in `~/agent-repos` are kept as a
+  cache; only stale worktree metadata and already-pushed `ai/*` branches are
+  pruned from them. The remote branch is kept as the deliverable. A sweep at
+  the start of every run (and on demand via `orchestrator gc`) removes
+  anything that outlived its retention window, for example after a crash.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use `/ai-agent-impl` for an incremental implementation request

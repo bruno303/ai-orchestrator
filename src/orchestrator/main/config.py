@@ -72,6 +72,8 @@ POLL_INTERVAL_SECONDS = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", str(5 *
 MAX_CONCURRENT_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_CONCURRENT", "1"))
 # A task/comment with no activity for this long is considered dead (process died).
 STALE_SECONDS = int(os.environ.get("ORCHESTRATOR_STALE_SECONDS", str(2 * 60 * 60)))
+# Days a finished task keeps its logs and events before the sweep deletes them.
+ARTIFACT_RETENTION_DAYS = int(os.environ.get("ORCHESTRATOR_ARTIFACT_RETENTION_DAYS", "7"))
 
 
 @dataclass

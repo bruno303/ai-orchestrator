@@ -39,9 +39,27 @@ def review_workspace(task_id: str) -> Path:
     return WORKSPACES_DIR / safe_task_token(task_id)
 
 
+DISCUSSIONS_DIR_NAME = "discussion-"
+
+
+def discussion_group_dir() -> Path:
+    """Return the grouping folder holding per-discussion workspaces."""
+    return WORKSPACES_DIR / DISCUSSIONS_DIR_NAME
+
+
 def discussion_workspace(task_id: str) -> Path:
     """Return an isolated checkout path for one read-only discussion."""
-    return WORKSPACES_DIR / "discussion-" / safe_task_token(task_id)
+    return discussion_group_dir() / safe_task_token(task_id)
+
+
+def remove_empty_parent(path: Path) -> None:
+    """Drop a workspace's grouping folder once its last child is gone."""
+    parent = Path(path).parent
+    if parent != WORKSPACES_DIR and parent.parent == WORKSPACES_DIR:
+        try:
+            parent.rmdir()
+        except OSError:
+            pass
 
 
 def task_logs_dir(task_id: str) -> Path:

@@ -151,7 +151,7 @@ class DiscussionRuntime:
         finally:
             try:
                 self.workspace_manager.cleanup(prepared)
-            except Exception:
+            except Exception as exc:
                 # A discussion has no local changes to preserve. Cleanup is
                 # best effort and must not hide an already published answer.
-                pass
+                print(f"[discussion] cleanup {request.work.task_id}: {exc}", flush=True)

@@ -233,29 +233,29 @@ class ExecutionRuntime:
             request.context,
             reuse_workspace=True,
         ))
-        # Preserve the prepared worktree and branch when implementation or
-        # publication fails so the completed work can be inspected or retried
-        # without losing uncommitted changes.
-        implemented = self.implement_incremental(IncrementalImplementationRequest(
-            request.work,
-            prepared.workspace.workspace,
-            request.instruction,
-            prepared.context,
-        ))
-        published = self.publish(PublishRequest(
-            request.work,
-            prepared.workspace.workspace,
-            prepared.workspace.branch,
-            prepared.base_branch,
-            implemented.phase.context,
-        ))
-
+        # A finished task must leave no residual workspace behind, on success
+        # and on failure alike (logs keep the debugging trail). Cleanup is best
+        # effort so it never replaces the run's own outcome with a cleanup
+        # failure.
         try:
-            self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
-        except CleanupError:
-            # Cleanup is best effort after a successful comment publication
-            # and must not hide the publication result.
-            pass
+            implemented = self.implement_incremental(IncrementalImplementationRequest(
+                request.work,
+                prepared.workspace.workspace,
+                request.instruction,
+                prepared.context,
+            ))
+            published = self.publish(PublishRequest(
+                request.work,
+                prepared.workspace.workspace,
+                prepared.workspace.branch,
+                prepared.base_branch,
+                implemented.phase.context,
+            ))
+        finally:
+            try:
+                self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
+            except CleanupError:
+                pass
         return published
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
