@@ -369,10 +369,12 @@ Context namespace. Do not put service-specific values in generic fields.
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
-- **Cleanup**: after a successful PR, the task worktree and local branch are
-  removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging until a rerun starts; reruns discard and recreate the
-  task workspace from the base branch.
+- **Cleanup**: after a successful task, the task worktree and local branch are
+  removed, including generated `.agents/` artifacts. Completed task logs and
+  events are retained for seven days and then pruned; the shared base clone and
+  remote branch are kept. Failed implementation tasks keep their worktree for
+  debugging until a rerun starts; reruns discard and recreate the task
+  workspace from the base branch.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use `/ai-agent-impl` for an incremental implementation request

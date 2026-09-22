@@ -6,13 +6,15 @@ import json
 import hashlib
 import os
 import re
-from datetime import datetime, timezone
+import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 WORKSPACES_DIR = Path(
     os.environ.get("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces")
 ).expanduser()
 LOGS_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", Path.cwd() / "data")).expanduser() / "logs"
+TASK_LOG_RETENTION = timedelta(days=7)
 
 
 def safe_task_token(task_id: str) -> str:
@@ -94,3 +96,64 @@ def write_task_log(task_id: str, node: str, content: str) -> Path:
         if not content.endswith("\n"):
             fh.write("\n")
     return log_path
+
+
+def _event_timestamp(value: object) -> datetime | None:
+    try:
+        timestamp = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def _latest_task_end(log_directory: Path) -> tuple[datetime, str] | None:
+    event_path = log_directory / "events.jsonl"
+    if not event_path.is_file():
+        return None
+
+    latest: tuple[datetime, str] | None = None
+    for line in event_path.read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("event") != "task_end":
+            continue
+        timestamp = _event_timestamp(event.get("ts"))
+        if timestamp is None:
+            continue
+        candidate = (timestamp, str(event.get("status", "")))
+        if latest is None or candidate[0] > latest[0]:
+            latest = candidate
+    return latest
+
+
+def prune_expired_task_logs(now: datetime | None = None) -> int:
+    """Remove completed task logs after the configured retention period."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    cutoff = current - TASK_LOG_RETENTION
+    if not LOGS_DIR.is_dir():
+        return 0
+
+    removed = 0
+    for log_directory in LOGS_DIR.iterdir():
+        if not log_directory.is_dir() or log_directory.is_symlink():
+            continue
+        latest = _latest_task_end(log_directory)
+        if latest is None:
+            continue
+        completed_at, status = latest
+        if status != "COMPLETED" or completed_at > cutoff:
+            continue
+        try:
+            shutil.rmtree(log_directory)
+        except OSError:
+            continue
+        if not log_directory.exists():
+            removed += 1
+    return removed

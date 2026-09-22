@@ -250,12 +250,7 @@ class ExecutionRuntime:
             implemented.phase.context,
         ))
 
-        try:
-            self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
-        except CleanupError:
-            # Cleanup is best effort after a successful comment publication
-            # and must not hide the publication result.
-            pass
+        self.cleanup(CleanupRequest(request.work.repository, prepared.workspace))
         return published
 
     def cleanup(self, request: CleanupRequest) -> CleanupResult:

@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from orchestrator.application.execution.errors import AgentExecutionError, WorkspacePreparationError
+from orchestrator.application.execution.errors import AgentExecutionError, CleanupError, WorkspacePreparationError
 from orchestrator.application.execution.models import WorkContext
 from orchestrator.application.ports import (
     DiscussionDestination,
@@ -110,6 +110,7 @@ class DiscussionRuntime:
         prepared_context = context.merged(getattr(prepared, "context", Context()))
         model = self.model_config.name if self.model_config else None
         variant = self.model_config.variant if self.model_config else None
+        published = False
         try:
             result = self.executor.execute(DiscussionRequest(
                 task_id=request.work.task_id,
@@ -142,6 +143,7 @@ class DiscussionRuntime:
                 response=response,
                 context=result_context,
             ))
+            published = True
             return DiscussionResult(
                 True,
                 response=response,
@@ -151,7 +153,9 @@ class DiscussionRuntime:
         finally:
             try:
                 self.workspace_manager.cleanup(prepared)
-            except Exception:
-                # A discussion has no local changes to preserve. Cleanup is
-                # best effort and must not hide an already published answer.
-                pass
+            except Exception as exc:
+                # Failed discussions have no local changes to preserve. A
+                # published answer, however, is only successful when cleanup
+                # also completes.
+                if published:
+                    raise CleanupError(str(exc)) from exc

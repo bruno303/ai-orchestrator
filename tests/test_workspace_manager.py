@@ -1,6 +1,8 @@
 """Tests for the Git workspace provider adapter."""
 
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 
@@ -38,6 +40,26 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     GitWorkspaceManager().cleanup(result)
     assert calls == ["create", "remove"]
     assert not workspace_path.exists()
+
+
+def test_cleanup_removes_generated_artifacts_and_local_branch(remote_repo, tmp_path):
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "workspace"
+    result = manager.prepare(
+        WorkspaceRequest(
+            "company/backend#cleanup", "company/backend", "ai/cleanup", "main",
+            context=Context({"git": {"repository_url": f"file://{remote_repo}", "workspace": str(workspace_path)}}),
+        )
+    )
+    plan = workspace_path / ".agents/plans/plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("temporary plan\n")
+
+    manager.cleanup(result)
+
+    assert not plan.exists()
+    assert not workspace_path.exists()
+    assert not git._run(["git", "branch", "--list", "ai/cleanup"], cwd=Path(result.context.namespace("git")["repo_dir"]), check=False).stdout.strip()
 
 
 def test_prepare_derives_branch_and_workspace_from_task_id(remote_repo):
@@ -137,6 +159,42 @@ def test_prepare_requires_explicit_repository_url(monkeypatch):
         ))
 
     assert not cloned
+
+
+def test_prune_expired_completed_task_logs(monkeypatch, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(workspace, "LOGS_DIR", logs)
+    now = datetime(2026, 9, 22, tzinfo=timezone.utc)
+    old = logs / "old-task"
+    old.mkdir()
+    (old / "events.jsonl").write_text(json.dumps({
+        "ts": (now - timedelta(days=8)).isoformat(),
+        "event": "task_end",
+        "status": "COMPLETED",
+    }) + "\n")
+    (old / "plan.log").write_text("temporary output\n")
+
+    recent = logs / "recent-task"
+    recent.mkdir()
+    (recent / "events.jsonl").write_text(json.dumps({
+        "ts": (now - timedelta(days=6)).isoformat(),
+        "event": "task_end",
+        "status": "COMPLETED",
+    }) + "\n")
+
+    failed = logs / "failed-task"
+    failed.mkdir()
+    (failed / "events.jsonl").write_text(json.dumps({
+        "ts": (now - timedelta(days=8)).isoformat(),
+        "event": "task_end",
+        "status": "FAILED",
+    }) + "\n")
+
+    assert workspace.prune_expired_task_logs(now) == 1
+    assert not old.exists()
+    assert recent.exists()
+    assert failed.exists()
 
 
 def test_workspace_manager_uses_its_injected_identity_bound_git_client(tmp_path):

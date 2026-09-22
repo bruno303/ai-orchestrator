@@ -131,12 +131,30 @@ def detect_default_branch(repo_dir: Path) -> str:
 
 def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
     """Remove a task worktree and its branch (used for clean re-runs)."""
+    error: GitError | None = None
     if workspace.exists():
-        _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
+        try:
+            proc = _run(
+                ["git", "worktree", "remove", "--force", str(workspace)],
+                cwd=repo_dir,
+                check=False,
+            )
+            if proc.returncode != 0 and "is not a working tree" not in proc.stderr:
+                error = GitError(f"git worktree remove failed: {proc.stderr.strip()}")
+        except GitError as exc:
+            error = exc
     if branch:
-        proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
-        if branch in proc.stdout.split():
-            _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+        try:
+            proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
+            if branch in proc.stdout.split():
+                delete = _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+                if delete.returncode != 0 and error is None:
+                    error = GitError(f"git branch delete failed: {delete.stderr.strip()}")
+        except GitError as exc:
+            if error is None:
+                error = exc
+    if error is not None:
+        raise error
 
 
 def remote_branch_exists(repo_dir: Path, branch: str) -> bool:

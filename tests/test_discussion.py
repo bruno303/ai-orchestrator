@@ -10,7 +10,7 @@ from orchestrator.application.execution.models import (
     IncrementalExecutionRequest,
     WorkContext,
 )
-from orchestrator.application.execution.errors import AgentExecutionError, PublicationError
+from orchestrator.application.execution.errors import AgentExecutionError, CleanupError, PublicationError
 from orchestrator.application.execution.service import ExecutionRuntime
 from orchestrator.application.ports import (
     DiscussionPublicationRequest,
@@ -122,6 +122,35 @@ def test_incremental_execution_skips_planning(tmp_path):
     assert "/plan-implementation" not in requests[0].prompt
     assert prepared[0].reuse_workspace is True
     assert len(cleaned) == 1
+
+
+def test_incremental_execution_reports_cleanup_failure_after_publication(tmp_path):
+    class Workspace:
+        def prepare(self, request):
+            return WorkspaceResult(str(tmp_path), "ai/issue-7", request.context, "main")
+
+        def cleanup(self, result):
+            raise RuntimeError("workspace cleanup failed")
+
+    class Executor:
+        def execute(self, request):
+            return ExecutionResult(True, 0, stdout="implemented", context=request.context)
+
+    class Destination:
+        def publish(self, request):
+            return PublishedChange("17", provider="fake", context=request.context)
+
+    runtime = ExecutionRuntime(Executor(), Workspace(), Destination())
+
+    with pytest.raises(CleanupError, match="workspace cleanup failed"):
+        runtime.run_incremental(IncrementalExecutionRequest(
+            work=_work(),
+            instruction="also validate the email before saving",
+            branch="ai/issue-7",
+            base_branch="main",
+            workspace=str(tmp_path),
+            context=_work().item.context,
+        ))
 
 
 def test_incremental_execution_preserves_workspace_when_publication_fails(tmp_path):

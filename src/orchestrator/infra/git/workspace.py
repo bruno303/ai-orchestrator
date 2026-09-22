@@ -110,8 +110,38 @@ class GitWorkspaceManager:
         )
 
     def cleanup(self, result: WorkspaceResult) -> None:
+        if not result.workspace:
+            raise git.GitError("workspace cleanup requires a workspace path")
         git_context = dict(result.context.namespace("git"))
         repo_dir = Path(git_context.get("repo_dir") or git.base_repo_dir(git_context["repository"]))
-        self.git_client.remove_worktree(repo_dir, Path(result.workspace), result.branch)
-        if Path(result.workspace).exists():
-            shutil.rmtree(Path(result.workspace), ignore_errors=True)
+        workspace_path = Path(result.workspace)
+        git_error: Exception | None = None
+        try:
+            self.git_client.remove_worktree(repo_dir, workspace_path, result.branch)
+        except Exception as exc:
+            git_error = exc
+
+        filesystem_error: Exception | None = None
+        try:
+            if workspace_path.is_symlink() or (workspace_path.exists() and not workspace_path.is_dir()):
+                workspace_path.unlink()
+            elif workspace_path.exists():
+                shutil.rmtree(workspace_path)
+        except OSError as exc:
+            filesystem_error = exc
+
+        if workspace_path.exists() or workspace_path.is_symlink():
+            filesystem_error = git.GitError(f"workspace still exists after cleanup: {workspace_path}")
+
+        if git_error is not None:
+            # Retry after removing any residual path so Git can prune stale
+            # worktree metadata before deleting a branch still attached to it.
+            try:
+                self.git_client.remove_worktree(repo_dir, workspace_path, result.branch)
+                git_error = None
+            except Exception:
+                pass
+        if filesystem_error is not None:
+            raise git.GitError(str(filesystem_error)) from filesystem_error
+        if git_error is not None:
+            raise git.GitError(str(git_error)) from git_error
