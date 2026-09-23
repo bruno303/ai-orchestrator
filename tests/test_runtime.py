@@ -15,6 +15,7 @@ from orchestrator.application.execution.models import (
     CleanupRequest,
     CleanupReviewRequest,
     ExecuteReviewRequest,
+    IncrementalExecutionRequest,
     ImplementationRequest,
     PlanRequest,
     PrepareExecutionRequest,
@@ -106,6 +107,34 @@ def test_execution_runtime_does_not_retry_executor_failures(tmp_path):
     with pytest.raises(AgentExecutionError, match="executor failed"):
         runtime.execute_phase(AgentRequest(_context(), "implement", "build", "prompt", str(tmp_path)))
     assert runtime.agent.executor.calls == 1
+
+
+def test_incremental_publication_survives_cleanup_failure_and_reports_path(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(config, "is_repository_allowed", lambda repository: True)
+
+    class FailingCleanupWorkspace(ExecutionWorkspace):
+        def cleanup(self, result):
+            raise RuntimeError("git worktree remove failed: permission denied")
+
+    destination = type(
+        "Destination", (),
+        {"publish": lambda self, request: PublishedChange("published-17")},
+    )()
+    runtime = compose_execution_runtime(
+        executor=ExecutionAgent(),
+        workspace_manager=FailingCleanupWorkspace(str(tmp_path)),
+        destination=destination,
+    )
+
+    result = runtime.run_incremental(IncrementalExecutionRequest(
+        _context(), "apply the requested change", "ai/issue-7", "main",
+        workspace=str(tmp_path),
+    ))
+
+    assert result.publication.id == "published-17"
+    diagnostic = capsys.readouterr().err
+    assert str(tmp_path) in diagnostic
+    assert "git worktree remove failed: permission denied" in diagnostic
 
 
 def test_execution_runtime_uses_requested_plan_path(tmp_path):

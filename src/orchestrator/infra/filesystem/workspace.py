@@ -6,13 +6,15 @@ import json
 import hashlib
 import os
 import re
-from datetime import datetime, timezone
+import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 WORKSPACES_DIR = Path(
     os.environ.get("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces")
 ).expanduser()
 LOGS_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", Path.cwd() / "data")).expanduser() / "logs"
+LOG_RETENTION_DAYS = int(os.environ.get("ORCHESTRATOR_LOG_RETENTION_DAYS", "7"))
 
 
 def safe_task_token(task_id: str) -> str:
@@ -94,3 +96,38 @@ def write_task_log(task_id: str, node: str, content: str) -> Path:
         if not content.endswith("\n"):
             fh.write("\n")
     return log_path
+
+
+def prune_empty_workspace_parents(path: Path | str, *, root: Path | None = None) -> None:
+    """Remove now-empty parents of a cleaned workspace up to the workspace root.
+
+    Workspaces may live below an intermediate directory (for example the shared
+    ``discussion-`` folder). Once the workspace itself is gone, those parents are
+    empty and would otherwise stay behind as residual folders.
+    """
+    workspace_root = (root or WORKSPACES_DIR).resolve()
+    current = Path(path).resolve().parent
+    while current != workspace_root and current.is_relative_to(workspace_root):
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+
+
+def expire_task_logs(*, now: datetime | None = None, retention_days: int = LOG_RETENTION_DAYS) -> None:
+    """Remove task log directories whose newest file is older than retention."""
+    cutoff = (now or datetime.now(timezone.utc)).timestamp() - timedelta(days=retention_days).total_seconds()
+    if not LOGS_DIR.exists():
+        return
+    for directory in LOGS_DIR.iterdir():
+        if not directory.is_dir():
+            continue
+        try:
+            files = [path for path in directory.rglob("*") if path.is_file()]
+            if files and max(path.stat().st_mtime for path in files) < cutoff:
+                shutil.rmtree(directory)
+            elif not files and directory.stat().st_mtime < cutoff:
+                shutil.rmtree(directory)
+        except OSError as exc:
+            print(f"log retention: could not remove {directory}: {exc}", flush=True)

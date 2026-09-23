@@ -177,8 +177,12 @@ def _report_result(result: dict) -> None:
 def _remove_event_workspace(event: InputEvent) -> None:
     context = event.work_item.context.namespace("git")
     path = context.get("workspace")
-    if path and Path(str(path)).exists():
+    if not path or not (Path(str(path)).exists() or Path(str(path)).is_symlink()):
+        return
+    try:
         git.remove_worktree(git.base_repo_dir(event.work_item.repository), Path(str(path)), str(context.get("branch", "")))
+    except git.GitError as exc:
+        print(f"[{_now()}] warning: could not remove workspace {path}: {exc}", flush=True)
 
 
 def _developed_label() -> str:
@@ -255,6 +259,7 @@ def _acquire_poll_lock(lock_name: str = "poll"):
 
 
 def _poll_reviews(application) -> None:
+    workspace.expire_task_logs()
     try:
         application.poll_once()
     except Exception as exc:
@@ -264,6 +269,7 @@ def _poll_reviews(application) -> None:
 
 
 def _poll_triage(application) -> None:
+    workspace.expire_task_logs()
     try:
         application.poll_once()
     except Exception as exc:
@@ -328,6 +334,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    workspace.expire_task_logs()
     parser = argparse.ArgumentParser(prog="orchestrator", description="GitHub Issue -> agent -> PR")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run a task for an issue (owner/repo#number)")
