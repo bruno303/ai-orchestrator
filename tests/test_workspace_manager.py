@@ -1,5 +1,6 @@
 """Tests for the Git workspace provider adapter."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,48 @@ def test_prepare_and_cleanup_use_existing_git_operations(remote_repo, monkeypatc
     GitWorkspaceManager().cleanup(result)
     assert calls == ["create", "remove"]
     assert not workspace_path.exists()
+
+
+def test_cleanup_removes_workspace_local_branch_and_prunes_empty_parents(remote_repo, tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace, "WORKSPACES_DIR", tmp_path)
+    manager = GitWorkspaceManager()
+    workspace_path = tmp_path / "generated" / "workspace"
+    result = manager.prepare(
+        WorkspaceRequest(
+            "company/backend#12", "company/backend", "ai/issue-12", "main",
+            context=Context({"git": {"repository_url": f"file://{remote_repo}"}}),
+            workspace=str(workspace_path),
+        )
+    )
+    repo_dir = git.base_repo_dir("company/backend")
+    assert subprocess.run(
+        ["git", "branch", "--list", "ai/issue-12"],
+        cwd=repo_dir, capture_output=True, text=True,
+    ).stdout.strip()
+
+    manager.cleanup(result)
+
+    assert not workspace_path.exists()
+    # The empty intermediate folder created for the workspace is pruned too.
+    assert not (tmp_path / "generated").exists()
+    assert not subprocess.run(
+        ["git", "branch", "--list", "ai/issue-12"],
+        cwd=repo_dir, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def test_prune_empty_workspace_parents_keeps_non_empty_parents(tmp_path, monkeypatch):
+    monkeypatch.setattr(workspace, "WORKSPACES_DIR", tmp_path)
+    inner = tmp_path / "discussion-" / "token"
+    inner.mkdir(parents=True)
+    (tmp_path / "discussion-" / "keep.txt").write_text("keep\n")
+    inner.rmdir()
+
+    workspace.prune_empty_workspace_parents(inner)
+
+    assert (tmp_path / "discussion-").exists()
+    assert (tmp_path / "discussion-" / "keep.txt").exists()
+    assert tmp_path.exists()
 
 
 def test_prepare_derives_branch_and_workspace_from_task_id(remote_repo):

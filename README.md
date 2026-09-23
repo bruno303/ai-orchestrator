@@ -112,6 +112,7 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_REPOS_DIR` | `~/agent-repos` (base clones) |
 | `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task worktrees) |
 | `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
+| `ORCHESTRATOR_LOG_RETENTION_DAYS` | `7` (days before task logs expire) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
@@ -369,10 +370,12 @@ Context namespace. Do not put service-specific values in generic fields.
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
-- **Cleanup**: after a successful PR, the task worktree and local branch are
-  removed (logs and the remote branch are kept). Failed tasks keep their
-  worktree for debugging until a rerun starts; reruns discard and recreate the
-  task workspace from the base branch.
+- **Cleanup**: after a successful PR, the task worktree, its git registration,
+  its local branch, and any now-empty workspace parent folder are removed; the
+  shared base-clone cache, logs, and the published remote branch are kept. Logs
+  older than seven days are expired automatically during CLI startup and
+  polling. Failed tasks keep their worktree for debugging until a rerun starts;
+  reruns discard and recreate the task workspace from the base branch.
 - **Execution state**: GitHub is the durable source of truth. A source issue
   is assigned before work starts and receives `ai-developed` only after its PR
   is published. Use `/ai-agent-impl` for an incremental implementation request

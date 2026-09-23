@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -158,6 +159,62 @@ def test_workspace_exists_raises(repo_dir, tmp_path):
     git.create_worktree(repo_dir, ws, "ai/issue-3", "main")
     with pytest.raises(git.GitError):
         git.create_worktree(repo_dir, ws, "ai/issue-4", "main")
+
+
+def test_remove_worktree_keeps_base_clone_and_remote_branch(repo_dir, remote_repo, tmp_path):
+    ws = tmp_path / "ws-cleanup"
+    git.create_worktree(repo_dir, ws, "ai/issue-cleanup", "main")
+    (ws / "work.txt").write_text("published\n")
+    git.commit_all(ws, "published")
+    git.push_branch(ws, "ai/issue-cleanup")
+
+    git.remove_worktree(repo_dir, ws, "ai/issue-cleanup")
+
+    assert not ws.exists()
+    assert (repo_dir / ".git").exists()
+    local = subprocess.run(
+        ["git", "branch", "--list", "ai/issue-cleanup"],
+        cwd=repo_dir, capture_output=True, text=True,
+    )
+    assert local.stdout.strip() == ""
+    registered = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo_dir, capture_output=True, text=True,
+    ).stdout
+    assert str(ws) not in registered
+    remote = subprocess.run(
+        ["git", "ls-remote", "origin", "refs/heads/ai/issue-cleanup"],
+        cwd=repo_dir, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert remote
+
+
+def test_remove_worktree_recovers_missing_worktree_registration(repo_dir, tmp_path):
+    ws = tmp_path / "ws-stale"
+    git.create_worktree(repo_dir, ws, "ai/issue-stale", "main")
+    # Simulate a directory removed outside `git worktree remove`, which leaves
+    # a stale registration in the base clone.
+    shutil.rmtree(ws)
+
+    git.remove_worktree(repo_dir, ws, "ai/issue-stale")
+
+    # The path is reusable again instead of failing with "already registered".
+    git.create_worktree(repo_dir, ws, "ai/issue-stale", "main")
+    assert ws.exists()
+    git.remove_worktree(repo_dir, ws, "ai/issue-stale")
+
+
+def test_remove_worktree_surfaces_branch_deletion_failure(monkeypatch, tmp_path):
+    def fake_run(args, cwd, *, check=True, env=None):
+        if args[:3] == ["git", "branch", "--list"]:
+            return subprocess.CompletedProcess(args, 0, "topic\n", "")
+        if args[:3] == ["git", "branch", "-D"]:
+            return subprocess.CompletedProcess(args, 1, "", "branch is checked out")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(git, "_run", fake_run)
+    with pytest.raises(git.GitError, match="branch -D failed.*checked out"):
+        git.remove_worktree(tmp_path, tmp_path / "gone", "topic")
 
 
 def test_has_changes_ignores_agents_dir(repo_dir, tmp_path):

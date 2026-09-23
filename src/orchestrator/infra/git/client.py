@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import os
 from contextvars import ContextVar
@@ -94,6 +95,7 @@ def ensure_base_clone(repository: str, clone_url: str) -> Path:
         _run(["git", "clone", clone_url, str(repo_dir)], cwd=repo_dir.parent,
              env=_github_env_for_url(clone_url))
     fetch(repo_dir)
+    prune_worktrees(repo_dir)
     return repo_dir
 
 
@@ -129,14 +131,47 @@ def detect_default_branch(repo_dir: Path) -> str:
     raise GitError(f"could not detect default branch in {repo_dir}")
 
 
+def prune_worktrees(repo_dir: Path) -> None:
+    """Drop registrations for worktrees whose directories are already gone.
+
+    Without this, a worktree that was deleted outside `git worktree remove`
+    leaves a stale entry in the base clone, and the next `worktree add` at the
+    same path fails with "missing but already registered worktree".
+    """
+    if repo_dir.exists():
+        _run(["git", "worktree", "prune"], cwd=repo_dir, check=False)
+
+
 def remove_worktree(repo_dir: Path, workspace: Path, branch: str) -> None:
-    """Remove a task worktree and its branch (used for clean re-runs)."""
-    if workspace.exists():
+    """Remove a task worktree, its registration, and its local branch.
+
+    Used by cleanup and clean re-runs. The worktree directory is always
+    removed, the base clone is pruned for stale registrations, and any failure
+    to delete the directory or branch is surfaced instead of silently leaving a
+    residual repo behind.
+    """
+    if (
+        repo_dir.exists()
+        and (workspace.exists() or workspace.is_symlink())
+        and ((workspace / ".git").exists() or (workspace / ".git").is_symlink())
+    ):
         _run(["git", "worktree", "remove", "--force", str(workspace)], cwd=repo_dir, check=False)
-    if branch:
+    if workspace.exists() or workspace.is_symlink():
+        if workspace.is_dir() and not workspace.is_symlink():
+            shutil.rmtree(workspace)
+        else:
+            workspace.unlink()
+    prune_worktrees(repo_dir)
+    if branch and repo_dir.exists():
         proc = _run(["git", "branch", "--list", branch], cwd=repo_dir, check=False)
+        if proc.returncode != 0:
+            raise GitError(f"git branch --list failed for {branch}: {proc.stderr.strip()}")
         if branch in proc.stdout.split():
-            _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+            proc = _run(["git", "branch", "-D", branch], cwd=repo_dir, check=False)
+            if proc.returncode != 0:
+                raise GitError(f"git branch -D failed for {branch}: {proc.stderr.strip()}")
+    if workspace.exists() or workspace.is_symlink():
+        raise GitError(f"workspace remains after removal: {workspace}")
 
 
 def remote_branch_exists(repo_dir: Path, branch: str) -> bool:

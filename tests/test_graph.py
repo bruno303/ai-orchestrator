@@ -73,3 +73,21 @@ def test_graph_routes_implementation_directly_to_publication():
     assert runtime.nodes == started
     assert result["status"] == state_mod.COMPLETED
     assert result["output"]["external_id"] == "17"
+
+
+def test_graph_cleanup_failure_keeps_successful_publication_status(capsys):
+    runtime = FakeRuntime()
+    runtime.cleanup = lambda request: (_ for _ in ()).throw(
+        RuntimeError("workspace remains at /tmp/workspace")
+    )
+
+    result = build_graph(runtime=runtime).invoke({
+        "input": {"provider": "fake", "data": {
+            "id": "repo#1", "repository": "company/backend", "title": "Add feature",
+            "description": "Implement it",
+        }},
+    })
+
+    assert result["status"] == state_mod.COMPLETED
+    assert result["output"]["external_id"] == "17"
+    assert "workspace remains at /tmp/workspace" in capsys.readouterr().out
