@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
+from orchestrator.infra.filesystem import paths
 from orchestrator.main import config
 
 
-def test_environment_path_expands_home_directory(monkeypatch):
-    monkeypatch.setenv("ORCHESTRATOR_REPOS_DIR", "~/agent-repos")
-
-    assert config._environment_path("ORCHESTRATOR_REPOS_DIR", "/unused") == Path.home() / "agent-repos"
+def test_config_paths_come_from_the_paths_module():
+    assert config.ENV_FILE == paths.env_file()
+    assert config.CONFIG_FILE == paths.config_file()
+    assert config.DATA_DIR == paths.data_dir()
+    assert config.STATE_DIR == paths.state_dir()
+    assert config.LOGS_DIR == paths.logs_dir()
+    assert config.REPOS_DIR == paths.repos_dir()
+    assert config.WORKSPACES_DIR == paths.workspaces_dir()
 
 
 def test_load_environment_reads_env_file_without_overwriting_exported_values(tmp_path, monkeypatch):

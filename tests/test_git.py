@@ -31,10 +31,11 @@ def test_git_identity_uses_isolated_global_config():
     ).stdout.strip() == "test"
 
 
-def test_git_environment_path_expands_home_directory(monkeypatch):
-    monkeypatch.setenv("ORCHESTRATOR_REPOS_DIR", "~/agent-repos")
+def test_repos_dir_uses_the_central_path_resolution():
+    from orchestrator.infra.filesystem import paths
 
-    assert git._environment_path("ORCHESTRATOR_REPOS_DIR", "/unused") == Path.home() / "agent-repos"
+    assert git.REPOS_DIR == paths.repos_dir()
+    assert git.base_repo_dir("company/backend") == paths.repos_dir() / "company-backend"
 
 
 def test_identity_bound_git_client_uses_selected_identity_environment(monkeypatch):

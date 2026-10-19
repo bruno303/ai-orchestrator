@@ -1,5 +1,5 @@
 [project]
-name = "orchestrator"
+name = "ai-orchestrator"
 version = "0.1.0"
 description = "LangGraph orchestrator: GitHub Issues -> agent plan/build-with-validation -> PR"
 readme = "README.md"
@@ -15,11 +15,14 @@ dependencies = [
 ]
 
 [project.scripts]
-orchestrator = "orchestrator.main.cli:main"
+ai-orchestrator = "orchestrator.main.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11.3,<0.12.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "orchestrator"
 
 [dependency-groups]
 dev = [

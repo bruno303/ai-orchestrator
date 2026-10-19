@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import json
 import hashlib
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-WORKSPACES_DIR = Path(
-    os.environ.get("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces")
-).expanduser()
-LOGS_DIR = Path(os.environ.get("ORCHESTRATOR_DATA_DIR", Path.cwd() / "data")).expanduser() / "logs"
+from orchestrator.infra.filesystem import paths
+
+WORKSPACES_DIR = paths.workspaces_dir()
+LOGS_DIR = paths.logs_dir()
 
 
 def safe_task_token(task_id: str) -> str:

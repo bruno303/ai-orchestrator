@@ -190,6 +190,12 @@ def _developed_label() -> str:
 def cmd_run(args: argparse.Namespace) -> None:
     repository, number = _parse_ref(args.issue_ref)
     if not config.is_repository_allowed(repository):
+        if not config.CONFIG_FILE.exists():
+            sys.exit(
+                f"repository {repository} is not in the allowlist; "
+                f"no config file found at {config.CONFIG_FILE}. "
+                "Run `ai-orchestrator init` to create one."
+            )
         sys.exit(f"repository {repository} is not in the allowlist ({config.CONFIG_FILE})")
     runtime = compose_runtime()
     github_client = runtime.input_source.github_client
@@ -328,7 +334,7 @@ def cmd_execute(args: argparse.Namespace) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="orchestrator", description="GitHub Issue -> agent -> PR")
+    parser = argparse.ArgumentParser(prog="ai-orchestrator", description="GitHub Issue -> agent -> PR")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run a task for an issue (owner/repo#number)")
     run.add_argument("issue_ref"); run.add_argument("--force", action="store_true", help="run even if ai-developed is present"); run.set_defaults(func=cmd_run)
