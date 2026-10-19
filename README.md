@@ -3,19 +3,84 @@
 Local orchestrator (LangGraph + OpenCode, Codex, or Claude Code) that turns input events into published changes:
 
 ```
-GitHub Issue → triage (`make triage`) → workspace (git worktree) → agent plan → agent build with tests and quality checks
+GitHub Issue → triage (`ai-orchestrator triage`) → workspace (git worktree) → agent plan → agent build with tests and quality checks
              (subagent-plan-execution) → push / PR publication → cleanup
 ```
 
-## Requirements
+## Install
 
-- `uv`, `git`, `gh`, and the CLI for the selected agent provider (`opencode` >= 1.18, `codex`, or `claude`)
-
-## Setup
+There is no PyPI package. Install the CLI from a git tag:
 
 ```bash
-uv sync
+uv tool install git+https://github.com/bruno303/ai-orchestrator@v0.1.0
 ```
+
+Upgrade to a newer tag:
+
+```bash
+uv tool install --force git+https://github.com/bruno303/ai-orchestrator@vX.Y.Z
+# or reinstall the currently installed tag
+uv tool upgrade ai-orchestrator
+```
+
+Uninstall:
+
+```bash
+uv tool uninstall ai-orchestrator
+```
+
+Prerequisites: `uv` to install, plus `git`, `gh`, and the CLI for the selected agent provider (`opencode` >= 1.18, `codex`, or `claude`) on the host.
+
+## First run
+
+Bootstrap the user-level layout:
+
+```bash
+ai-orchestrator init
+```
+
+`init` writes the configuration from the packaged template to
+`~/.config/ai-orchestrator/config.yaml`, writes the deployment overrides to
+`~/.config/ai-orchestrator/.env` (mode `0600`), and creates the `state/` and
+`logs/` subdirectories under the data directory. Existing files are kept unless
+`--force` is passed; `--dry-run` reports the paths without writing anything.
+`--config-dir`, `--data-dir`, and `--env-file` override the targets for one run.
+
+Place the GitHub App private key at `~/.config/ai-orchestrator/key.pem` and list
+the repositories allowed to trigger the orchestrator in the config file (see
+[Configuration](#configuration)).
+
+Then check the host:
+
+```bash
+ai-orchestrator doctor
+```
+
+`doctor` prints one `ok`, `warn`, or `fail` line per check — Python version,
+config file, repository allowlist, data directories, `git`, `gh`, `gh auth`, the
+GitHub App key, and the executor of each stage — and exits non-zero when any
+check fails.
+
+### Paths
+
+| Path | Contents |
+|---|---|
+| `~/.config/ai-orchestrator/config.yaml` | pipeline + repository allowlist |
+| `~/.config/ai-orchestrator/.env` | deployment overrides |
+| `~/.config/ai-orchestrator/key.pem` | GitHub App private key |
+| `~/.local/share/ai-orchestrator` | runtime data root (`ORCHESTRATOR_DATA_DIR`) |
+| `~/.local/share/ai-orchestrator/logs` | per-task logs |
+| `~/.local/share/ai-orchestrator/state` | poll locks and durable state |
+| `~/agent-repos` | base repository clones |
+| `~/agent-workspaces` | per-task git worktrees |
+
+`ORCHESTRATOR_*` overrides win over the XDG defaults: `ORCHESTRATOR_ENV_FILE`,
+`ORCHESTRATOR_CONFIG_FILE`, `ORCHESTRATOR_DATA_DIR`, `ORCHESTRATOR_REPOS_DIR`,
+`ORCHESTRATOR_WORKSPACES_DIR`, and
+`ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE`. The config directory is relocated by
+`XDG_CONFIG_HOME` and the data directory by `XDG_DATA_HOME`; a relative value for
+either is ignored in favour of the `~/.config` / `~/.local/share` defaults.
+Tilde paths are expanded.
 
 ## Configuration
 
@@ -28,18 +93,21 @@ override them for another deployment with environment variables:
 | `ORCHESTRATOR_GITHUB_APP_ID` | `123` |
 | `ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID` | `123` |
 | `ORCHESTRATOR_GITHUB_APP_SLUG` | `bruno303-ai-agent-bot` |
-| `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE` | `config/key.pem` |
+| `ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE` | `~/.config/ai-orchestrator/key.pem` |
 
 The private key is used only in memory to create short-lived installation tokens.
 HTTPS Git operations use the same token, and commits use the App bot identity.
 Keep the private key outside version control.
 
-Copy `.env.example` to `.env` to override these and the runtime defaults below.
-The application loads `.env` automatically; exported shell variables take precedence.
-The test suite disables `.env` loading to remain isolated from local deployment settings.
+`ai-orchestrator init` writes `.env` and `config.yaml` from packaged templates.
+Edit `~/.config/ai-orchestrator/.env` to override these and the runtime defaults
+below. The application loads `.env` automatically; exported shell variables take
+precedence. The test suite disables `.env` loading to remain isolated from local
+deployment settings.
 
-Edit `config/config.yaml` — only repositories listed here can trigger the
-orchestrator (enforced by the CLI, the executor, and the graph itself):
+Edit `~/.config/ai-orchestrator/config.yaml` — only repositories listed here can
+trigger the orchestrator (enforced by the CLI, the executor, and the graph
+itself):
 
 ```yaml
 repositories:
@@ -109,9 +177,11 @@ Paths, limits, model and loop detection (env overrides):
 
 | Variable | Default |
 |---|---|
+| `ORCHESTRATOR_ENV_FILE` | `~/.config/ai-orchestrator/.env` |
+| `ORCHESTRATOR_CONFIG_FILE` | `~/.config/ai-orchestrator/config.yaml` |
+| `ORCHESTRATOR_DATA_DIR` | `~/.local/share/ai-orchestrator` (logs, state, poll locks) |
 | `ORCHESTRATOR_REPOS_DIR` | `~/agent-repos` (base clones) |
 | `ORCHESTRATOR_WORKSPACES_DIR` | `~/agent-workspaces` (per-task worktrees) |
-| `ORCHESTRATOR_DATA_DIR` | `./data` (logs and poll locks) |
 | `ORCHESTRATOR_OPENCODE_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_POLL_INTERVAL` | `300` (seconds) |
 | `ORCHESTRATOR_OPENCODE_BIN` | `opencode` |
@@ -132,24 +202,27 @@ Paths, limits, model and loop detection (env overrides):
 ## Usage
 
 ```bash
+# Show the installed version
+ai-orchestrator --version
+
 # Run one issue through the full pipeline
-orchestrator run company/backend#123
+ai-orchestrator run company/backend#123
 
 # Triage open issues (loop, or --once)
-orchestrator triage --once
+ai-orchestrator triage --once
 
 # Execute issue and review workflows for allowed repos (loop, or --once)
-orchestrator execute --once
+ai-orchestrator execute --once
 
 # Poll open pull requests for provider-neutral AI reviews (loop, or --once)
-orchestrator review --once
+ai-orchestrator review --once
 
 # Reset local workspace state and make a developed issue eligible again
-orchestrator reset company/backend#123
+ai-orchestrator reset company/backend#123
 
 # Observability
-orchestrator logs company/backend#123                 # list the task's node logs
-orchestrator logs company/backend#123 --node plan     # read a node log
+ai-orchestrator logs company/backend#123                 # list the task's node logs
+ai-orchestrator logs company/backend#123 --node plan     # read a node log
 ```
 
 ## Comment triggers
@@ -193,8 +266,8 @@ pipeline: an input source selects pull requests, an executor inspects the
 checkout, and a destination publishes the result. Configure it under the
 `pipeline.review` section when it should differ from the main pipeline; it
 otherwise inherits the configured providers. Run it continuously with
-`make review` or once with `orchestrator review --once`. `orchestrator execute`
-also runs one review pass on every poll iteration.
+`ai-orchestrator review` or once with `ai-orchestrator review --once`.
+`ai-orchestrator execute` also runs one review pass on every poll iteration.
 
 The GitHub input source skips pull requests carrying the stage's suppressed
 labels (`ai-reviewed` by default). The completion label is added only after
@@ -217,8 +290,6 @@ Other valid assessments receive a comment with the conclusion and missing
 context, followed by `ai-triage`. When the author adds the missing details,
 remove `ai-triage` to make the issue eligible for another triage pass. Agent or
 malformed-response failures add neither label and are retried on the next poll.
-
-## How it works
 
 ## Architecture
 
@@ -316,7 +387,8 @@ before execution, and successful publication adds `ai-developed` to the source
 issue. Assignment failures are logged and skipped so polling can continue;
 issues assigned before an interruption are no longer selected as new work.
 
-Pipeline providers can be selected in `config/config.yaml`:
+Pipeline providers can be selected in the resolved config file
+(`~/.config/ai-orchestrator/config.yaml`):
 
 ```yaml
 pipeline:
@@ -365,7 +437,7 @@ Context namespace. Do not put service-specific values in generic fields.
   revising, or saving a plan.
 - **Model**: issue phases use the configured `execution` model and pull-request
   reviews use the configured `review` model. The model and variant are logged for each phase (visible via
-  `orchestrator logs <task> --node <node>`).
+  `ai-orchestrator logs <task> --node <node>`).
 - **PR**: after implementation and its validation succeed, changes are
   committed (`Closes #n`), pushed, and a PR is created via `gh`. `.agents/` artifacts
   never enter the commit.
@@ -378,14 +450,91 @@ Context namespace. Do not put service-specific values in generic fields.
   is published. Use `/ai-agent-impl` for an incremental implementation request
   or the direct `run` command for a full issue execution.
 
-## Development
+## Operating model
+
+No service unit is shipped. `ai-orchestrator execute` runs in the foreground, so
+a process supervisor owns restarts. On Linux, use a user-level `systemd` unit:
+
+```ini
+# ~/.config/systemd/user/ai-orchestrator.service
+[Unit]
+Description=AI Orchestrator
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/you
+ExecStart=/home/you/.local/bin/ai-orchestrator execute
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now ai-orchestrator.service
+journalctl --user -u ai-orchestrator.service -f
+```
+
+On macOS, run it in the background:
+
+```bash
+nohup ai-orchestrator execute >> ~/ai-orchestrator.log 2>&1 &
+```
+
+A `launchd` agent with `RunAtLoad` and `KeepAlive` provides the same supervision
+if you prefer it over `nohup`.
+
+## Repository development
+
+The Makefile wraps the source-tree workflow. Its repo-local environment defaults
+are `ORCHESTRATOR_ENV_FILE ?= .env`,
+`ORCHESTRATOR_CONFIG_FILE ?= config/config.yaml`, and
+`ORCHESTRATOR_DATA_DIR ?= ./data`. All three are exported, so every
+`uv run ai-orchestrator ...` target uses them, and each can be overridden from
+the shell.
+
+```bash
+make init    # bootstrap .env, config/config.yaml and data/ in the checkout
+make test    # run the test suite
+```
+
+For a direct test run without `make`:
 
 ```bash
 uv run pytest
 ```
+
+`scripts/verify-package.sh` builds the wheel when `dist/` has none and verifies it
+in a clean environment outside the checkout: wheel contents, the console script,
+a fresh venv install, `ai-orchestrator init` under `XDG_CONFIG_HOME` /
+`XDG_DATA_HOME`, and `doctor` reporting without a traceback.
+
+## Release process
+
+1. Bump `version` in `pyproject.toml`.
+2. Refresh the lock file with `uv lock`; the lock records the project version.
+3. Commit the version bump and the refreshed `uv.lock` **together** in the same
+   commit.
+4. Tag the commit: `git tag vX.Y.Z`.
+5. Push the tag: `git push origin vX.Y.Z`.
+
+The release workflow (`.github/workflows/release.yml`) runs on `v*` tags. It
+checks that the lock file is current and fails when the tag does not match the
+`pyproject.toml` version. It then builds and verifies the package and publishes a
+GitHub Release for the tag with the wheel and the sdist attached; an existing
+release is updated in place. A follow-up job installs the tag with
+`uv tool install` and checks that `ai-orchestrator --version` matches it. There
+is no PyPI publish.
 
 ## Roadmap (V2+)
 
 Fix loop, human-in-the-loop via GitHub comments, concurrent tasks
 (`MAX_CONCURRENT_TASKS`), per-repository config (test/lint commands, model),
 PostgreSQL, webhook.
+
+## License
+
+MIT; see `LICENSE`.
