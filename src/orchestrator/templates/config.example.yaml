@@ -67,10 +67,8 @@ pipeline:
 #
 # Optional per-repo option:
 #   label: ai-agent   -> legacy no-op; stage labels are configured above
-repositories:
-  - name: bruno303/ai-tools
-  - name: bruno303/study-topics
-  - name: bruno303/planning-poker
-    default_branch: main
-  - name: bruno303/ai-orchestrator
-    default_branch: main
+repositories: []
+# Add one entry per repository, for example:
+#   - name: company/backend
+#   - name: company/frontend
+#     default_branch: main
