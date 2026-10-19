@@ -1,0 +1,86 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Check lock file is up to date
+        run: uv lock --check
+      - name: Assert the tag matches the project version
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          python3 -c "import os,sys,tomllib;v=tomllib.load(open('pyproject.toml','rb'))['project']['version'];t=os.environ['GITHUB_REF_NAME'].removeprefix('v');sys.exit(0 if v==t else (print(f'version mismatch: pyproject {v} != tag {t}',file=sys.stderr) or 1))"
+      - name: Build package
+        run: uv build
+      - name: Verify package in a clean environment
+        run: scripts/verify-package.sh dist
+      - name: Check whether the release exists
+        id: release_check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create GitHub release
+        if: steps.release_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --title "$GITHUB_REF_NAME" --generate-notes
+      - name: Upload artifacts to the existing release
+        if: steps.release_check.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/*.whl dist/*.tar.gz --clobber
+
+  install-from-tag:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install the tool from the tag
+        env:
+          UV_TOOL_DIR: ${{ runner.temp }}/uv-tool
+          UV_TOOL_BIN_DIR: ${{ runner.temp }}/uv-tool/bin
+        run: |
+          echo "$UV_TOOL_BIN_DIR" >> "$GITHUB_PATH"
+          uv tool install "git+https://github.com/${{ github.repository }}@${{ github.ref_name }}"
+      - name: Assert the installed version matches the tag
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          installed="$(ai-orchestrator --version)"
+          if [[ "$installed" != "$expected" ]]; then
+            echo "version mismatch: ai-orchestrator --version reported '$installed', tag expects '$expected'" >&2
+            exit 1
+          fi
+          echo "ok: ai-orchestrator $installed"
+      - name: Init a fresh configuration from the installed tool
+        run: |
+          ai-orchestrator init \
+            --config-dir "$RUNNER_TEMP/cfg" \
+            --data-dir "$RUNNER_TEMP/data" \
+            --env-file "$RUNNER_TEMP/cfg/.env"
