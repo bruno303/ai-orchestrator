@@ -11,7 +11,7 @@ import time
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 
-from orchestrator.main import config
+from orchestrator.main import config, doctor
 from orchestrator.application.discussion import DiscussionRunRequest
 from orchestrator.application.execution.models import IncrementalExecutionRequest, WorkContext
 from orchestrator.infra.filesystem import paths, scaffold, workspace
@@ -303,6 +303,15 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("next: ai-orchestrator doctor")
 
 
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Report whether this host can run the orchestrator."""
+    checks = doctor.run_checks()
+    for check in checks:
+        print(f"[{check.status}] {check.name}: {check.detail}")
+    if any(check.status == doctor.STATUS_FAIL for check in checks):
+        sys.exit(1)
+
+
 def _acquire_poll_lock(lock_name: str = "poll"):
     path = config.STATE_DIR / f"{lock_name}.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -418,6 +427,8 @@ def main(argv: list[str] | None = None) -> None:
     init.add_argument("--force", action="store_true", help="overwrite existing files")
     init.add_argument("--dry-run", action="store_true", help="show what would be created")
     init.set_defaults(func=cmd_init)
+    doctor_parser = sub.add_parser("doctor", help="check that this host can run the orchestrator")
+    doctor_parser.set_defaults(func=cmd_doctor)
     args = parser.parse_args(argv)
     try:
         args.func(args)
