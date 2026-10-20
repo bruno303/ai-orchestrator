@@ -8,12 +8,13 @@ import inspect
 import re
 import sys
 import time
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 
-from orchestrator.main import config
+from orchestrator.main import config, doctor
 from orchestrator.application.discussion import DiscussionRunRequest
 from orchestrator.application.execution.models import IncrementalExecutionRequest, WorkContext
-from orchestrator.infra.filesystem import workspace
+from orchestrator.infra.filesystem import paths, scaffold, workspace
 from orchestrator.infra.git import client as git
 from orchestrator.infra.github import assignees as github_assignees
 from orchestrator.infra.github import client as github
@@ -190,6 +191,12 @@ def _developed_label() -> str:
 def cmd_run(args: argparse.Namespace) -> None:
     repository, number = _parse_ref(args.issue_ref)
     if not config.is_repository_allowed(repository):
+        if not config.CONFIG_FILE.exists():
+            sys.exit(
+                f"repository {repository} is not in the allowlist; "
+                f"no config file found at {config.CONFIG_FILE}. "
+                "Run `ai-orchestrator init` to create one."
+            )
         sys.exit(f"repository {repository} is not in the allowlist ({config.CONFIG_FILE})")
     runtime = compose_runtime()
     github_client = runtime.input_source.github_client
@@ -241,6 +248,68 @@ def cmd_logs(args: argparse.Namespace) -> None:
     print(f"logs for {args.task_id} ({directory}):")
     for path in sorted(directory.glob("*.log")):
         print(f"  {path.stem:<12} {path.stat().st_size:>9,} bytes")
+
+
+def _init_config_targets(args: argparse.Namespace) -> tuple[Path, Path]:
+    """Return the config directory and the exact config file ``init`` writes.
+
+    An explicit ``--config-dir`` keeps the historical ``config.yaml`` name.
+    The default follows the resolved config file, so ``init`` writes where the
+    runtime and ``doctor`` read, including an ``ORCHESTRATOR_CONFIG_FILE``
+    override that uses a different file name.
+    """
+    if args.config_dir is not None:
+        config_dir = Path(args.config_dir).expanduser().resolve()
+        return config_dir, config_dir / scaffold.CONFIG_FILE_NAME
+    config_file = paths.config_file().expanduser().resolve()
+    return config_file.parent, config_file
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    """Create the configuration, env file, and data directories."""
+    config_dir, config_file = _init_config_targets(args)
+    data_dir = Path(args.data_dir).expanduser().resolve()
+    env_file = Path(args.env_file).expanduser().resolve()
+    result = scaffold.init_layout(
+        config_dir=config_dir,
+        data_dir=data_dir,
+        env_file=env_file,
+        force=args.force,
+        dry_run=args.dry_run,
+    )
+    skipped = set(result.skipped)
+    scaffolded_config = config_dir / scaffold.CONFIG_FILE_NAME
+    if scaffolded_config != config_file and scaffolded_config in result.created:
+        # ``scaffold`` always writes ``config.yaml``; move it to the resolved
+        # name so the runtime finds it (never overwriting without --force).
+        if args.dry_run:
+            if config_file.exists():
+                skipped.add(config_file)
+        elif config_file.exists() and not args.force:
+            scaffolded_config.unlink()
+            skipped.add(config_file)
+        else:
+            scaffolded_config.replace(config_file)
+    state_dir, logs_dir = (data_dir / name for name in scaffold.DATA_SUBDIRECTORIES)
+
+    def status(path: Path) -> str:
+        return " (exists, use --force)" if path in skipped else ""
+
+    print(f"config dir:   {config_dir}")
+    print(f"config file:  {config_file}{status(config_file)}")
+    print(f"env file:     {env_file}{status(env_file)}")
+    print(f"data dir:     {data_dir}")
+    print(f"data dirs:    {state_dir} {logs_dir}")
+    print("next: ai-orchestrator doctor")
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    """Report whether this host can run the orchestrator."""
+    checks = doctor.run_checks()
+    for check in checks:
+        print(f"[{check.status}] {check.name}: {check.detail}")
+    if any(check.status == doctor.STATUS_FAIL for check in checks):
+        sys.exit(1)
 
 
 def _acquire_poll_lock(lock_name: str = "poll"):
@@ -327,8 +396,17 @@ def cmd_execute(args: argparse.Namespace) -> None:
         lock.close()
 
 
+def _version() -> str:
+    """Return the installed distribution version, or a source-tree fallback."""
+    try:
+        return importlib_metadata.version("ai-orchestrator")
+    except importlib_metadata.PackageNotFoundError:
+        return "0.0.0+source"
+
+
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="orchestrator", description="GitHub Issue -> agent -> PR")
+    parser = argparse.ArgumentParser(prog="ai-orchestrator", description="GitHub Issue -> agent -> PR")
+    parser.add_argument("--version", action="version", version=_version())
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run", help="run a task for an issue (owner/repo#number)")
     run.add_argument("issue_ref"); run.add_argument("--force", action="store_true", help="run even if ai-developed is present"); run.set_defaults(func=cmd_run)
@@ -342,6 +420,15 @@ def main(argv: list[str] | None = None) -> None:
     reset.add_argument("issue_ref"); reset.set_defaults(func=cmd_reset)
     logs = sub.add_parser("logs", help="list a task's node logs")
     logs.add_argument("task_id"); logs.add_argument("--node"); logs.add_argument("--lines", "-n", type=int, default=50); logs.set_defaults(func=cmd_logs)
+    init = sub.add_parser("init", help="create the configuration, env file, and data directories")
+    init.add_argument("--config-dir", type=Path, default=None)
+    init.add_argument("--data-dir", type=Path, default=paths.data_dir())
+    init.add_argument("--env-file", type=Path, default=paths.env_file())
+    init.add_argument("--force", action="store_true", help="overwrite existing files")
+    init.add_argument("--dry-run", action="store_true", help="show what would be created")
+    init.set_defaults(func=cmd_init)
+    doctor_parser = sub.add_parser("doctor", help="check that this host can run the orchestrator")
+    doctor_parser.set_defaults(func=cmd_doctor)
     args = parser.parse_args(argv)
     try:
         args.func(args)

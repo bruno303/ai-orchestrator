@@ -9,19 +9,17 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Literal
 
 import jwt
+
+from orchestrator.infra.filesystem import paths
 
 
 APP_ID = os.environ.get("ORCHESTRATOR_GITHUB_APP_ID", "123")
 INSTALLATION_ID = os.environ.get("ORCHESTRATOR_GITHUB_APP_INSTALLATION_ID", "123")
 APP_SLUG = os.environ.get("ORCHESTRATOR_GITHUB_APP_SLUG", "bruno303-ai-agent-bot")
-PRIVATE_KEY_FILE = Path(os.environ.get(
-    "ORCHESTRATOR_GITHUB_APP_PRIVATE_KEY_FILE",
-    Path(__file__).resolve().parents[4] / "config" / "key.pem",
-)).expanduser()
+PRIVATE_KEY_FILE = paths.private_key_file()
 BOT_LOGIN = f"app/{APP_SLUG}"
 BOT_NAME = f"{APP_SLUG}[bot]"
 BOT_EMAIL = f"{APP_ID}+{APP_SLUG}[bot]@users.noreply.github.com"

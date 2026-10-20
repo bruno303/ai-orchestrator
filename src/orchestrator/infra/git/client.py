@@ -3,19 +3,15 @@
 from __future__ import annotations
 
 import subprocess
-import os
 from contextvars import ContextVar
 from pathlib import Path
 from functools import wraps
 
+from orchestrator.infra.filesystem import paths
 from orchestrator.infra.github import auth as github_auth
 
 
-def _environment_path(name: str, default: str | Path) -> Path:
-    return Path(os.environ.get(name, default)).expanduser()
-
-
-REPOS_DIR = _environment_path("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-repos")
+REPOS_DIR = paths.repos_dir()
 
 
 class GitError(Exception):

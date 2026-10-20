@@ -5,19 +5,84 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.11"]
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+      - name: Check lock file is up to date
+        run: uv lock --check
       - name: Install dependencies
         run: uv sync --group dev
       - name: Run tests
         run: uv run pytest
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Build package
+        run: uv build
+      # Same wheel-content assertions as scripts/verify-package.sh (copied
+      # verbatim so CI and the local script agree on every check).
+      - name: Assert wheel contents
+        run: |
+          wheel="$(ls dist/*.whl | head -n 1)"
+          python3 - "$wheel" <<'PY'
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          wheel = Path(sys.argv[1])
+
+
+          def fail(message: str) -> None:
+              print(f"FAIL: {message}", file=sys.stderr)
+              raise SystemExit(1)
+
+
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+
+              def require_member(member: str) -> None:
+                  if member not in names:
+                      fail(f"{wheel.name} does not contain {member}")
+                  print(f"ok: wheel contains {member}")
+
+              require_member("orchestrator/main/cli.py")
+              require_member("orchestrator/templates/config.example.yaml")
+              require_member("orchestrator/templates/env.example")
+
+              entry_points = [name for name in names if name.endswith(".dist-info/entry_points.txt")]
+              if not entry_points:
+                  fail(f"{wheel.name} does not contain a .dist-info/entry_points.txt")
+              entry_points_text = archive.read(entry_points[0]).decode("utf-8")
+              expected = "ai-orchestrator = orchestrator.main.cli:main"
+              if expected not in entry_points_text:
+                  fail(f"{entry_points[0]} does not declare the console script {expected!r}")
+              if any(line.startswith("orchestrator =") for line in entry_points_text.splitlines()):
+                  fail(f"{entry_points[0]} declares an unexpected 'orchestrator =' console script")
+              print(f"ok: {entry_points[0]} declares only the ai-orchestrator console script")
+
+              license_member = [name for name in names if name.endswith(".dist-info/licenses/LICENSE")]
+              if not license_member:
+                  fail(f"{wheel.name} does not contain a .dist-info/licenses/LICENSE")
+              print(f"ok: wheel contains {license_member[0]}")
+          PY
+      - name: Verify package in a clean environment
+        run: scripts/verify-package.sh dist

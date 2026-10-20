@@ -12,6 +12,7 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
+from orchestrator.infra.filesystem import paths
 from orchestrator.main.providers import (
     DESTINATION_PROVIDERS,
     EXECUTOR_PROVIDERS,
@@ -26,12 +27,7 @@ from orchestrator.main.providers import (
     TRIAGE_INPUT_PROVIDERS,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-ENV_FILE = REPO_ROOT / ".env"
-
-
-def _environment_path(name: str, default: str | Path) -> Path:
-    return Path(os.environ.get(name, default)).expanduser()
+ENV_FILE = paths.env_file()
 
 
 def load_environment() -> bool:
@@ -41,15 +37,17 @@ def load_environment() -> bool:
     return load_dotenv(ENV_FILE, override=False)
 
 
+# Resolve the dotenv file first, then let the file supply the remaining
+# overrides (for example ORCHESTRATOR_CONFIG_FILE) before they are read.
 load_environment()
 
-DATA_DIR = _environment_path("ORCHESTRATOR_DATA_DIR", REPO_ROOT / "data")
-STATE_DIR = DATA_DIR / "state"
-LOGS_DIR = DATA_DIR / "logs"
-CONFIG_FILE = _environment_path("ORCHESTRATOR_CONFIG_FILE", REPO_ROOT / "config" / "config.yaml")
+DATA_DIR = paths.data_dir()
+STATE_DIR = paths.state_dir()
+LOGS_DIR = paths.logs_dir()
+CONFIG_FILE = paths.config_file()
 
-REPOS_DIR = _environment_path("ORCHESTRATOR_REPOS_DIR", Path.home() / "agent-repos")
-WORKSPACES_DIR = _environment_path("ORCHESTRATOR_WORKSPACES_DIR", Path.home() / "agent-workspaces")
+REPOS_DIR = paths.repos_dir()
+WORKSPACES_DIR = paths.workspaces_dir()
 
 
 def _find_opencode() -> str:
@@ -421,7 +419,7 @@ def load_triage_model_config() -> ModelConfig | None:
 
 @lru_cache(maxsize=1)
 def load_repository_config() -> dict[str, dict]:
-    """Load config/config.yaml. Returns {name: {options}}."""
+    """Load the resolved config file. Returns {name: {options}}."""
     if not CONFIG_FILE.exists():
         return {}
     with CONFIG_FILE.open() as fh:
