@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import inspect
 import re
 import sys
 import time
@@ -13,15 +12,17 @@ from pathlib import Path
 from orchestrator.main import config
 from orchestrator.application.discussion import DiscussionRunRequest
 from orchestrator.application.execution.models import IncrementalExecutionRequest, WorkContext
+from orchestrator.application.workflow import default_steps
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.git import client as git
 from orchestrator.infra.github import assignees as github_assignees
 from orchestrator.infra.github import client as github
 from orchestrator.infra.langgraph import state as state_mod
+from orchestrator.infra.langgraph.builder import build_workflow
+from orchestrator.infra.langgraph.execution_steps import STEP_FACTORIES, ExecutionStageDeps
 from orchestrator.application import PollingApplication, _input_seed
-from orchestrator.main.composition import compose_execution_runtime, compose_review_runtime, compose_runtime, compose_triage_runtime
+from orchestrator.main.composition import compose_execution_runtime, compose_execution_workflow, compose_review_runtime, compose_runtime, compose_triage_runtime
 from orchestrator.domain import Context, WorkItem
-from orchestrator.infra.langgraph.graph import build_graph
 from orchestrator.application.ports import InputEvent
 
 ISSUE_REF_RE = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
@@ -56,27 +57,37 @@ def _seed_state(repository: str, issue_number: int, *, github_client=github) -> 
 
 
 def _run_graph(seed: dict, task_id: str, *, executor=None, workspace_manager=None,
-               destination=None, runtime=None) -> dict:
+               destination=None, runtime=None, steps=None, deps=None) -> dict:
     """Run an in-memory graph and retain only human-readable event logs."""
+    cli_composed = False
     if runtime is None and executor is None and workspace_manager is None and destination is None:
         configured = compose_runtime()
         executor, workspace_manager = configured.executor, configured.workspace_manager
         destination, runtime = configured.destination, configured.execution_runtime
+        cli_composed = True
     if runtime is None:
         runtime = compose_execution_runtime(
             executor=executor, workspace_manager=workspace_manager, destination=destination
         )
+    if steps is None or deps is None:
+        if cli_composed and steps is None and deps is None:
+            # The CLI composed the runtime, so the configured workflow (and
+            # its per-step runtimes/prompts) is composed alongside it.
+            steps, deps = compose_execution_workflow()
+        else:
+            # Direct fallback for existing callers and tests: built-in default
+            # steps running against the provided runtime.
+            if steps is None:
+                steps = list(default_steps("execution"))
+            if deps is None:
+                deps = ExecutionStageDeps(runtime=runtime)
     starts: dict[str, float] = {}
 
     def on_node_start(node: str, state: dict) -> None:
         starts[node] = time.monotonic()
         workspace.append_event(task_id, event="node_start", node=node)
 
-    kwargs = {"on_node_start": on_node_start}
-    for name, value in (("runtime", runtime),):
-        if value is not None and name in inspect.signature(build_graph).parameters:
-            kwargs[name] = value
-    graph = build_graph(**kwargs)
+    graph = build_workflow(steps, STEP_FACTORIES, deps, on_node_start=on_node_start)
     # Stream updates are partial; retain the input seed while merging the
     # in-memory execution result instead of querying a durable graph state.
     result: dict = dict(seed)
@@ -92,6 +103,22 @@ def _run_graph(seed: dict, task_id: str, *, executor=None, workspace_manager=Non
                 print(f"[{_now()}] [{node}] error: {error}", flush=True)
                 workspace.append_event(task_id, event="node_end", node=node, status=state_mod.FAILED,
                                        duration_s=duration, error=str(error)[:200])
+            else:
+                # Steps without a state-level status (generic `command`/`agent`)
+                # and continued failures stream only their step_results entry:
+                # ground the terminal event on it so no step's start dangles.
+                entry = (update.get("step_results") or {}).get(node)
+                if isinstance(entry, dict) and entry.get("status"):
+                    duration = round(float(entry.get("duration_s") or duration), 1)
+                    if entry["status"] == "failed":
+                        failure = str(entry.get("error") or "unknown failure")
+                        print(f"[{_now()}] [{node}] error: {failure}", flush=True)
+                        workspace.append_event(task_id, event="node_end", node=node, status=entry["status"],
+                                               duration_s=duration, error=failure[:200])
+                    else:
+                        print(f"[{_now()}] [{node}] {entry['status']} ({duration}s)", flush=True)
+                        workspace.append_event(task_id, event="node_end", node=node, status=entry["status"],
+                                               duration_s=duration)
     return result
 
 
@@ -197,10 +224,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     developed_label = _developed_label()
     if developed_label in issue.labels and not args.force:
         sys.exit(f"issue {repository}#{number} is already labeled {developed_label}; use --force to run again")
+    steps, deps = compose_execution_workflow(runtime=runtime.execution_runtime)
     _report_result(_run_graph(
         _seed_state(repository, number, github_client=github_client), f"{repository}#{number}",
-        executor=runtime.executor, workspace_manager=runtime.workspace_manager,
-        destination=runtime.destination, runtime=runtime.execution_runtime,
+        runtime=deps.runtime, steps=steps, deps=deps,
     ))
 
 
@@ -305,9 +332,13 @@ def cmd_execute(args: argparse.Namespace) -> None:
     lock = _acquire_poll_lock()
     try:
         runtime, reviews = compose_runtime(), compose_review_runtime()
+        # The configured workflow (and its per-step runtimes/prompts) is
+        # composed once at startup so a bad config aborts before polling;
+        # comment commands keep their built-in runtime paths.
+        steps, deps = compose_execution_workflow(runtime=runtime.execution_runtime)
         application = PollingApplication(runtime.input_source,
-            lambda seed, task_id: _run_graph(seed, task_id, executor=runtime.executor,
-                workspace_manager=runtime.workspace_manager, destination=runtime.destination, runtime=runtime.execution_runtime),
+            lambda seed, task_id: _run_graph(seed, task_id, runtime=deps.runtime,
+                steps=steps, deps=deps),
             _report_result, _remove_event_workspace, now=_now, input_provider=runtime.input_provider,
             feedback=runtime.feedback,
             run_comment_impl=lambda seed, task_id: _run_incremental_comment(

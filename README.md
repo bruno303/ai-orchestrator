@@ -129,6 +129,120 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_MODEL_TRIAGE_NAME` | `model.triage.name` |
 | `ORCHESTRATOR_MODEL_TRIAGE_VARIANT` | `model.triage.variant` |
 
+## Configurable workflow steps
+
+Every stage's processing steps are declared in `config/config.yaml` as a
+`workflow.steps` list. Omitting the list (or a whole stage) keeps the built-in
+default sequence, byte-compatible with releases before this feature. Today the
+configured workflow drives the execution stage's issue-triggered graph: both
+`orchestrator run` and `orchestrator execute` (the issue polling path). The
+comment commands (`/ai-agent-impl`, `/ai-agent-discuss`), review, and triage
+still run their built-in sequences; their `workflow` keys are validated at
+startup (fail fast) and are applied by the next phases:
+
+```yaml
+pipeline:
+  execution:
+    workflow:                      # issue-triggered run
+      steps:
+        - {name: prepare_workspace, type: checkout}
+        - {name: plan, type: plan, model: {name: verboo/deepseek-v4-flash}}
+        - {name: implement, type: implement}
+        - {name: create_pr, type: publish}
+        - {name: cleanup, type: cleanup, on_failure: continue}
+    comments:                      # comment-command workflows (next phase)
+      impl:
+        workflow:
+          steps:
+            - {name: checkout, type: checkout}
+            - {name: implement, type: implement_comment}
+            - {name: publish, type: publish}
+            - {name: cleanup, type: cleanup, on_failure: continue}
+      discuss:
+        workflow:
+          steps:
+            - {name: checkout, type: checkout}
+            - {name: answer, type: discuss}
+            - {name: publish, type: publish}
+  review:
+    workflow:                      # next phase: ReviewApplication.poll_once
+      steps:
+        - {name: checkout, type: checkout}
+        - {name: review, type: review}
+        - {name: publish, type: publish}
+  triage:
+    workflow:
+      steps:
+        - {name: assess, type: assess}
+        - {name: publish, type: publish}
+```
+
+Step fields:
+
+| Field | Applies to | Rules |
+|---|---|---|
+| `name` | all | Required. Slug `^[a-z][a-z0-9_-]{0,39}$`, unique within the stage. The name is the graph node name: it keys the log files, `orchestrator logs TASK --node <name>`, and the recorded step results. |
+| `type` | all | Required; one of the catalog types listed below. |
+| `on_failure` | all | `abort` (default) stops the run; `continue` records the failure in step results and keeps going. |
+| `executor` | agent-bearing steps | Provider type override (`opencode`, `codex`, or `claude`), validated against the stage's executor registry. |
+| `model` | agent-bearing steps | `{name, variant}` override for this step only. |
+| `prompt_file` | agent-bearing steps | A text file path relative to the orchestrator repo root, loaded once at startup. Required for the generic `agent` type. |
+| `command` / `timeout_seconds` | `command` steps | Required shell command; optional per-step timeout override. |
+| `agent` | `agent` steps | OpenCode agent name for the generic run (default `build`). |
+
+Agent-bearing step types are `plan`, `implement`, `implement_comment`,
+`review`, `assess`, `discuss`, and the generic `agent` type; other types reject
+those override fields.
+
+Per-stage step-type catalog:
+
+| Stage | Step types |
+|---|---|
+| `execution` | `checkout`, `plan`, `implement`, `publish`, `cleanup`, generic `command` and `agent` |
+| `execution.comments.impl` | `checkout`, `implement_comment`, `publish`, `cleanup`, generic `command` and `agent` |
+| `execution.comments.discuss` | `checkout`, `discuss`, `publish` |
+| `review` | `checkout`, `review`, `publish`, generic `command` |
+| `triage` | `assess`, `publish` |
+
+`checkout` prepares the git worktree and branch, `plan` runs the planning phase
+behind the `.agents/plans/plan.md` artifact contract, `implement` executes that
+plan, `implement_comment` applies a comment instruction directly, `publish`
+publishes the change, `cleanup` removes the worktree, `review` inspects a
+pull request for the JSON review outcome, `assess` produces the triage JSON,
+`discuss` answers a read-only discussion, and the generic `command` step runs a
+shell command in the task workspace (a non-zero exit fails the step).
+
+Behavior:
+
+- `cleanup` only runs if the chain reaches it, so a failed worktree is still
+  preserved for debugging until a rerun starts; this also holds for a `cleanup`
+  step configured with `on_failure: continue`.
+- `on_failure: continue` records the failure in the step results and keeps
+  running; the final status stays `COMPLETED` unless a later step fails
+  fatally. `orchestrator logs TASK --node <step>` shows per-step logs.
+- `prompt_file` replaces the built-in phase prompt entirely. `plan` and
+  `implement` (and the comment/review/discuss variants) use the file text
+  verbatim; a generic `agent` step's prompt is rendered with the task
+  placeholders `{task_id}`, `{repository}`, `{title}`, `{description}`, and
+  `{extra_context}`. Literal braces in an `agent` prompt must be doubled —
+  `{{` renders `{` and `}}` renders `}` — otherwise rendering fails the step
+  with an error naming the offending placeholder.
+  Warning: replacing the built-in `plan`/`implement` prompts
+  drops the guardrails those prompts encode — the planner must not modify
+  files, and implementation must run the repository's tests and quality checks
+  and must not push or create a pull request itself — so write that policy
+  into your own prompt.
+- Precedence: built-in defaults → stage configuration and `ORCHESTRATOR_*` env
+  overrides → step overrides. Steps are YAML-only: the executor/model env keys
+  keep controlling stage defaults but do not apply to steps.
+- `command` steps run under the `ORCHESTRATOR_COMMAND_TIMEOUT` wall-clock
+  budget (default `3600` seconds), overridable per step with `timeout_seconds`.
+  A timeout kills only the top-level shell process; descendant processes the
+  command spawned may keep running until they exit on their own.
+- There is deliberately no dedicated test/QA step type: the implement agent
+  runs the repository's tests, linters, and other quality checks as part of its
+  implementation contract.
+
 ## Usage
 
 ```bash

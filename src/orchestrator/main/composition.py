@@ -10,6 +10,7 @@ from orchestrator.application.execution.service import ExecutionRuntime
 from orchestrator.application.discussion import DiscussionRuntime
 from orchestrator.application.polling import Runtime
 from orchestrator.application.ports import NoopContextPresenter
+from orchestrator.application.workflow import StepSpec
 from orchestrator.application.review import ReviewApplication
 from orchestrator.application.review.service import ReviewRuntime
 from orchestrator.application.triage import TriageApplication
@@ -68,8 +69,10 @@ def _label_output_options(output) -> dict:
     }
 
 
-def compose_execution_runtime(*, executor=None, workspace_manager=None, destination=None) -> ExecutionRuntime:
+def compose_execution_runtime(*, executor=None, workspace_manager=None, destination=None,
+                              agent_settings: AgentSettings | None = None) -> ExecutionRuntime:
     from orchestrator.infra.filesystem import workspace
+    from orchestrator.infra.filesystem.command import run_workspace_command
 
     pipeline = config.load_pipeline_config().execution
     manager = workspace_manager or _create(WORKSPACE_PROVIDERS, pipeline.workspace_manager)
@@ -85,9 +88,71 @@ def compose_execution_runtime(*, executor=None, workspace_manager=None, destinat
         manager,
         publication,
         repository_allowed=config.is_repository_allowed,
-        agent_settings=_agent_settings(),
+        agent_settings=agent_settings if agent_settings is not None else _agent_settings(),
         task_log_path=workspace.task_log_path,
+        command_runner=run_workspace_command,
     )
+
+
+def compose_execution_workflow(*, runtime: ExecutionRuntime | None = None) -> tuple[list[StepSpec], "ExecutionStageDeps"]:
+    """Compose the configured execution stage steps and their shared deps.
+
+    Returns the configured (or built-in default) step list plus an
+    :class:`ExecutionStageDeps` bundle: the default (or caller-provided)
+    runtime, dedicated per-step runtimes for steps that override executor/model
+    (sharing that runtime's workspace manager and destination), prompt-file
+    contents loaded once and failing fast on missing files, and the configured
+    command-step timeout. Passing a prebuilt ``runtime`` skips re-composing the
+    default one; all composition errors surface here, before any graph runs.
+    """
+    from orchestrator.infra.langgraph.execution_steps import ExecutionStageDeps
+
+    pipeline = config.load_pipeline_config().execution
+    steps = list(pipeline.workflow)
+    if runtime is None:
+        runtime = compose_execution_runtime()
+    step_runtimes: dict[str, ExecutionRuntime] = {}
+    for step in steps:
+        if step.executor_type is None and step.model_name is None and step.model_variant is None:
+            continue  # steps without overrides reuse the default runtime
+        if step.executor_type is not None:
+            # Same option resolution the pipeline executor gets (mirroring
+            # _create(EXECUTOR_PROVIDERS, pipeline.executor)), so auth-ish
+            # settings configured for the stage carry over.
+            executor = _create(
+                EXECUTOR_PROVIDERS,
+                config.ProviderConfig(type=step.executor_type, options=dict(pipeline.executor.options)),
+            )
+        else:
+            executor = runtime.agent.executor
+        agent_settings = None
+        if step.model_name is not None or step.model_variant is not None:
+            agent_settings = AgentSettings(config.ModelConfig(step.model_name, step.model_variant))
+        step_runtimes[step.name] = compose_execution_runtime(
+            executor=executor,
+            workspace_manager=runtime.workspace_manager,
+            destination=runtime.destination,
+            agent_settings=agent_settings,
+        )
+    prompts: dict[str, str] = {}
+    for step in steps:
+        if not step.prompt_file:
+            continue
+        path = config.REPO_ROOT / step.prompt_file
+        try:
+            prompts[step.name] = path.read_text()
+        except OSError as exc:
+            raise ValueError(
+                f"execution step '{step.name}': cannot read prompt file {path}: {exc}"
+            ) from exc
+    deps = ExecutionStageDeps(
+        runtime=runtime,
+        step_runtimes=step_runtimes,
+        prompts=prompts,
+        command_timeout_seconds=config.COMMAND_TIMEOUT_SECONDS,
+        reuse_workspace=False,
+    )
+    return steps, deps
 
 
 def compose_discussion_runtime() -> DiscussionRuntime:

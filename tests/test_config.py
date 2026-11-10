@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from orchestrator.application.workflow import StepConfigError, StepSpec, default_steps
 from orchestrator.main import config
 
 
@@ -357,3 +358,345 @@ def test_pipeline_executor_environment_override_rejects_unknown_provider(allowli
         assert "unknown provider type: unknown" in str(exc)
     else:
         raise AssertionError("expected unknown provider error")
+
+
+def test_pipeline_config_workflow_defaults_match_built_in_steps(allowlist):
+    _clear_pipeline_cache()
+    pipeline = config.load_pipeline_config()
+    assert pipeline.execution.workflow == default_steps("execution")
+    assert pipeline.execution.comment_impl_workflow == default_steps("comment_impl")
+    assert pipeline.execution.comment_discuss_workflow == default_steps("discuss")
+    assert pipeline.review.workflow == default_steps("review")
+    assert pipeline.triage.workflow == default_steps("triage")
+
+
+def test_pipeline_config_empty_workflow_section_falls_back_to_defaults(allowlist):
+    config.CONFIG_FILE.write_text("pipeline:\n  review:\n    workflow: {}\n")
+    _clear_pipeline_cache()
+
+    assert config.load_pipeline_config().review.workflow == default_steps("review")
+
+
+def test_pipeline_config_parses_workflow_steps_into_step_specs(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: checkout, type: checkout}\n"
+        "        - {name: plan, type: plan, model: {name: verboo/deepseek-v4-flash, variant: high}}\n"
+        "        - {name: document, type: agent, executor: claude, prompt_file: prompts/document.md, agent: writer}\n"
+        "        - {name: tests-script, type: command, command: ./scripts/verify.sh, timeout_seconds: 900}\n"
+        "        - {name: cleanup, type: cleanup, on_failure: continue}\n"
+    )
+    _clear_pipeline_cache()
+
+    workflow = config.load_pipeline_config().execution.workflow
+
+    assert all(isinstance(step, StepSpec) for step in workflow)
+    assert [step.name for step in workflow] == ["checkout", "plan", "document", "tests-script", "cleanup"]
+    assert workflow[1].model_name == "verboo/deepseek-v4-flash"
+    assert workflow[1].model_variant == "high"
+    assert workflow[2].executor_type == "claude"
+    assert workflow[2].prompt_file == "prompts/document.md"
+    assert workflow[2].agent == "writer"
+    assert workflow[3].command == "./scripts/verify.sh"
+    assert workflow[3].timeout_seconds == 900
+    assert workflow[4].on_failure == "continue"
+    assert all(step.on_failure == "abort" for step in workflow[:4])
+
+
+def test_pipeline_config_accepts_bare_step_lists_and_both_executor_forms(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      - {name: checkout, type: checkout}\n"
+        "      - {name: implement, type: implement, executor: claude}\n"
+        "      - {name: codex-task, type: agent, executor: {type: codex}, prompt_file: prompts/faq.md}\n"
+    )
+    _clear_pipeline_cache()
+
+    workflow = config.load_pipeline_config().execution.workflow
+
+    assert workflow[1].executor_type == "claude"
+    assert workflow[2].executor_type == "codex"
+
+
+def test_pipeline_config_parses_comment_workflows_independently(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    comments:\n"
+        "      impl:\n"
+        "        workflow:\n"
+        "          steps:\n"
+        "            - {name: implement, type: implement_comment}\n"
+        "      discuss:\n"
+        "        workflow:\n"
+        "          steps:\n"
+        "            - {name: answer, type: discuss}\n"
+    )
+    _clear_pipeline_cache()
+
+    execution = config.load_pipeline_config().execution
+
+    assert execution.comment_impl_workflow == (StepSpec("implement", "implement_comment"),)
+    assert execution.comment_discuss_workflow == (StepSpec("answer", "discuss"),)
+
+
+def test_pipeline_config_comment_workflow_on_one_path_keeps_the_other_default(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    comments:\n"
+        "      impl:\n"
+        "        workflow:\n"
+        "          steps:\n"
+        "            - {name: implement, type: implement_comment}\n"
+    )
+    _clear_pipeline_cache()
+
+    execution = config.load_pipeline_config().execution
+
+    assert execution.comment_impl_workflow == (StepSpec("implement", "implement_comment"),)
+    assert execution.comment_discuss_workflow == default_steps("discuss")
+
+
+def test_pipeline_config_rejects_unknown_workflow_step_type(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: bogus, type: bogus}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except StepConfigError as exc:
+        assert "execution step 'bogus': unknown step type 'bogus'" in str(exc)
+    else:
+        raise AssertionError("expected unknown step type error")
+
+
+def test_pipeline_config_rejects_duplicate_workflow_step_names(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: implement, type: implement}\n"
+        "        - {name: implement, type: publish}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except StepConfigError as exc:
+        assert "execution step 'implement': duplicate step name" in str(exc)
+    else:
+        raise AssertionError("expected duplicate step name error")
+
+
+def test_pipeline_config_rejects_uppercase_workflow_step_names(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: Plan, type: plan}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except StepConfigError as exc:
+        assert "execution step 'Plan': invalid step name" in str(exc)
+    else:
+        raise AssertionError("expected invalid step name error")
+
+
+def test_pipeline_config_rejects_unknown_workflow_step_keys(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: checkout, type: checkout, retry: 3}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.execution.workflow.steps[0] 'checkout'" in str(exc)
+        assert "unknown step key(s) retry" in str(exc)
+    else:
+        raise AssertionError("expected unknown step key error")
+
+
+def test_pipeline_config_rejects_non_string_workflow_step_keys(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: faq, type: plan, 1: oops}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.execution.workflow.steps[0] 'faq'" in str(exc)
+        assert "unknown step key(s) 1" in str(exc)
+    else:
+        raise AssertionError("expected unknown step key error")
+
+
+def test_pipeline_config_rejects_empty_workflow_step_lists(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps: []\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.execution.workflow.steps" in str(exc)
+        assert "at least one step" in str(exc)
+    else:
+        raise AssertionError("expected empty steps list error")
+
+
+def test_pipeline_config_rejects_non_mapping_workflow_steps(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - checkout\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.execution.workflow.steps[0] must be a step mapping" in str(exc)
+        assert "got str" in str(exc)
+    else:
+        raise AssertionError("expected non-mapping step entry error")
+
+
+def test_pipeline_config_rejects_unknown_workflow_executor(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: faq, type: agent, executor: {type: bogus}}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.execution.workflow.steps[0] 'faq'" in str(exc)
+        assert "unknown executor provider type: bogus" in str(exc)
+    else:
+        raise AssertionError("expected unknown executor provider error")
+
+
+def test_pipeline_config_rejects_agent_steps_without_prompt_file(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: faq, type: agent}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except StepConfigError as exc:
+        assert "execution step 'faq': 'prompt_file' is required for agent steps" in str(exc)
+    else:
+        raise AssertionError("expected missing agent prompt_file error")
+
+
+def test_pipeline_config_rejects_non_string_workflow_model_fields(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: plan, type: plan, model: {name: 3}}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.execution.workflow.steps[0] 'plan'" in str(exc)
+        assert "'model.name' must be a string" in str(exc)
+    else:
+        raise AssertionError("expected non-string model field error")
+
+
+def test_pipeline_config_rejects_non_positive_workflow_timeouts(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: tests-script, type: command, command: ./scripts/verify.sh, timeout_seconds: 0}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.execution.workflow.steps[0] 'tests-script'" in str(exc)
+        assert "'timeout_seconds' must be a positive integer" in str(exc)
+    else:
+        raise AssertionError("expected non-positive timeout error")
+
+
+def test_pipeline_config_rejects_review_workflow_executor_outside_review_registry(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  review:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: review, type: review, executor: {type: bogus}}\n"
+    )
+    _clear_pipeline_cache()
+
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        assert "pipeline.review.workflow.steps[0] 'review'" in str(exc)
+        assert "unknown executor provider type: bogus" in str(exc)
+    else:
+        raise AssertionError("expected unknown review executor error")
+
+
+def test_pipeline_config_accepts_review_workflow_executor_from_review_registry(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  review:\n"
+        "    workflow:\n"
+        "      steps:\n"
+        "        - {name: review, type: review, executor: opencode}\n"
+    )
+    _clear_pipeline_cache()
+
+    workflow = config.load_pipeline_config().review.workflow
+
+    assert workflow == (StepSpec("review", "review", executor_type="opencode"),)

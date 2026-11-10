@@ -12,10 +12,22 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
+from orchestrator.application.workflow import (
+    COMMENT_IMPL_STEP_TYPES,
+    DISCUSS_STEP_TYPES,
+    EXECUTION_STEP_TYPES,
+    REVIEW_STEP_TYPES,
+    TRIAGE_STEP_TYPES,
+    StepSpec,
+    default_steps,
+    validate_steps,
+)
 from orchestrator.main.providers import (
     DESTINATION_PROVIDERS,
+    DISCUSSION_EXECUTOR_PROVIDERS,
     EXECUTOR_PROVIDERS,
     INPUT_PROVIDERS,
+    ProviderRegistry,
     WORKSPACE_PROVIDERS,
     REVIEW_DESTINATION_PROVIDERS,
     REVIEW_EXECUTOR_PROVIDERS,
@@ -24,6 +36,7 @@ from orchestrator.main.providers import (
     TRIAGE_DESTINATION_PROVIDERS,
     TRIAGE_EXECUTOR_PROVIDERS,
     TRIAGE_INPUT_PROVIDERS,
+    UnknownProviderError,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -69,6 +82,8 @@ def _find_opencode() -> str:
 OPENCODE_BIN = os.environ.get("ORCHESTRATOR_OPENCODE_BIN") or _find_opencode()
 OPENCODE_TIMEOUT_SECONDS = int(os.environ.get("ORCHESTRATOR_OPENCODE_TIMEOUT", str(60 * 60)))
 POLL_INTERVAL_SECONDS = int(os.environ.get("ORCHESTRATOR_POLL_INTERVAL", str(5 * 60)))
+# Default wall-clock budget for one ``command`` workflow step.
+COMMAND_TIMEOUT_SECONDS = int(os.environ.get("ORCHESTRATOR_COMMAND_TIMEOUT", "3600"))
 MAX_CONCURRENT_TASKS = int(os.environ.get("ORCHESTRATOR_MAX_CONCURRENT", "1"))
 # A task/comment with no activity for this long is considered dead (process died).
 STALE_SECONDS = int(os.environ.get("ORCHESTRATOR_STALE_SECONDS", str(2 * 60 * 60)))
@@ -131,6 +146,13 @@ class ExecutionPipelineConfig:
     workspace_manager: ProviderConfig
     destination: ProviderConfig
     labels: "StageLabelConfig" = field(default_factory=lambda: _default_stage_labels("execution"))
+    workflow: tuple[StepSpec, ...] = field(default_factory=lambda: default_steps("execution"))
+    comment_impl_workflow: tuple[StepSpec, ...] = field(
+        default_factory=lambda: default_steps("comment_impl")
+    )
+    comment_discuss_workflow: tuple[StepSpec, ...] = field(
+        default_factory=lambda: default_steps("discuss")
+    )
 
 
 @dataclass(frozen=True)
@@ -140,6 +162,7 @@ class ReviewPipelineConfig:
     workspace_manager: ProviderConfig
     destination: ProviderConfig
     labels: "StageLabelConfig" = field(default_factory=lambda: _default_stage_labels("review"))
+    workflow: tuple[StepSpec, ...] = field(default_factory=lambda: default_steps("review"))
 
 
 @dataclass(frozen=True)
@@ -148,6 +171,7 @@ class TriagePipelineConfig:
     executor: ProviderConfig
     destination: ProviderConfig
     labels: "TriageLabelConfig" = field(default_factory=lambda: _default_triage_labels())
+    workflow: tuple[StepSpec, ...] = field(default_factory=lambda: default_steps("triage"))
 
 
 _PROVIDER_DEFAULTS = {
@@ -299,6 +323,176 @@ def _triage_labels(pipeline: dict[str, Any]) -> TriageLabelConfig:
     )
 
 
+_STEP_ENTRY_KEYS = ("name", "type")
+_STEP_OPTIONAL_KEYS = (
+    "on_failure",
+    "executor",
+    "model",
+    "prompt_file",
+    "command",
+    "timeout_seconds",
+    "agent",
+)
+
+
+def _step_entry(entry: Any, *, index: int, path: str, registry: ProviderRegistry) -> StepSpec:
+    """Parse one workflow step entry, anchored to its config path."""
+    label = f"{path}.steps[{index}]"
+    if not isinstance(entry, dict):
+        raise ValueError(f"{label} must be a step mapping; got {type(entry).__name__}")
+    name = entry.get("name")
+    if isinstance(name, str) and name:
+        label = f"{label} '{name}'"
+    unknown = sorted(str(key) for key in set(entry) - {*_STEP_ENTRY_KEYS, *_STEP_OPTIONAL_KEYS})
+    if unknown:
+        raise ValueError(
+            f"{label}: unknown step key(s) {', '.join(unknown)} "
+            f"(allowed: {', '.join((*_STEP_ENTRY_KEYS, *_STEP_OPTIONAL_KEYS))})"
+        )
+    for key in _STEP_ENTRY_KEYS:
+        if key not in entry:
+            raise ValueError(f"{label}: missing required step key '{key}'")
+        value = entry[key]
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label}: step '{key}' must be a non-empty string, got {value!r}")
+    on_failure = entry.get("on_failure")
+    if on_failure is None:
+        on_failure = "abort"
+    executor_type = _step_executor(
+        entry.get("executor"), label=label, registry=registry,
+    )
+    model_name, model_variant = _step_model(entry.get("model"), label=label)
+    for key in ("prompt_file", "command", "agent"):
+        value = entry.get(key)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(
+                f"{label}: '{key}' must be a non-empty string when present, got {value!r}"
+            )
+    timeout_seconds = entry.get("timeout_seconds")
+    if timeout_seconds is not None and (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, int)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError(
+            f"{label}: 'timeout_seconds' must be a positive integer, got {timeout_seconds!r}"
+        )
+    return StepSpec(
+        name=entry["name"],
+        type=entry["type"],
+        on_failure=on_failure,
+        executor_type=executor_type,
+        model_name=model_name,
+        model_variant=model_variant,
+        prompt_file=entry.get("prompt_file"),
+        command=entry.get("command"),
+        timeout_seconds=timeout_seconds,
+        agent=entry.get("agent"),
+    )
+
+
+def _step_executor(value: Any, *, label: str, registry: ProviderRegistry) -> str | None:
+    """Validate one ``executor`` override against the stage's executor registry."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        executor_type = value
+    elif isinstance(value, dict):
+        unknown = sorted(str(key) for key in set(value) - {"type"})
+        if unknown:
+            raise ValueError(
+                f"{label}: 'executor' accepts only a 'type' key; got {', '.join(unknown)}"
+            )
+        executor_type = value.get("type")
+        if not isinstance(executor_type, str) or not executor_type.strip():
+            raise ValueError(f"{label}: 'executor' requires a non-empty 'type' string")
+    else:
+        raise ValueError(
+            f"{label}: 'executor' must be a provider type string or a '{{type: ...}}' "
+            f"mapping; got {type(value).__name__}"
+        )
+    try:
+        registry.get(executor_type)
+    except UnknownProviderError as exc:
+        raise ValueError(f"{label}: unknown executor provider type: {executor_type}") from exc
+    return executor_type
+
+
+def _step_model(value: Any, *, label: str) -> tuple[str | None, str | None]:
+    """Validate one ``model`` override mapping."""
+    if value is None:
+        return None, None
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}: 'model' must be a mapping with optional 'name' and 'variant'")
+    unknown = sorted(str(key) for key in set(value) - {"name", "variant"})
+    if unknown:
+        raise ValueError(f"{label}: 'model' accepts only 'name' and 'variant'; got {', '.join(unknown)}")
+    fields: list[tuple[str, Any]] = [
+        ("name", value.get("name")),
+        ("variant", value.get("variant")),
+    ]
+    for key, field_value in fields:
+        if field_value is not None and not isinstance(field_value, str):
+            raise ValueError(
+                f"{label}: 'model.{key}' must be a string, got {type(field_value).__name__}"
+            )
+    return value.get("name"), value.get("variant")
+
+
+def _workflow_steps(
+    value: Any,
+    *,
+    stage: str,
+    path: str,
+    allowed_types: tuple[str, ...],
+    registry: ProviderRegistry,
+) -> tuple[StepSpec, ...]:
+    """Parse one optional ``workflow`` config section into validated steps.
+
+    An absent section (or an empty mapping) keeps the built-in step sequence;
+    otherwise the raw YAML becomes :class:`StepSpec` entries revalidated by
+    :func:`validate_steps` against the stage catalog.
+    """
+    if value is None:
+        return default_steps(stage)
+    if isinstance(value, dict):
+        raw_steps = value.get("steps")
+        if raw_steps is None:
+            return default_steps(stage)
+    elif isinstance(value, list):
+        raw_steps = value
+    else:
+        raise ValueError(
+            f"{path} must be a mapping with a 'steps' list or a bare step list; "
+            f"got {type(value).__name__}"
+        )
+    if not isinstance(raw_steps, list):
+        raise ValueError(f"{path}.steps must be a list of step mappings; got {type(raw_steps).__name__}")
+    if not raw_steps:
+        raise ValueError(f"{path}.steps must contain at least one step")
+    steps: list[StepSpec] = []
+    for index, entry in enumerate(raw_steps):
+        steps.append(_step_entry(entry, index=index, path=path, registry=registry))
+    validate_steps(steps, allowed_types, stage=stage)
+    return tuple(steps)
+
+
+def _comment_workflow_steps(
+    comments: dict[str, Any], *, section: str, stage: str, allowed_types: tuple[str, ...]
+) -> tuple[StepSpec, ...]:
+    """Parse one ``pipeline.execution.comments.<section>.workflow`` section."""
+    raw = comments.get(section) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"pipeline.execution.comments.{section} must be a mapping")
+    return _workflow_steps(
+        raw.get("workflow"),
+        stage=stage,
+        path=f"pipeline.execution.comments.{section}.workflow",
+        allowed_types=allowed_types,
+        registry=DISCUSSION_EXECUTOR_PROVIDERS,
+    )
+
+
 def _provider_config(
     key: str,
     pipeline: dict[str, Any],
@@ -318,6 +512,9 @@ def _provider_config(
 
 
 def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineConfig:
+    comments = pipeline.get("comments") or {}
+    if not isinstance(comments, dict):
+        raise ValueError("pipeline.execution.comments must be a mapping")
     return ExecutionPipelineConfig(
         input_source=_provider_config("input_source", pipeline, INPUT_PROVIDERS),
         executor=_provider_config(
@@ -329,6 +526,19 @@ def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineCon
         workspace_manager=_provider_config("workspace_manager", pipeline, WORKSPACE_PROVIDERS),
         destination=_provider_config("destination", pipeline, DESTINATION_PROVIDERS),
         labels=_stage_labels(pipeline, "execution"),
+        workflow=_workflow_steps(
+            pipeline.get("workflow"),
+            stage="execution",
+            path="pipeline.execution.workflow",
+            allowed_types=EXECUTION_STEP_TYPES,
+            registry=EXECUTOR_PROVIDERS,
+        ),
+        comment_impl_workflow=_comment_workflow_steps(
+            comments, section="impl", stage="comment_impl", allowed_types=COMMENT_IMPL_STEP_TYPES,
+        ),
+        comment_discuss_workflow=_comment_workflow_steps(
+            comments, section="discuss", stage="discuss", allowed_types=DISCUSS_STEP_TYPES,
+        ),
     )
 
 
@@ -344,6 +554,13 @@ def _review_pipeline_config(pipeline: dict[str, Any]) -> ReviewPipelineConfig:
         workspace_manager=_provider_config("workspace_manager", pipeline, REVIEW_WORKSPACE_PROVIDERS),
         destination=_provider_config("destination", pipeline, REVIEW_DESTINATION_PROVIDERS),
         labels=_stage_labels(pipeline, "review"),
+        workflow=_workflow_steps(
+            pipeline.get("workflow"),
+            stage="review",
+            path="pipeline.review.workflow",
+            allowed_types=REVIEW_STEP_TYPES,
+            registry=REVIEW_EXECUTOR_PROVIDERS,
+        ),
     )
 
 
@@ -353,6 +570,13 @@ def _triage_pipeline_config(pipeline: dict[str, Any]) -> TriagePipelineConfig:
         executor=_provider_config("executor", pipeline, TRIAGE_EXECUTOR_PROVIDERS, "ORCHESTRATOR_EXECUTOR_TRIAGE"),
         destination=_provider_config("destination", pipeline, TRIAGE_DESTINATION_PROVIDERS),
         labels=_triage_labels(pipeline),
+        workflow=_workflow_steps(
+            pipeline.get("workflow"),
+            stage="triage",
+            path="pipeline.triage.workflow",
+            allowed_types=TRIAGE_STEP_TYPES,
+            registry=TRIAGE_EXECUTOR_PROVIDERS,
+        ),
     )
 
 

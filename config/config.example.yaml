@@ -38,6 +38,14 @@ pipeline:
       suppress: [ai-developed]
       output:
         add: [ai-developed]
+    # Omitting `workflow` runs the built-in default execution sequence:
+    # workflow:
+    #   steps:
+    #     - {name: prepare_workspace, type: checkout}
+    #     - {name: plan, type: plan}
+    #     - {name: implement, type: implement}
+    #     - {name: create_pr, type: publish}
+    #     - {name: cleanup, type: cleanup, on_failure: continue}
   review:
     input_source: {type: github_polling, auth: bot}
     executor: {type: opencode}

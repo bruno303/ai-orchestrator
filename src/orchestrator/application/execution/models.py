@@ -82,6 +82,7 @@ class PlanRequest:
     work: WorkContext
     workspace: str
     context: Context = field(default_factory=Context)
+    prompt: str | None = None
 
 @dataclass(frozen=True)
 class PlanResult:
@@ -96,6 +97,7 @@ class ImplementationRequest:
     workspace: str
     plan_path: str = ".agents/plans/plan.md"
     context: Context = field(default_factory=Context)
+    prompt: str | None = None
 
 
 @dataclass(frozen=True)
@@ -183,3 +185,18 @@ class CleanupReviewRequest:
 @dataclass(frozen=True)
 class CleanupReviewResult:
     workspace: str
+
+
+@dataclass(frozen=True)
+class CommandStepRequest:
+    work: WorkContext
+    node: str
+    workspace: str
+    command: str
+    timeout_seconds: int
+    context: Context = field(default_factory=Context)
+
+
+@dataclass(frozen=True)
+class CommandStepResult:
+    result: ExecutionResult
