@@ -230,7 +230,8 @@ shell command in the task workspace (a non-zero exit fails the step).
 Every stage workflow must contain at least one `publish` step unless the
 workflow mapping sets `require_publication: false`; the check aborts at startup
 with a message naming the config path. The flag is validation-only: it is not
-carried into the step model or any runtime dataclass. For example:
+carried into the step model or any runtime dataclass. It is for workflows that
+publish from a `command` step instead of the `publish` type:
 
 ```yaml
 pipeline:
@@ -238,7 +239,10 @@ pipeline:
     workflow:
       require_publication: false
       steps:
+        - {name: checkout, type: checkout}
         - {name: implement, type: implement}
+        - {name: publish, type: command, command: "gh pr create --fill"}
+        - {name: cleanup, type: cleanup, on_failure: continue}
 ```
 
 `publish` steps cannot use `on_failure: continue`; publication failures must
