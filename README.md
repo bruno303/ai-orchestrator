@@ -119,6 +119,7 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_CLAUDE_BIN` | `claude` |
 | `ORCHESTRATOR_CLAUDE_TIMEOUT` | `3600` (seconds) |
+| `ORCHESTRATOR_COMMAND_TIMEOUT` | `3600` (seconds, `command` workflow steps) |
 | `ORCHESTRATOR_EXECUTOR_EXECUTION` | `pipeline.execution.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_REVIEW` | `pipeline.review.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_TRIAGE` | `pipeline.triage.executor.type` |
@@ -133,12 +134,11 @@ Paths, limits, model and loop detection (env overrides):
 
 Every stage's processing steps are declared in `config/config.yaml` as a
 `workflow.steps` list. Omitting the list (or a whole stage) keeps the built-in
-default sequence, byte-compatible with releases before this feature. Today the
-configured workflow drives the execution stage's issue-triggered graph: both
-`orchestrator run` and `orchestrator execute` (the issue polling path). The
-comment commands (`/ai-agent-impl`, `/ai-agent-discuss`), review, and triage
-still run their built-in sequences; their `workflow` keys are validated at
-startup (fail fast) and are applied by the next phases:
+default sequence, byte-compatible with releases before this feature. The
+configured workflows drive the issue-triggered execution, the
+`/ai-agent-impl` and `/ai-agent-discuss` comment commands, review, and triage.
+All workflow sections are validated and composed once at startup, so a bad
+configuration aborts before polling:
 
 ```yaml
 pipeline:
@@ -150,7 +150,7 @@ pipeline:
         - {name: implement, type: implement}
         - {name: create_pr, type: publish}
         - {name: cleanup, type: cleanup, on_failure: continue}
-    comments:                      # comment-command workflows (next phase)
+    comments:                      # comment-command workflows
       impl:
         workflow:
           steps:
@@ -165,7 +165,7 @@ pipeline:
             - {name: answer, type: discuss}
             - {name: publish, type: publish}
   review:
-    workflow:                      # next phase: ReviewApplication.poll_once
+    workflow:
       steps:
         - {name: checkout, type: checkout}
         - {name: review, type: review}
@@ -217,21 +217,30 @@ Behavior:
 - `cleanup` only runs if the chain reaches it, so a failed worktree is still
   preserved for debugging until a rerun starts; this also holds for a `cleanup`
   step configured with `on_failure: continue`.
+- Review and discussion cleanup is a loop-owned `finally` epilogue, not a
+  configurable step: the prepared checkout is removed even when review,
+  answer, or publication fails. Triage's `assess` step owns its temporary
+  workspace, so triage workflows have no cleanup step.
+- If an execution workflow omits `plan`, the `.agents/plans/plan.md` artifact
+  contract simply does not apply to that workflow.
+- The generic `command` type is available to execution, comment-impl, and
+  review workflows; the generic `agent` type is available to execution and
+  comment-impl workflows. Neither type is used by the built-in defaults.
 - `on_failure: continue` records the failure in the step results and keeps
   running; the final status stays `COMPLETED` unless a later step fails
   fatally. `orchestrator logs TASK --node <step>` shows per-step logs.
-- `prompt_file` replaces the built-in phase prompt entirely. `plan` and
-  `implement` (and the comment/review/discuss variants) use the file text
+- `prompt_file` replaces the built-in phase prompt entirely. `plan`, `implement`,
+  `implement_comment`, `review`, `assess`, and `discuss` use the file text
   verbatim; a generic `agent` step's prompt is rendered with the task
   placeholders `{task_id}`, `{repository}`, `{title}`, `{description}`, and
   `{extra_context}`. Literal braces in an `agent` prompt must be doubled —
   `{{` renders `{` and `}}` renders `}` — otherwise rendering fails the step
   with an error naming the offending placeholder.
-  Warning: replacing the built-in `plan`/`implement` prompts
-  drops the guardrails those prompts encode — the planner must not modify
-  files, and implementation must run the repository's tests and quality checks
-  and must not push or create a pull request itself — so write that policy
-  into your own prompt.
+  Warning: replacing a built-in prompt drops the guardrails it encodes —
+  planning must not modify files, implementation must run the repository's
+  tests and quality checks and must not push or create a pull request,
+  discussion must stay read-only, and review/triage must return their JSON
+  contracts — so write that policy into your own prompt.
 - Precedence: built-in defaults → stage configuration and `ORCHESTRATOR_*` env
   overrides → step overrides. Steps are YAML-only: the executor/model env keys
   keep controlling stage defaults but do not apply to steps.
@@ -389,8 +398,9 @@ another workflow engine without duplicating agent, git, or provider logic.
 `GitWorkspaceManager` is provider-neutral: adapters provide explicit clone/fetch
 URLs, refs, revisions, checkout mode, and workspace paths; it performs only git
 clone, fetch, worktree, and cleanup operations.
-LangGraph routes a single in-memory execution. The review workflow remains
-independently invokable and has its own GitHub `ai-reviewed` marker.
+LangGraph routes each single in-memory execution, including comment, review,
+and triage workflows. The review workflow remains independently invokable and
+has its own GitHub `ai-reviewed` marker.
 
 Every task or review target has exactly one mandatory, non-empty, opaque string
 ID. Providers use their stable identifier when one exists (`owner/repo#123`,

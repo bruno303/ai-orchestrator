@@ -3,7 +3,13 @@
 from orchestrator.application.discussion.service import (
     DiscussionRunRequest,
     DiscussionRuntime,
+    PreparedDiscussion,
     discussion_prompt,
 )
 
-__all__ = ["DiscussionRunRequest", "DiscussionRuntime", "discussion_prompt"]
+__all__ = [
+    "DiscussionRunRequest",
+    "DiscussionRuntime",
+    "PreparedDiscussion",
+    "discussion_prompt",
+]

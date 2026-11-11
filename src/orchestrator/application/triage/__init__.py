@@ -23,6 +23,7 @@ class TriageApplication:
     context_presenter: ContextPresenter
     task_log_path: Callable[[str, str], Path]
     write_task_log: Callable[[str, str, str], None]
+    run_workflow: Callable[[TriageTarget], dict] | None
 
     def __init__(
         self,
@@ -33,6 +34,7 @@ class TriageApplication:
         context_presenter: ContextPresenter | None = None,
         task_log_path: Callable[[str, str], Path] | None = None,
         write_task_log: Callable[[str, str, str], None] | None = None,
+        run_workflow: Callable[[TriageTarget], dict] | None = None,
     ) -> None:
         self.input_source = input_source
         self.executor = executor
@@ -42,6 +44,7 @@ class TriageApplication:
         )
         self.task_log_path = task_log_path or (lambda task_id, node: Path(f"{task_id}-{node}.log"))
         self.write_task_log = write_task_log or (lambda _task_id, _node, _message: None)
+        self.run_workflow = run_workflow
 
     def poll_once(self) -> list[TriageTarget]:
         processed: list[TriageTarget] = []
@@ -55,25 +58,35 @@ class TriageApplication:
             )
             print(f"[triage] starting: repository={target.repository} id={target.id} title={title!r}", flush=True)
             try:
-                with TemporaryDirectory(prefix="orchestrator-triage-") as directory:
-                    outcome = self.executor.execute(TriageRequest(
-                        task_id=target.id,
-                        repository=target.repository,
-                        workspace=directory,
-                        prompt=TRIAGE_PROMPT.format(
+                if self.run_workflow is not None:
+                    state = self.run_workflow(target)
+                    if state.get("status") != "COMPLETED":
+                        print(
+                            f"[triage] {target.id}: "
+                            f"{state.get('error') or 'workflow did not complete'}",
+                            flush=True,
+                        )
+                        continue
+                else:
+                    with TemporaryDirectory(prefix="orchestrator-triage-") as directory:
+                        outcome = self.executor.execute(TriageRequest(
                             task_id=target.id,
                             repository=target.repository,
-                            title=target.title,
-                            description=target.description,
-                        ),
-                        context=target.context,
-                        log_file=str(self.task_log_path(target.id, "triage")),
-                    ))
-                    if not isinstance(outcome, TriageOutcome):
-                        raise TypeError("triage executor returned an invalid outcome")
-                    if not outcome.success:
-                        raise RuntimeError(outcome.summary or "triage execution failed")
-                    self.destination.publish(target, outcome)
+                            workspace=directory,
+                            prompt=TRIAGE_PROMPT.format(
+                                task_id=target.id,
+                                repository=target.repository,
+                                title=target.title,
+                                description=target.description,
+                            ),
+                            context=target.context,
+                            log_file=str(self.task_log_path(target.id, "triage")),
+                        ))
+                        if not isinstance(outcome, TriageOutcome):
+                            raise TypeError("triage executor returned an invalid outcome")
+                        if not outcome.success:
+                            raise RuntimeError(outcome.summary or "triage execution failed")
+                        self.destination.publish(target, outcome)
                 processed.append(target)
                 self.write_task_log(target.id, "triage", f"[triage] finished: repository={target.repository} id={target.id}")
                 print(f"[triage] finished: repository={target.repository} id={target.id}", flush=True)

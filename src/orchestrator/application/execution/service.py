@@ -158,7 +158,8 @@ class ExecutionRuntime:
 
     def plan(self, request: PlanRequest) -> PlanResult:
         phase = self.agent.execute(AgentRequest(
-            request.work, "plan", "plan", request.prompt or plan_prompt(request.work), request.workspace, request.context
+            request.work, request.node, "plan", request.prompt or plan_prompt(request.work),
+            request.workspace, request.context,
         ))
         plan_path = Path(request.workspace) / PLAN_FILE
         try:
@@ -185,7 +186,7 @@ class ExecutionRuntime:
 
     def implement(self, request: ImplementationRequest) -> ImplementationResult:
         phase = self.agent.execute(AgentRequest(
-            request.work, "implement", "build", request.prompt or implement_prompt(request.work, request.plan_path),
+            request.work, request.node, "build", request.prompt or implement_prompt(request.work, request.plan_path),
             request.workspace, request.context,
         ))
         return ImplementationResult(phase.execution.stdout[:4000], phase)
@@ -196,9 +197,9 @@ class ExecutionRuntime:
         """Implement one explicit comment request without invoking planning."""
         phase = self.agent.execute(AgentRequest(
             request.work,
-            "implement-comment",
+            request.node,
             "build",
-            incremental_implement_prompt(request.work, request.instruction),
+            request.prompt or incremental_implement_prompt(request.work, request.instruction),
             request.workspace,
             request.context,
         ))

@@ -71,7 +71,7 @@ def build_workflow(
     deps: Any,
     *,
     on_node_start: Callable[[str, dict[str, Any]], None] | None = None,
-    state_schema: type[TaskState] = TaskState,
+    state_schema: type[Any] = TaskState,
 ) -> CompiledStateGraph:
     """Compile ``START -> steps[0] -> ... -> steps[-1] -> END`` from step specs.
 

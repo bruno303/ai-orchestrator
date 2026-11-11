@@ -197,6 +197,25 @@ def test_build_workflow_executes_a_custom_step_sequence():
     assert result["step_results"]["plan"]["status"] == "succeeded"
 
 
+def test_renamed_plan_step_uses_its_name_for_executor_logs():
+    class RecordingPlanRuntime(FakeRuntime):
+        def plan(self, request):
+            self.plan_node = request.node
+            return super().plan(request)
+
+    runtime = RecordingPlanRuntime()
+    steps = [
+        StepSpec("checkout", "checkout"),
+        StepSpec("analyse", "plan"),
+        StepSpec("publish", "publish"),
+    ]
+    graph = build_workflow(steps, STEP_FACTORIES, ExecutionStageDeps(runtime=runtime))
+
+    graph.invoke(_seed())
+
+    assert runtime.plan_node == "analyse"
+
+
 def test_build_workflow_aborts_when_the_plan_step_fails():
     runtime = FailingPlanRuntime()
     started = []

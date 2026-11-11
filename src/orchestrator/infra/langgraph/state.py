@@ -79,3 +79,45 @@ class TaskState(TypedDict, total=False):
     error: str | None
     iteration: int
     step_results: Annotated[dict[str, dict[str, Any]], _merge]
+
+
+class ReviewState(TypedDict, total=False):
+    """Review-stage state; keeps the execution namespaces plus provider data."""
+
+    task_id: str
+    input: InputState
+    processing: dict[str, Any]
+    workspace: WorkspaceState
+    output: OutputState
+
+    status: str
+    error: str | None
+    step_results: Annotated[dict[str, dict[str, Any]], _merge]
+
+
+class TriageState(TypedDict, total=False):
+    """Triage-stage state: one assessment outcome plus the publication result."""
+
+    task_id: str
+    input: InputState
+    processing: dict[str, Any]
+    workspace: WorkspaceState
+    output: OutputState
+
+    status: str
+    error: str | None
+    step_results: Annotated[dict[str, dict[str, Any]], _merge]
+
+
+class DiscussionState(TypedDict, total=False):
+    """Discussion-stage state: a read-only answer plus the publication result."""
+
+    task_id: str
+    input: InputState
+    processing: dict[str, Any]
+    workspace: WorkspaceState
+    output: OutputState
+
+    status: str
+    error: str | None
+    step_results: Annotated[dict[str, dict[str, Any]], _merge]

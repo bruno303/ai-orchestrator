@@ -8,6 +8,7 @@ from orchestrator.application import PollingApplication
 from orchestrator.application.discussion import DiscussionRunRequest, DiscussionRuntime, discussion_prompt
 from orchestrator.application.execution.models import (
     IncrementalExecutionRequest,
+    IncrementalImplementationRequest,
     WorkContext,
 )
 from orchestrator.application.execution.errors import AgentExecutionError, PublicationError
@@ -122,6 +123,28 @@ def test_incremental_execution_skips_planning(tmp_path):
     assert "/plan-implementation" not in requests[0].prompt
     assert prepared[0].reuse_workspace is True
     assert len(cleaned) == 1
+
+
+def test_incremental_execution_prompt_override_replaces_the_built_in_prompt(tmp_path):
+    requests = []
+
+    class Executor:
+        def execute(self, request):
+            requests.append(request)
+            return ExecutionResult(True, 0, stdout="implemented", context=request.context)
+
+    runtime = ExecutionRuntime(Executor(), object(), object())
+    runtime.implement_incremental(IncrementalImplementationRequest(
+        work=_work(),
+        workspace=str(tmp_path),
+        instruction="change it",
+        context=_work().item.context,
+        prompt="custom incremental prompt",
+        node="implement",
+    ))
+
+    assert requests[0].prompt == "custom incremental prompt"
+    assert requests[0].log_file.endswith("implement.log")
 
 
 def test_incremental_execution_preserves_workspace_when_publication_fails(tmp_path):

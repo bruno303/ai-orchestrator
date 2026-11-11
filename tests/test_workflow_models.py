@@ -194,6 +194,16 @@ def test_agent_overrides_are_rejected_on_non_agent_step_types(field: str, value:
         validate_steps([step], EXECUTION_STEP_TYPES, stage="execution")
 
 
+def test_agent_name_is_rejected_on_fixed_agent_bearing_steps():
+    step = StepSpec("plan", "plan", agent="writer")
+
+    with pytest.raises(
+        StepConfigError,
+        match="execution step 'plan': 'agent' is only valid on the generic 'agent' step type",
+    ):
+        validate_steps([step], EXECUTION_STEP_TYPES, stage="execution")
+
+
 def test_agent_steps_require_a_prompt_file():
     with pytest.raises(
         StepConfigError,

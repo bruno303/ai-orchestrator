@@ -171,8 +171,8 @@ class ExecutionStageDeps:
 
     ``step_runtimes`` overrides the stage runtime for individual step names
     (per-step executor/model variants); ``prompts`` maps step names to loaded
-    prompt-file template text; ``reuse_workspace`` belongs to the comment-impl
-    path (Phase 1 wires it False for the execution stage).
+    prompt-file template text; ``reuse_workspace`` is True for the
+    ``/ai-agent-impl`` workflow and False for issue-triggered execution.
     """
 
     runtime: ExecutionRuntime
@@ -222,7 +222,8 @@ def plan(state: TaskState, runtime: ExecutionRuntime, prompt: str | None = None,
          *, step_name: str) -> dict[str, Any]:
     try:
         result = runtime.plan(PlanRequest(
-            _work(state), _prepared_workspace(state, step_name)["path"], _context(state), prompt=prompt,
+            _work(state), _prepared_workspace(state, step_name)["path"], _context(state),
+            prompt=prompt, node=step_name,
         ))
     except Exception as exc:
         return _runtime_error(exc)
@@ -239,7 +240,8 @@ def implement(state: TaskState, runtime: ExecutionRuntime, prompt: str | None = 
               *, step_name: str) -> dict[str, Any]:
     try:
         result = runtime.implement(ImplementationRequest(
-            _work(state), _prepared_workspace(state, step_name)["path"], PLAN_FILE, _context(state), prompt=prompt,
+            _work(state), _prepared_workspace(state, step_name)["path"], PLAN_FILE, _context(state),
+            prompt=prompt, node=step_name,
         ))
     except Exception as exc:
         return _runtime_error(exc)
@@ -251,11 +253,12 @@ def implement(state: TaskState, runtime: ExecutionRuntime, prompt: str | None = 
     }
 
 
-def implement_comment(state: TaskState, runtime: ExecutionRuntime, *,
-                      step_name: str) -> dict[str, Any]:
+def implement_comment(state: TaskState, runtime: ExecutionRuntime, prompt: str | None = None,
+                      *, step_name: str) -> dict[str, Any]:
     try:
         result = runtime.implement_incremental(IncrementalImplementationRequest(
-            _work(state), _prepared_workspace(state, step_name)["path"], _comment_instruction(state), _context(state),
+            _work(state), _prepared_workspace(state, step_name)["path"], _comment_instruction(state),
+            _context(state), prompt=prompt, node=step_name,
         ))
     except Exception as exc:
         return _runtime_error(exc)
@@ -392,7 +395,10 @@ def _implement_node(step: StepSpec, deps: ExecutionStageDeps) -> NodeFn:
 
 def _implement_comment_node(step: StepSpec, deps: ExecutionStageDeps) -> NodeFn:
     def run(state: TaskState) -> dict[str, Any]:
-        return implement_comment(state, deps.runtime_for(step), step_name=step.name)
+        return implement_comment(
+            state, deps.runtime_for(step), prompt=deps.prompts.get(step.name),
+            step_name=step.name,
+        )
 
     return run
 

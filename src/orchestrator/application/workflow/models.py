@@ -174,3 +174,8 @@ def validate_steps(
                         f"{stage} step '{step.name}': '{field}' is only valid on "
                         f"agent-bearing step types (one of {', '.join(AGENT_TYPES)})"
                     )
+        if step.agent is not None and step.type != "agent":
+            raise StepConfigError(
+                f"{stage} step '{step.name}': 'agent' is only valid on the "
+                "generic 'agent' step type"
+            )

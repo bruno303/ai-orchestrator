@@ -478,7 +478,8 @@ def _workflow_steps(
 
 
 def _comment_workflow_steps(
-    comments: dict[str, Any], *, section: str, stage: str, allowed_types: tuple[str, ...]
+    comments: dict[str, Any], *, section: str, stage: str, allowed_types: tuple[str, ...],
+    registry: ProviderRegistry,
 ) -> tuple[StepSpec, ...]:
     """Parse one ``pipeline.execution.comments.<section>.workflow`` section."""
     raw = comments.get(section) or {}
@@ -489,7 +490,7 @@ def _comment_workflow_steps(
         stage=stage,
         path=f"pipeline.execution.comments.{section}.workflow",
         allowed_types=allowed_types,
-        registry=DISCUSSION_EXECUTOR_PROVIDERS,
+        registry=registry,
     )
 
 
@@ -534,10 +535,12 @@ def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineCon
             registry=EXECUTOR_PROVIDERS,
         ),
         comment_impl_workflow=_comment_workflow_steps(
-            comments, section="impl", stage="comment_impl", allowed_types=COMMENT_IMPL_STEP_TYPES,
+            comments, section="impl", stage="comment_impl",
+            allowed_types=COMMENT_IMPL_STEP_TYPES, registry=EXECUTOR_PROVIDERS,
         ),
         comment_discuss_workflow=_comment_workflow_steps(
-            comments, section="discuss", stage="discuss", allowed_types=DISCUSS_STEP_TYPES,
+            comments, section="discuss", stage="discuss",
+            allowed_types=DISCUSS_STEP_TYPES, registry=DISCUSSION_EXECUTOR_PROVIDERS,
         ),
     )
 

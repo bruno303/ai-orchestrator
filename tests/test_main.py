@@ -10,7 +10,7 @@ from orchestrator.infra.filesystem.command import run_workspace_command
 from orchestrator.infra.github import client as github
 from orchestrator.infra.langgraph import state as state_mod
 from orchestrator.infra.langgraph.execution_steps import ExecutionStageDeps
-from orchestrator.application.workflow import StepSpec, default_steps
+from orchestrator.application.workflow import StepConfigError, StepSpec, default_steps
 from orchestrator.main import cli
 from orchestrator.main import composition
 from orchestrator.main import config
@@ -210,6 +210,7 @@ def test_execute_does_not_run_triage(monkeypatch):
         workspace_manager=object(),
         destination=object(),
         execution_runtime=object(),
+        discussion_runtime=object(),
         input_provider="github_polling",
         feedback=None,
     )
@@ -389,6 +390,9 @@ def test_run_graph_default_path_runs_the_default_five_node_sequence(allowlist):
     assert result["status"] == state_mod.COMPLETED
     assert fake.nodes == ["prepare_workspace", "plan", "implement", "create_pr", "cleanup"]
     assert result["step_results"]["cleanup"]["status"] == "succeeded"
+    assert sorted(result["step_results"]) == [
+        "cleanup", "create_pr", "implement", "plan", "prepare_workspace",
+    ]
 
 
 def test_compose_execution_workflow_reuses_a_provided_runtime(allowlist, monkeypatch):
@@ -420,8 +424,8 @@ def test_execute_runs_the_configured_workflow_steps(allowlist, monkeypatch):
     fake = FakeRuntime()
     runtime = SimpleNamespace(
         input_source=object(), executor=object(), workspace_manager=object(),
-        destination=object(), execution_runtime=fake, input_provider="github_polling",
-        feedback=None,
+        destination=object(), execution_runtime=fake, discussion_runtime=object(),
+        input_provider="github_polling", feedback=None,
     )
     monkeypatch.setattr(cli, "compose_runtime", lambda: runtime)
     monkeypatch.setattr(cli, "compose_review_runtime", lambda: object())
@@ -466,6 +470,35 @@ def test_compose_execution_runtime_wires_the_workspace_command_runner(allowlist)
     # and every per-step override variant carry the real workspace adapter.
     assert deps.runtime.command_runner is run_workspace_command
     assert deps.step_runtimes["implement"].command_runner is run_workspace_command
+
+
+def test_execute_fails_fast_on_an_invalid_comment_workflow(allowlist, monkeypatch):
+    config.CONFIG_FILE.write_text(
+        "repositories:\n  - name: company/backend\n"
+        "pipeline:\n"
+        "  execution:\n"
+        "    comments:\n"
+        "      impl:\n"
+        "        workflow:\n"
+        "          steps:\n"
+        "            - {name: bogus, type: bogus}\n"
+    )
+    config.load_pipeline_config.cache_clear()
+    runtime = SimpleNamespace(
+        input_source=object(), executor=object(), workspace_manager=object(),
+        destination=object(), execution_runtime=object(), discussion_runtime=object(),
+        input_provider="github_polling", feedback=None,
+    )
+    monkeypatch.setattr(cli, "compose_runtime", lambda: runtime)
+    monkeypatch.setattr(cli, "compose_review_runtime", lambda: object())
+    monkeypatch.setattr(cli, "_acquire_poll_lock",
+                        lambda: type("Lock", (), {"close": lambda self: None})())
+    monkeypatch.setattr(cli.PollingApplication, "__init__", lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("invalid workflow must abort before polling")
+    ))
+
+    with pytest.raises(StepConfigError, match="comment_impl step 'bogus'"):
+        cli.cmd_execute(SimpleNamespace(once=True))
 
 
 def test_run_graph_records_a_node_end_for_every_streamed_step(allowlist, monkeypatch):

@@ -7,15 +7,38 @@ from typing import Any
 
 from typing import Callable
 
-from orchestrator.application.ports import ContextPresenter, NoopContextPresenter, ReviewDestination, ReviewExecutor, ReviewInputSource, WorkspaceManager
-from orchestrator.domain import ReviewTarget
+from orchestrator.application.ports import (
+    ContextPresenter, NoopContextPresenter, ReviewDestination, ReviewExecutor,
+    ReviewInputSource, WorkspaceManager, WorkspaceResult,
+)
+from orchestrator.domain import Context, ReviewTarget
 from orchestrator.application.execution.models import (
     CleanupReviewRequest,
     ExecuteReviewRequest,
     PrepareReviewRequest,
+    PrepareReviewResult,
     PublishReviewRequest,
 )
 from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
+
+_COMPLETED = "COMPLETED"
+
+
+def _prepared_from_state(
+    target: ReviewTarget, state: dict[str, Any],
+) -> PrepareReviewResult | None:
+    workspace = state.get("workspace") or {}
+    if not isinstance(workspace, dict) or not workspace.get("path"):
+        return None
+    context = Context.from_dict(workspace.get("context") or target.context.to_dict())
+    return PrepareReviewResult(
+        target,
+        WorkspaceResult(
+            workspace["path"], workspace.get("branch", ""), context,
+            workspace.get("base_branch", ""),
+        ),
+        context,
+    )
 
 
 @dataclass(init=False)
@@ -25,6 +48,7 @@ class ReviewApplication:
     input_source: ReviewInputSource
     runtime: ReviewRuntime
     context_presenter: ContextPresenter
+    run_workflow: Callable[[ReviewTarget], dict[str, Any]] | None
 
     def __init__(
         self,
@@ -35,6 +59,7 @@ class ReviewApplication:
         runtime: ReviewRuntime | None = None,
         context_presenter: ContextPresenter | None = None,
         write_task_log: Callable[[str, str, str], None] | None = None,
+        run_workflow: Callable[[ReviewTarget], dict[str, Any]] | None = None,
     ) -> None:
         self.input_source = input_source
         self.runtime = runtime or ReviewRuntime(executor, workspace_manager, destination)
@@ -42,6 +67,7 @@ class ReviewApplication:
             input_source, "context_presenter", NoopContextPresenter()
         )
         self.write_task_log = write_task_log or (lambda _task_id, _node, _message: None)
+        self.run_workflow = run_workflow
 
     def poll_once(self) -> list[ReviewTarget]:
         processed: list[ReviewTarget] = []
@@ -63,9 +89,20 @@ class ReviewApplication:
                 flush=True,
             )
             try:
-                prepared = self.runtime.prepare(PrepareReviewRequest(target))
-                execution = self.runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
-                self.runtime.publish_review(PublishReviewRequest(prepared, execution))
+                if self.run_workflow is not None:
+                    state = self.run_workflow(target)
+                    prepared = _prepared_from_state(target, state)
+                    if state.get("status") != _COMPLETED:
+                        print(
+                            f"[review] {target.id}: "
+                            f"{state.get('error') or 'workflow did not complete'}",
+                            flush=True,
+                        )
+                        continue
+                else:
+                    prepared = self.runtime.prepare(PrepareReviewRequest(target))
+                    execution = self.runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
+                    self.runtime.publish_review(PublishReviewRequest(prepared, execution))
                 processed.append(target)
                 self.write_task_log(
                     task_id,
