@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Callable
 
 from orchestrator.domain import ChangeRequest, Context, PublishedChange
-from orchestrator.application.ports import Destination, Executor, WorkspaceManager, WorkspaceRequest, WorkspaceResult
+from orchestrator.application.ports import Destination, ExecutionResult, Executor, WorkspaceManager, WorkspaceRequest, WorkspaceResult
 from orchestrator.application.execution.agent import AgentSettings, IssueAgentRunner
 from orchestrator.application.execution.errors import (
     CleanupError,
@@ -18,6 +19,8 @@ from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
     CleanupResult,
+    CommandStepRequest,
+    CommandStepResult,
     IncrementalExecutionRequest,
     IncrementalImplementationRequest,
     ImplementationRequest,
@@ -108,11 +111,13 @@ only in this workspace and do not push or create a pull request yourself.
 class ExecutionRuntime:
     """Perform execution steps without interpreting provider-owned context."""
 
-    def __init__(self, executor: Executor, workspace_manager: WorkspaceManager, destination: Destination, *, repository_allowed=lambda _repository: True, agent_settings: AgentSettings = AgentSettings(), task_log_path=None) -> None:
+    def __init__(self, executor: Executor, workspace_manager: WorkspaceManager, destination: Destination, *, repository_allowed=lambda _repository: True, agent_settings: AgentSettings = AgentSettings(), task_log_path=None, command_runner: Callable[[str, str, int, str], ExecutionResult] | None = None) -> None:
         self.workspace_manager = workspace_manager
         self.destination = destination
         self.repository_allowed = repository_allowed
         self.agent = IssueAgentRunner(executor, agent_settings, task_log_path)
+        self.task_log_path = task_log_path or (lambda task_id, node: Path(f"{task_id}-{node}.log"))
+        self.command_runner = command_runner
 
     def prepare(self, request: PrepareExecutionRequest) -> PrepareExecutionResult:
         if not self.repository_allowed(request.work.repository):
@@ -153,7 +158,8 @@ class ExecutionRuntime:
 
     def plan(self, request: PlanRequest) -> PlanResult:
         phase = self.agent.execute(AgentRequest(
-            request.work, "plan", "plan", plan_prompt(request.work), request.workspace, request.context
+            request.work, request.node, "plan", request.prompt or plan_prompt(request.work),
+            request.workspace, request.context,
         ))
         plan_path = Path(request.workspace) / PLAN_FILE
         try:
@@ -180,7 +186,7 @@ class ExecutionRuntime:
 
     def implement(self, request: ImplementationRequest) -> ImplementationResult:
         phase = self.agent.execute(AgentRequest(
-            request.work, "implement", "build", implement_prompt(request.work, request.plan_path),
+            request.work, request.node, "build", request.prompt or implement_prompt(request.work, request.plan_path),
             request.workspace, request.context,
         ))
         return ImplementationResult(phase.execution.stdout[:4000], phase)
@@ -191,13 +197,28 @@ class ExecutionRuntime:
         """Implement one explicit comment request without invoking planning."""
         phase = self.agent.execute(AgentRequest(
             request.work,
-            "implement-comment",
+            request.node,
             "build",
-            incremental_implement_prompt(request.work, request.instruction),
+            request.prompt or incremental_implement_prompt(request.work, request.instruction),
             request.workspace,
             request.context,
         ))
         return ImplementationResult(phase.execution.stdout[:4000], phase)
+
+    def run_command(self, request: CommandStepRequest) -> CommandStepResult:
+        """Run one workspace command through the injected command runner."""
+        if self.command_runner is None:
+            return CommandStepResult(ExecutionResult(
+                success=False,
+                exit_code=127,
+                stderr="command runner is not wired",
+            ))
+        log_file = str(self.task_log_path(request.work.task_id, request.node))
+        result = self.command_runner(
+            request.workspace, request.command, request.timeout_seconds, log_file
+        )
+        result.context = request.context
+        return CommandStepResult(result)
 
     def publish(self, request: PublishRequest) -> PublishResult:
         context = request.work.item.context.merged(request.context)

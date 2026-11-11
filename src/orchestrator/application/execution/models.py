@@ -82,6 +82,8 @@ class PlanRequest:
     work: WorkContext
     workspace: str
     context: Context = field(default_factory=Context)
+    prompt: str | None = None
+    node: str = "plan"
 
 @dataclass(frozen=True)
 class PlanResult:
@@ -96,16 +98,24 @@ class ImplementationRequest:
     workspace: str
     plan_path: str = ".agents/plans/plan.md"
     context: Context = field(default_factory=Context)
+    prompt: str | None = None
+    node: str = "implement"
 
 
 @dataclass(frozen=True)
 class IncrementalImplementationRequest:
-    """Request for a comment-triggered implementation without planning."""
+    """Request for a comment-triggered implementation without planning.
+
+    ``prompt`` replaces the built-in incremental prompt entirely when a step
+    configures ``prompt_file`` (full-replacement semantics, like other steps).
+    """
 
     work: WorkContext
     workspace: str
     instruction: str
     context: Context = field(default_factory=Context)
+    prompt: str | None = None
+    node: str = "implement-comment"
 
 
 @dataclass(frozen=True)
@@ -156,6 +166,7 @@ class PrepareReviewResult:
 class ExecuteReviewRequest:
     prepared: PrepareReviewResult
     prompt: str
+    node: str = "review"
 
 
 @dataclass(frozen=True)
@@ -183,3 +194,18 @@ class CleanupReviewRequest:
 @dataclass(frozen=True)
 class CleanupReviewResult:
     workspace: str
+
+
+@dataclass(frozen=True)
+class CommandStepRequest:
+    work: WorkContext
+    node: str
+    workspace: str
+    command: str
+    timeout_seconds: int
+    context: Context = field(default_factory=Context)
+
+
+@dataclass(frozen=True)
+class CommandStepResult:
+    result: ExecutionResult

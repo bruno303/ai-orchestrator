@@ -59,6 +59,15 @@ class DiscussionRunRequest:
     context: Context = field(default_factory=Context)
 
 
+@dataclass(frozen=True)
+class PreparedDiscussion:
+    """Detached checkout shared by the discuss and publish steps."""
+
+    request: DiscussionRunRequest
+    workspace: WorkspaceResult
+    context: Context
+
+
 class DiscussionRuntime:
     """Prepare a detached checkout, run a read-only agent, and publish text."""
 
@@ -79,7 +88,8 @@ class DiscussionRuntime:
         self.model_config = model_config
         self.task_log_path = task_log_path or (lambda task_id, node: Path(f"{task_id}-{node}.log"))
 
-    def run(self, request: DiscussionRunRequest) -> DiscussionResult:
+    def prepare(self, request: DiscussionRunRequest) -> PreparedDiscussion:
+        """Prepare the detached checkout consumed by the discuss step."""
         if not self.repository_allowed(request.work.repository):
             raise WorkspacePreparationError(
                 f"repository {request.work.repository} is not in the allowlist"
@@ -108,49 +118,76 @@ class DiscussionRuntime:
             raise WorkspacePreparationError(str(exc)) from exc
 
         prepared_context = context.merged(getattr(prepared, "context", Context()))
+        return PreparedDiscussion(request, prepared, prepared_context)
+
+    def answer(
+        self,
+        request: DiscussionRunRequest,
+        prepared: PreparedDiscussion,
+        *,
+        prompt: str | None = None,
+        node: str = "discussion",
+    ) -> DiscussionResult:
+        """Run the read-only agent without publishing its answer."""
         model = self.model_config.name if self.model_config else None
         variant = self.model_config.variant if self.model_config else None
-        try:
-            result = self.executor.execute(DiscussionRequest(
-                task_id=request.work.task_id,
-                repository=request.work.repository,
-                workspace=prepared.workspace,
-                prompt=discussion_prompt(request.work),
-                model=model,
-                variant=variant,
-                context=prepared_context,
-                log_file=str(self.task_log_path(request.work.task_id, "discussion")),
-            ))
-            if not isinstance(result, DiscussionResult):
-                result = DiscussionResult(
-                    bool(getattr(result, "success", False)),
-                    str(getattr(result, "response", "")),
-                    context=prepared_context,
-                )
-            if not result.success:
-                raise AgentExecutionError(
-                    result.response or result.stderr or "discussion executor failed",
-                    context=result.context or prepared_context,
-                )
-            response = result.response.strip()
-            if not response:
-                raise AgentExecutionError("discussion executor returned an empty response", context=prepared_context)
-            result_context = prepared_context.merged(result.context)
-            self.destination.publish(DiscussionPublicationRequest(
-                task_id=request.work.task_id,
-                repository=request.work.repository,
-                response=response,
-                context=result_context,
-            ))
-            return DiscussionResult(
-                True,
-                response=response,
-                duration_seconds=result.duration_seconds,
-                context=result_context,
+        result = self.executor.execute(DiscussionRequest(
+            task_id=request.work.task_id,
+            repository=request.work.repository,
+            workspace=prepared.workspace.workspace,
+            prompt=prompt or discussion_prompt(request.work),
+            model=model,
+            variant=variant,
+            context=prepared.context,
+            log_file=str(self.task_log_path(request.work.task_id, node)),
+        ))
+        if not isinstance(result, DiscussionResult):
+            result = DiscussionResult(
+                bool(getattr(result, "success", False)),
+                str(getattr(result, "response", "")),
+                context=prepared.context,
             )
+        if not result.success:
+            raise AgentExecutionError(
+                result.response or result.stderr or "discussion executor failed",
+                context=result.context or prepared.context,
+            )
+        response = result.response.strip()
+        if not response:
+            raise AgentExecutionError(
+                "discussion executor returned an empty response", context=prepared.context
+            )
+        result_context = prepared.context.merged(result.context)
+        return DiscussionResult(
+            True,
+            response=response,
+            duration_seconds=result.duration_seconds,
+            context=result_context,
+        )
+
+    def publish(self, request: DiscussionRunRequest, result: DiscussionResult) -> None:
+        """Publish a successful answer back to the originating conversation."""
+        self.destination.publish(DiscussionPublicationRequest(
+            task_id=request.work.task_id,
+            repository=request.work.repository,
+            response=result.response,
+            context=result.context,
+        ))
+
+    def cleanup(self, prepared: PreparedDiscussion) -> None:
+        """Remove the detached checkout; callers decide whether to swallow errors."""
+        self.workspace_manager.cleanup(prepared.workspace)
+
+    def run(self, request: DiscussionRunRequest) -> DiscussionResult:
+        """Run the complete discussion flow with a guaranteed cleanup epilogue."""
+        prepared = self.prepare(request)
+        try:
+            result = self.answer(request, prepared)
+            self.publish(request, result)
+            return result
         finally:
             try:
-                self.workspace_manager.cleanup(prepared)
+                self.cleanup(prepared)
             except Exception:
                 # A discussion has no local changes to preserve. Cleanup is
                 # best effort and must not hide an already published answer.

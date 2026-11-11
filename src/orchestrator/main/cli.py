@@ -4,24 +4,32 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import inspect
 import re
 import sys
 import time
 from pathlib import Path
 
 from orchestrator.main import config
-from orchestrator.application.discussion import DiscussionRunRequest
-from orchestrator.application.execution.models import IncrementalExecutionRequest, WorkContext
+from orchestrator.application.workflow import default_steps
 from orchestrator.infra.filesystem import workspace
 from orchestrator.infra.git import client as git
 from orchestrator.infra.github import assignees as github_assignees
 from orchestrator.infra.github import client as github
+from orchestrator.infra.langgraph import discussion_steps
 from orchestrator.infra.langgraph import state as state_mod
+from orchestrator.infra.langgraph.execution_steps import STEP_FACTORIES, ExecutionStageDeps
+from orchestrator.infra.langgraph.runner import run_workflow_graph
 from orchestrator.application import PollingApplication, _input_seed
-from orchestrator.main.composition import compose_execution_runtime, compose_review_runtime, compose_runtime, compose_triage_runtime
+from orchestrator.main.composition import (
+    compose_comment_impl_workflow,
+    compose_discussion_workflow,
+    compose_execution_runtime,
+    compose_execution_workflow,
+    compose_review_runtime,
+    compose_runtime,
+    compose_triage_runtime,
+)
 from orchestrator.domain import Context, WorkItem
-from orchestrator.infra.langgraph.graph import build_graph
 from orchestrator.application.ports import InputEvent
 
 ISSUE_REF_RE = re.compile(r"^([\w.-]+/[\w.-]+)#(\d+)$")
@@ -56,109 +64,105 @@ def _seed_state(repository: str, issue_number: int, *, github_client=github) -> 
 
 
 def _run_graph(seed: dict, task_id: str, *, executor=None, workspace_manager=None,
-               destination=None, runtime=None) -> dict:
+               destination=None, runtime=None, steps=None, deps=None) -> dict:
     """Run an in-memory graph and retain only human-readable event logs."""
+    cli_composed = False
     if runtime is None and executor is None and workspace_manager is None and destination is None:
         configured = compose_runtime()
         executor, workspace_manager = configured.executor, configured.workspace_manager
         destination, runtime = configured.destination, configured.execution_runtime
+        cli_composed = True
     if runtime is None:
         runtime = compose_execution_runtime(
             executor=executor, workspace_manager=workspace_manager, destination=destination
         )
-    starts: dict[str, float] = {}
-
-    def on_node_start(node: str, state: dict) -> None:
-        starts[node] = time.monotonic()
-        workspace.append_event(task_id, event="node_start", node=node)
-
-    kwargs = {"on_node_start": on_node_start}
-    for name, value in (("runtime", runtime),):
-        if value is not None and name in inspect.signature(build_graph).parameters:
-            kwargs[name] = value
-    graph = build_graph(**kwargs)
-    # Stream updates are partial; retain the input seed while merging the
-    # in-memory execution result instead of querying a durable graph state.
-    result: dict = dict(seed)
-    for chunk in graph.stream(seed, stream_mode="updates"):
-        for node, update in chunk.items():
-            result.update(update)
-            status, error = update.get("status"), update.get("error")
-            duration = round(time.monotonic() - starts.get(node, time.monotonic()), 1)
-            if status:
-                print(f"[{_now()}] [{node}] {status} ({duration}s)", flush=True)
-                workspace.append_event(task_id, event="node_end", node=node, status=status, duration_s=duration)
-            elif error:
-                print(f"[{_now()}] [{node}] error: {error}", flush=True)
-                workspace.append_event(task_id, event="node_end", node=node, status=state_mod.FAILED,
-                                       duration_s=duration, error=str(error)[:200])
-    return result
-
-
-def _work_from_seed(seed: dict) -> tuple[WorkContext, Context]:
-    value = seed.get("input") or {}
-    data = value.get("data") or {}
-    context = Context.from_dict(data.get("context") or value.get("context") or {})
-    item = WorkItem(
-        data["id"],
-        data["repository"],
-        data.get("title", ""),
-        data.get("description", ""),
-        tuple(data.get("extra_context", ())),
-        data.get("input_provider", value.get("provider", "")),
-        context,
+    if steps is None or deps is None:
+        if cli_composed and steps is None and deps is None:
+            # The CLI composed the runtime, so the configured workflow (and
+            # its per-step runtimes/prompts) is composed alongside it.
+            steps, deps = compose_execution_workflow()
+        else:
+            # Direct fallback for existing callers and tests: built-in default
+            # steps running against the provided runtime.
+            if steps is None:
+                steps = list(default_steps("execution"))
+            if deps is None:
+                deps = ExecutionStageDeps(runtime=runtime)
+    return run_workflow_graph(
+        seed, task_id, steps=steps, deps=deps, factories=STEP_FACTORIES,
     )
-    return WorkContext(item), context
 
 
-def _comment_instruction(seed: dict) -> str:
-    event = (seed.get("input") or {}).get("event") or {}
-    metadata = event.get("metadata") or {}
-    return str(metadata.get("instruction", ""))
+def _seed_workspace(seed: dict) -> dict:
+    """Seed workspace state from the canonical git context for comment graphs."""
+    data = (seed.get("input") or {}).get("data") or {}
+    context = Context.from_dict(data.get("context") or (seed.get("input") or {}).get("context") or {})
+    git_context = context.namespace("git")
+    workspace_state = dict(seed.get("workspace") or {})
+    if not workspace_state.get("path"):
+        workspace_state["path"] = str(git_context.get("workspace", ""))
+    if not workspace_state.get("branch"):
+        workspace_state["branch"] = str(git_context.get("branch", ""))
+    if not workspace_state.get("base_branch"):
+        workspace_state["base_branch"] = str(git_context.get("base_branch", ""))
+    if not workspace_state.get("context"):
+        workspace_state["context"] = context.to_dict()
+    return {**seed, "workspace": workspace_state}
 
 
-def _run_incremental_comment(seed: dict, task_id: str, *, runtime) -> dict:
+def _run_incremental_comment(
+    seed: dict, task_id: str, *, runtime, steps=None, deps=None,
+) -> dict:
+    if steps is None:
+        steps = list(default_steps("comment_impl"))
+    if deps is None:
+        deps = ExecutionStageDeps(runtime=runtime, reuse_workspace=True)
     try:
-        work, context = _work_from_seed(seed)
-        git_context = context.namespace("git")
-        publication = runtime.run_incremental(IncrementalExecutionRequest(
-            work=work,
-            instruction=_comment_instruction(seed),
-            branch=str(git_context.get("branch", "")),
-            base_branch=str(git_context.get("base_branch", "")),
-            workspace=str(git_context.get("workspace", "")),
-            context=context,
-        )).publication
-        output = {"provider": publication.provider}
-        if publication.id is not None:
-            output["external_id"] = publication.id
-        if publication.url is not None:
-            output["url"] = publication.url
-        return {"task_id": task_id, "status": state_mod.COMPLETED, "output": output}
+        result = run_workflow_graph(
+            _seed_workspace(seed), task_id, steps=steps, deps=deps,
+            factories=STEP_FACTORIES,
+        )
+        result.setdefault("task_id", task_id)
+        return result
     except Exception as exc:
         return {"task_id": task_id, "status": state_mod.FAILED, "error": str(exc)}
 
 
-def _run_discussion_comment(seed: dict, task_id: str, *, runtime) -> dict:
+def _run_discussion_comment(
+    seed: dict, task_id: str, *, runtime, steps=None, deps=None,
+) -> dict:
+    if steps is None:
+        steps = list(default_steps("discuss"))
+    if deps is None:
+        deps = discussion_steps.DiscussionStageDeps(runtime=runtime)
+    seeded = _seed_workspace(seed)
+    result: dict = {}
+    raised = False
     try:
-        work, context = _work_from_seed(seed)
-        git_context = context.namespace("git")
-        result = runtime.run(DiscussionRunRequest(
-            work=work,
-            branch=str(git_context.get("branch", "")),
-            base_branch=str(git_context.get("base_branch", "")),
-            workspace=str(git_context.get("workspace", "")),
-            revision=str(git_context.get("revision", "")),
-            fetch_url=str(git_context.get("fetch_url", "")),
-            context=context,
-        ))
-        return {
-            "task_id": task_id,
-            "status": state_mod.COMPLETED,
-            "output": {"response": result.response},
-        }
+        result = run_workflow_graph(
+            seeded, task_id, steps=steps, deps=deps,
+            factories=discussion_steps.STEP_FACTORIES,
+            state_schema=state_mod.DiscussionState,
+        )
+        result.setdefault("task_id", task_id)
+        return result
     except Exception as exc:
+        raised = True
         return {"task_id": task_id, "status": state_mod.FAILED, "error": str(exc)}
+    except BaseException:
+        raised = True
+        raise
+    finally:
+        prepared = discussion_steps.prepared_for_cleanup(result, steps)
+        if prepared is None and raised and any(step.type == "checkout" for step in steps):
+            prepared = discussion_steps.cleanup_candidate(seeded)
+        if prepared is not None:
+            try:
+                runtime.cleanup(prepared)
+            except Exception:
+                # A discussion has no local changes to preserve; cleanup must
+                # not hide an already published answer or the failure result.
+                pass
 
 
 def _report_result(result: dict) -> None:
@@ -197,10 +201,10 @@ def cmd_run(args: argparse.Namespace) -> None:
     developed_label = _developed_label()
     if developed_label in issue.labels and not args.force:
         sys.exit(f"issue {repository}#{number} is already labeled {developed_label}; use --force to run again")
+    steps, deps = compose_execution_workflow(runtime=runtime.execution_runtime)
     _report_result(_run_graph(
         _seed_state(repository, number, github_client=github_client), f"{repository}#{number}",
-        executor=runtime.executor, workspace_manager=runtime.workspace_manager,
-        destination=runtime.destination, runtime=runtime.execution_runtime,
+        runtime=deps.runtime, steps=steps, deps=deps,
     ))
 
 
@@ -305,16 +309,27 @@ def cmd_execute(args: argparse.Namespace) -> None:
     lock = _acquire_poll_lock()
     try:
         runtime, reviews = compose_runtime(), compose_review_runtime()
+        # Every configured workflow (and its per-step runtimes/prompts) is
+        # composed once at startup so a bad config aborts before polling.
+        steps, deps = compose_execution_workflow(runtime=runtime.execution_runtime)
+        comment_steps, comment_deps = compose_comment_impl_workflow(
+            runtime=runtime.execution_runtime
+        )
+        discuss_steps, discuss_deps = compose_discussion_workflow(
+            runtime=runtime.discussion_runtime
+        )
         application = PollingApplication(runtime.input_source,
-            lambda seed, task_id: _run_graph(seed, task_id, executor=runtime.executor,
-                workspace_manager=runtime.workspace_manager, destination=runtime.destination, runtime=runtime.execution_runtime),
+            lambda seed, task_id: _run_graph(seed, task_id, runtime=deps.runtime,
+                steps=steps, deps=deps),
             _report_result, _remove_event_workspace, now=_now, input_provider=runtime.input_provider,
             feedback=runtime.feedback,
             run_comment_impl=lambda seed, task_id: _run_incremental_comment(
-                seed, task_id, runtime=runtime.execution_runtime
+                seed, task_id, runtime=runtime.execution_runtime,
+                steps=comment_steps, deps=comment_deps,
             ),
             run_comment_discuss=lambda seed, task_id: _run_discussion_comment(
-                seed, task_id, runtime=runtime.discussion_runtime
+                seed, task_id, runtime=runtime.discussion_runtime,
+                steps=discuss_steps, deps=discuss_deps,
             ),
         )
         while True:

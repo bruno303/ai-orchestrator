@@ -119,6 +119,7 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_CODEX_TIMEOUT` | `3600` (seconds) |
 | `ORCHESTRATOR_CLAUDE_BIN` | `claude` |
 | `ORCHESTRATOR_CLAUDE_TIMEOUT` | `3600` (seconds) |
+| `ORCHESTRATOR_COMMAND_TIMEOUT` | `3600` (seconds, `command` workflow steps) |
 | `ORCHESTRATOR_EXECUTOR_EXECUTION` | `pipeline.execution.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_REVIEW` | `pipeline.review.executor.type` |
 | `ORCHESTRATOR_EXECUTOR_TRIAGE` | `pipeline.triage.executor.type` |
@@ -128,6 +129,204 @@ Paths, limits, model and loop detection (env overrides):
 | `ORCHESTRATOR_MODEL_REVIEW_VARIANT` | `model.review.variant` |
 | `ORCHESTRATOR_MODEL_TRIAGE_NAME` | `model.triage.name` |
 | `ORCHESTRATOR_MODEL_TRIAGE_VARIANT` | `model.triage.variant` |
+
+## Configurable workflow steps
+
+Every stage's processing steps are declared in `config/config.yaml` under
+`workflow`. Omitting the `workflow` key (or setting it to `null`) keeps the
+built-in default sequence for that stage, byte-compatible with releases before
+this feature. A *present* `workflow` mapping must contain a `steps` list; a
+mapping without one (`workflow: {}`) aborts at startup. A bare step list
+(`workflow:` followed directly by `- {name: ...}` entries) is accepted as
+shorthand. The configured workflows drive the issue-triggered execution, the
+`/ai-agent-impl` and `/ai-agent-discuss` comment commands, review, and triage.
+All workflow sections are validated and composed once at startup, so a bad
+configuration aborts before polling:
+
+```yaml
+pipeline:
+  execution:
+    workflow:                      # issue-triggered run
+      steps:
+        - {name: prepare_workspace, type: checkout}
+        - {name: plan, type: plan, model: {name: verboo/deepseek-v4-flash}}
+        - {name: implement, type: implement}
+        - {name: create_pr, type: publish}
+        - {name: cleanup, type: cleanup, on_failure: continue}
+    comments:                      # comment-command workflows
+      impl:
+        workflow:
+          steps:
+            - {name: checkout, type: checkout}
+            - {name: implement, type: implement_comment}
+            - {name: publish, type: publish}
+            - {name: cleanup, type: cleanup, on_failure: continue}
+      discuss:
+        workflow:
+          steps:
+            - {name: checkout, type: checkout}
+            - {name: answer, type: discuss}
+            - {name: publish, type: publish}
+  review:
+    workflow:
+      steps:
+        - {name: checkout, type: checkout}
+        - {name: review, type: review}
+        - {name: publish, type: publish}
+  triage:
+    workflow:
+      steps:
+        - {name: assess, type: assess}
+        - {name: publish, type: publish}
+```
+
+Step fields:
+
+| Field | Applies to | Rules |
+|---|---|---|
+| `name` | all | Required. Slug `^[a-z][a-z0-9_-]{0,39}$`, unique within the stage. The name is the graph node name: it keys the log files, `orchestrator logs TASK --node <name>`, and the recorded step results. |
+| `type` | all | Required; one of the catalog types listed below. |
+| `on_failure` | all | `abort` (default) stops the run; `continue` records the failure in step results and keeps going. |
+| `executor` | agent-bearing steps | Provider type override (`opencode`, `codex`, or `claude`), validated against the stage's executor registry. |
+| `model` | agent-bearing steps | `{name, variant}` override for this step only. |
+| `prompt_file` | agent-bearing steps | A text file path relative to the orchestrator repo root, loaded once at startup. Required for the generic `agent` type. |
+| `command` / `timeout_seconds` | `command` steps | Required shell command; optional per-step timeout override. |
+| `agent` | `agent` steps | OpenCode agent name for the generic run (default `build`). |
+
+Agent-bearing step types are `plan`, `implement`, `implement_comment`,
+`review`, `assess`, `discuss`, and the generic `agent` type; other types reject
+those override fields.
+
+Per-stage step-type catalog:
+
+| Stage | Step types |
+|---|---|
+| `execution` | `checkout`, `plan`, `implement`, `publish`, `cleanup`, generic `command` and `agent` |
+| `execution.comments.impl` | `checkout`, `implement_comment`, `publish`, `cleanup`, generic `command` and `agent` |
+| `execution.comments.discuss` | `checkout`, `discuss`, `publish` |
+| `review` | `checkout`, `review`, `publish`, generic `command` |
+| `triage` | `assess`, `publish` |
+
+`checkout` prepares the git worktree and branch, `plan` runs the planning phase
+behind the `.agents/plans/plan.md` artifact contract, `implement` executes that
+plan, `implement_comment` applies a comment instruction directly, `publish`
+publishes the change, `cleanup` removes the worktree, `review` inspects a
+pull request for the JSON review outcome, `assess` produces the triage JSON,
+`discuss` answers a read-only discussion, and the generic `command` step runs a
+shell command in the task workspace (a non-zero exit fails the step).
+
+### Terminal status
+
+- A run ends `COMPLETED` when no step failed fatally. That includes workflows
+  whose tail sets no status: a final `command` step (or any other step that
+  only records its result) is completed by the graph's finalizer.
+- An `abort` failure ends the run `FAILED` and skips every remaining step,
+  including the terminal finalizer.
+- `on_failure: continue` records the failure in the step results without ending
+  the run, so the final status can still be `COMPLETED`.
+
+### Publication requirement
+
+Every stage workflow must contain at least one `publish` step unless the
+workflow mapping sets `require_publication: false`; the check aborts at startup
+with a message naming the config path. The flag is validation-only: it is not
+carried into the step model or any runtime dataclass. It is for workflows that
+publish from a `command` step instead of the `publish` type:
+
+```yaml
+pipeline:
+  execution:
+    workflow:
+      require_publication: false
+      steps:
+        - {name: checkout, type: checkout}
+        - {name: implement, type: implement}
+        - {name: publish, type: command, command: "gh pr create --fill"}
+        - {name: cleanup, type: cleanup, on_failure: continue}
+```
+
+`publish` steps cannot use `on_failure: continue`; publication failures must
+abort.
+
+### Reserved step name
+
+`end` is reserved for the workflow router and is rejected by validation. It can
+no longer truncate a workflow early; shape the sequence with step order and
+`on_failure` instead.
+
+### Validated configuration keys
+
+Unknown keys abort at startup at the `pipeline` level, at each stage
+(`execution`/`review`/`triage`), at `pipeline.execution.comments`, at each
+comment section (`impl`/`discuss`), and at each `workflow` level. Provider
+option mappings (for example `input_source`, `executor`,
+`workspace_manager`, `destination`) and `labels` internals remain free-form.
+
+| Level | Allowed keys |
+|---|---|
+| `pipeline` | `execution`, `review`, `triage` |
+| `pipeline.execution` | `input_source`, `executor`, `workspace_manager`, `destination`, `labels`, `workflow`, `comments` |
+| `pipeline.review` | `input_source`, `executor`, `workspace_manager`, `destination`, `labels`, `workflow` |
+| `pipeline.triage` | `input_source`, `executor`, `destination`, `labels`, `workflow` |
+| `pipeline.execution.comments` | `impl`, `discuss` |
+| comment section | `workflow` |
+| `workflow` | `steps`, `require_publication` |
+
+### Default steps and log files
+
+| Stage | Built-in steps | Agent log files |
+|---|---|---|
+| `execution` | `prepare_workspace`, `plan`, `implement`, `create_pr`, `cleanup` | `plan.log`, `implement.log` |
+| comment impl | `checkout`, `implement`, `publish`, `cleanup` | `implement.log`, shared with the issue run's implement phase (same node name) |
+| discussion | `checkout`, `answer`, `publish` | `answer.log` |
+| review | `checkout`, `review`, `publish` | `review.log` |
+| triage | `assess`, `publish` | `assess.log` for the assessment; the triage application's start/finish lines stay in `triage.log` |
+
+Each agent step writes `<step-name>.log` under the task's log directory, so a
+renamed step also renames its log file. Node names changed from
+`implement-comment` → `implement`, `discussion` → `answer`, and `triage` →
+`assess`; scripts that pass those old values to
+`orchestrator logs TASK --node <name>` must be updated.
+
+Behavior:
+
+- `cleanup` only runs if the chain reaches it, so a failed worktree is still
+  preserved for debugging until a rerun starts; this also holds for a `cleanup`
+  step configured with `on_failure: continue`.
+- Review and discussion cleanup is a loop-owned `finally` epilogue, not a
+  configurable step: the prepared checkout is removed even when review,
+  answer, or publication fails. Triage's `assess` step owns its temporary
+  workspace, so triage workflows have no cleanup step.
+- If an execution workflow omits `plan`, the `.agents/plans/plan.md` artifact
+  contract simply does not apply to that workflow.
+- The generic `command` type is available to execution, comment-impl, and
+  review workflows; the generic `agent` type is available to execution and
+  comment-impl workflows. Neither type is used by the built-in defaults.
+- `on_failure: continue` records the failure in the step results and keeps
+  running; the final status stays `COMPLETED` unless a later step fails
+  fatally. `orchestrator logs TASK --node <step>` shows per-step logs.
+- `prompt_file` replaces the built-in phase prompt entirely. `plan`, `implement`,
+  `implement_comment`, `review`, `assess`, and `discuss` use the file text
+  verbatim; a generic `agent` step's prompt is rendered with the task
+  placeholders `{task_id}`, `{repository}`, `{title}`, `{description}`, and
+  `{extra_context}`. Literal braces in an `agent` prompt must be doubled —
+  `{{` renders `{` and `}}` renders `}` — otherwise rendering fails the step
+  with an error naming the offending placeholder.
+  Warning: replacing a built-in prompt drops the guardrails it encodes —
+  planning must not modify files, implementation must run the repository's
+  tests and quality checks and must not push or create a pull request,
+  discussion must stay read-only, and review/triage must return their JSON
+  contracts — so write that policy into your own prompt.
+- Precedence: built-in defaults → stage configuration and `ORCHESTRATOR_*` env
+  overrides → step overrides. Steps are YAML-only: the executor/model env keys
+  keep controlling stage defaults but do not apply to steps.
+- `command` steps run under the `ORCHESTRATOR_COMMAND_TIMEOUT` wall-clock
+  budget (default `3600` seconds), overridable per step with `timeout_seconds`.
+  A timeout kills only the top-level shell process; descendant processes the
+  command spawned may keep running until they exit on their own.
+- There is deliberately no dedicated test/QA step type: the implement agent
+  runs the repository's tests, linters, and other quality checks as part of its
+  implementation contract.
 
 ## Usage
 
@@ -275,8 +474,9 @@ another workflow engine without duplicating agent, git, or provider logic.
 `GitWorkspaceManager` is provider-neutral: adapters provide explicit clone/fetch
 URLs, refs, revisions, checkout mode, and workspace paths; it performs only git
 clone, fetch, worktree, and cleanup operations.
-LangGraph routes a single in-memory execution. The review workflow remains
-independently invokable and has its own GitHub `ai-reviewed` marker.
+LangGraph routes each single in-memory execution, including comment, review,
+and triage workflows. The review workflow remains independently invokable and
+has its own GitHub `ai-reviewed` marker.
 
 Every task or review target has exactly one mandatory, non-empty, opaque string
 ID. Providers use their stable identifier when one exists (`owner/repo#123`,

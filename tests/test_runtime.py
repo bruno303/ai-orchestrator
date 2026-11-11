@@ -9,11 +9,12 @@ from orchestrator.domain import Context, PublishedChange, PublishedReview, Revie
 from orchestrator.application.ports import ExecutionResult, WorkspaceResult
 from orchestrator.main.composition import compose_execution_runtime
 from orchestrator.application.execution.errors import AgentExecutionError, ReviewExecutionError
-from orchestrator.application.execution.service import implement_prompt
+from orchestrator.application.execution.service import ExecutionRuntime, implement_prompt
 from orchestrator.application.execution.models import (
     AgentRequest,
     CleanupRequest,
     CleanupReviewRequest,
+    CommandStepRequest,
     ExecuteReviewRequest,
     ImplementationRequest,
     PlanRequest,
@@ -24,6 +25,7 @@ from orchestrator.application.execution.models import (
     WorkContext,
 )
 from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
+from orchestrator.infra.filesystem.command import run_workspace_command
 
 
 class ExecutionWorkspace:
@@ -153,6 +155,32 @@ def test_cleanup_preserves_custom_workspace_context(tmp_path):
 
     assert captured["context"] is original_context
     assert captured["context"] == original_context
+
+
+def test_execution_runtime_run_command_uses_wired_runner_and_log_file(tmp_path):
+    runtime = ExecutionRuntime(
+        object(), object(), object(),
+        command_runner=run_workspace_command,
+        task_log_path=lambda task_id, node: tmp_path / f"{task_id}-{node}.log",
+    )
+    request = CommandStepRequest(_context(), "tests", str(tmp_path), "echo ok", 10)
+    step = runtime.run_command(request)
+
+    assert step.result.success is True
+    assert step.result.exit_code == 0
+    assert step.result.context is request.context
+    log_path = tmp_path / "repo#7-tests.log"
+    assert log_path.name.endswith("-tests.log")
+    assert "ok" in log_path.read_text()
+
+
+def test_execution_runtime_run_command_without_runner_reports_not_wired():
+    runtime = ExecutionRuntime(object(), object(), object())
+    request = CommandStepRequest(_context(), "tests", "workspace", "echo ok", 10)
+    step = runtime.run_command(request)
+
+    assert step.result.success is False
+    assert "not wired" in step.result.stderr
 
 
 def test_review_runtime_keeps_review_workspace_mode_explicit(tmp_path):

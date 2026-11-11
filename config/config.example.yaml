@@ -38,6 +38,37 @@ pipeline:
       suppress: [ai-developed]
       output:
         add: [ai-developed]
+    # These are the built-in default workflows. Keep them, edit them, or
+    # remove a `workflow` section (or set it to `null`) to fall back to its
+    # built-in sequence. A present `workflow` must be a mapping with a `steps`
+    # list, or a bare list of step mappings; unknown workflow keys abort at
+    # startup.
+    # A configured workflow in any stage must contain a `publish` step; set
+    # `require_publication: false` on the workflow mapping to opt out.
+    # `publish` steps cannot use `on_failure: continue`.
+    workflow:
+      steps:
+        - {name: prepare_workspace, type: checkout}
+        - {name: plan, type: plan}
+        - {name: implement, type: implement}
+        - {name: create_pr, type: publish}
+        - {name: cleanup, type: cleanup, on_failure: continue}
+    # Comment commands (/ai-agent-impl and /ai-agent-discuss) have their own
+    # workflows. Configuring one leaves the other on its built-in sequence:
+    comments:
+      impl:
+        workflow:
+          steps:
+            - {name: checkout, type: checkout}
+            - {name: implement, type: implement_comment}
+            - {name: publish, type: publish}
+            - {name: cleanup, type: cleanup, on_failure: continue}
+      discuss:
+        workflow:
+          steps:
+            - {name: checkout, type: checkout}
+            - {name: answer, type: discuss}
+            - {name: publish, type: publish}
   review:
     input_source: {type: github_polling, auth: bot}
     executor: {type: opencode}
@@ -48,6 +79,13 @@ pipeline:
       suppress: [ai-reviewed]
       output:
         add: [ai-reviewed]
+    # Review cleanup stays a loop-owned finally epilogue, so the built-in
+    # workflow does not include a cleanup step:
+    workflow:
+      steps:
+        - {name: checkout, type: checkout}
+        - {name: review, type: review}
+        - {name: publish, type: publish}
   triage:
     input_source: {type: github_polling, auth: bot}
     executor: {type: opencode}
@@ -61,6 +99,11 @@ pipeline:
           remove: [ai-triage]
         blocked:
           add: [ai-triage]
+    # Triage assessment owns its temporary workspace; there is no cleanup step:
+    workflow:
+      steps:
+        - {name: assess, type: assess}
+        - {name: publish, type: publish}
 
 # Repositories allowed to trigger the orchestrator.
 # Only repos listed here can be processed (CLI, poll, and graph all enforce this).

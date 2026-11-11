@@ -71,7 +71,7 @@ class ReviewRuntime:
             workspace=prepared.workspace.workspace,
             prompt=request.prompt,
             context=prepared.context,
-            log_file=str(self.task_log_path(prepared.target.id, "review")),
+            log_file=str(self.task_log_path(prepared.target.id, request.node)),
         )
         try:
             result = self.executor.execute(review_request)
