@@ -57,6 +57,11 @@ def run_workflow_graph(
     result: dict[str, Any] = dict(seed)
     for chunk in graph.stream(seed, stream_mode="updates"):
         for node, update in chunk.items():
+            if not update:
+                # LangGraph streams `None` for a node that writes nothing
+                # (e.g. the finalizer on an already-terminal run); it has no
+                # output to print and no event to record.
+                continue
             # ``step_results`` uses a merge reducer in the graph state; stream
             # updates are node-local, so merge it here as well instead of
             # letting the latest node replace earlier entries.

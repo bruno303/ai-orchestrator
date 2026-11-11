@@ -50,6 +50,14 @@ EXPECTED_DEFAULT_STEPS: dict[str, list[tuple[str, str, str]]] = {
     ],
 }
 
+EXPECTED_DEFAULT_STEP_NAMES: dict[str, list[str]] = {
+    "execution": ["prepare_workspace", "plan", "implement", "create_pr", "cleanup"],
+    "comment_impl": ["checkout", "implement", "publish", "cleanup"],
+    "discuss": ["checkout", "answer", "publish"],
+    "review": ["checkout", "review", "publish"],
+    "triage": ["assess", "publish"],
+}
+
 STAGE_STEP_TYPES = {
     "execution": EXECUTION_STEP_TYPES,
     "comment_impl": COMMENT_IMPL_STEP_TYPES,
@@ -78,9 +86,19 @@ def test_default_steps_reproduce_today_sequences_per_stage(stage: str):
     assert [(step.name, step.type, step.on_failure) for step in steps] == EXPECTED_DEFAULT_STEPS[stage]
 
 
+@pytest.mark.parametrize("stage", sorted(EXPECTED_DEFAULT_STEP_NAMES))
+def test_default_step_names_are_pinned_per_stage(stage: str):
+    assert [step.name for step in default_steps(stage)] == EXPECTED_DEFAULT_STEP_NAMES[stage]
+
+
 @pytest.mark.parametrize("stage", sorted(STAGE_STEP_TYPES))
 def test_default_step_types_are_valid_for_their_stage(stage: str):
     assert all(step.type in STAGE_STEP_TYPES[stage] for step in default_steps(stage))
+
+
+@pytest.mark.parametrize("stage", sorted(STAGE_STEP_TYPES))
+def test_default_steps_pass_validation(stage: str):
+    validate_steps(default_steps(stage), STAGE_STEP_TYPES[stage], stage=stage)
 
 
 def test_default_steps_rejects_unknown_stage():
@@ -127,6 +145,14 @@ def test_duplicate_step_names_are_rejected():
 
     with pytest.raises(StepConfigError, match="duplicate step name"):
         validate_steps(steps, EXECUTION_STEP_TYPES, stage="execution")
+
+
+@pytest.mark.parametrize("stage", sorted(STAGE_STEP_TYPES))
+def test_step_named_end_is_reserved_for_the_workflow_router(stage: str):
+    steps = [*default_steps(stage), StepSpec("end", "publish")]
+
+    with pytest.raises(StepConfigError, match="'end' is reserved for the workflow router"):
+        validate_steps(steps, STAGE_STEP_TYPES[stage], stage=stage)
 
 
 def test_unknown_step_type_is_rejected_against_the_stage_catalog():
@@ -224,10 +250,21 @@ def test_valid_reordered_execution_subset_without_planning_passes():
     steps = [
         StepSpec("implement", "implement", executor_type="claude", model_name="verboo/model"),
         StepSpec("prepare_workspace", "checkout"),
-        StepSpec("create_pr", "publish", on_failure="continue"),
+        StepSpec("create_pr", "publish"),
     ]
 
     validate_steps(steps, EXECUTION_STEP_TYPES, stage="execution")
+
+
+@pytest.mark.parametrize("stage", sorted(STAGE_STEP_TYPES))
+def test_publish_steps_cannot_continue_after_failure(stage: str):
+    steps = [StepSpec("publish", "publish", on_failure="continue")]
+
+    with pytest.raises(
+        StepConfigError,
+        match=f"{stage} step 'publish': 'publish' steps cannot use 'on_failure: continue'",
+    ):
+        validate_steps(steps, STAGE_STEP_TYPES[stage], stage=stage)
 
 
 def test_valid_command_step_with_every_field_set_passes():

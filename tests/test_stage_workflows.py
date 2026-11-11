@@ -6,6 +6,8 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from orchestrator.application.discussion import PreparedDiscussion
 from orchestrator.application.execution.models import (
     ExecuteReviewRequest,
@@ -49,10 +51,12 @@ _WORKSPACE = tempfile.mkdtemp(prefix="orchestrator-stage-tests-")
 
 
 class FakeReviewRuntime:
-    def __init__(self, *, fail_review: bool = False):
+    def __init__(self, *, fail_review: bool = False, interrupt_review: bool = False):
         self.calls: list[str] = []
         self.requests: list[ExecuteReviewRequest] = []
+        self.cleanups: list = []
         self.fail_review = fail_review
+        self.interrupt_review = interrupt_review
 
     def prepare(self, request):
         self.calls.append("prepare")
@@ -65,6 +69,8 @@ class FakeReviewRuntime:
     def execute_review(self, request):
         self.calls.append("review")
         self.requests.append(request)
+        if self.interrupt_review:
+            raise KeyboardInterrupt
         if self.fail_review:
             raise RuntimeError("review executor failed")
         return ExecuteReviewResult(
@@ -79,17 +85,18 @@ class FakeReviewRuntime:
 
     def cleanup_review(self, request):
         self.calls.append("cleanup")
+        self.cleanups.append(request)
         return SimpleNamespace(workspace=request.prepared.workspace.workspace)
 
     def task_log_path(self, task_id, node):
         return Path(_WORKSPACE) / f"{task_id}-{node}.log"
 
 
-def _review_target() -> ReviewTarget:
+def _review_target(context: Context | None = None) -> ReviewTarget:
     return ReviewTarget(
         "review:company/backend#4", "company/backend", source_ref="feature",
         target_ref="main", revision="abc",
-        context=Context({"github": {"pr_number": 4}}),
+        context=context or Context({"github": {"pr_number": 4}}),
     )
 
 
@@ -232,7 +239,7 @@ def test_review_command_step_records_success_output():
         review_steps.seed(_review_target())
     )
 
-    assert result["status"] == "PREPARING"  # no publication step configured
+    assert result["status"] == COMPLETED  # the command tail finalizes the run
     assert result["step_results"]["lint"]["status"] == "succeeded"
     assert result["step_results"]["lint"]["summary"] == "clean"
 
@@ -250,6 +257,7 @@ def test_review_application_runs_the_graph_and_keeps_loop_owned_cleanup():
 
     assert app.poll_once() == [target]
     assert runtime.calls == ["prepare", "review", "publish", "cleanup"]
+    assert runtime.calls.count("cleanup") == 1
 
 
 def test_review_application_cleans_up_after_a_failed_graph():
@@ -264,6 +272,75 @@ def test_review_application_cleans_up_after_a_failed_graph():
 
     assert app.poll_once() == []
     assert runtime.calls == ["prepare", "review", "cleanup"]
+
+
+def test_review_application_cleans_up_after_an_interrupted_review():
+    runtime = FakeReviewRuntime(interrupt_review=True)
+    target = _review_target()
+    app = ReviewApplication(SimpleNamespace(poll=lambda: [target]), runtime=runtime)
+
+    with pytest.raises(KeyboardInterrupt):
+        app.poll_once()
+
+    assert runtime.calls == ["prepare", "review", "cleanup"]
+
+
+def test_review_application_cleans_up_after_an_interrupted_graph():
+    runtime = FakeReviewRuntime()
+    target = _review_target(
+        Context({"github": {"pr_number": 4}, "git": {"workspace": _WORKSPACE}})
+    )
+
+    def interrupted_run(_target):
+        raise KeyboardInterrupt
+
+    app = ReviewApplication(
+        SimpleNamespace(poll=lambda: [target]),
+        runtime=runtime,
+        run_workflow=interrupted_run,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        app.poll_once()
+
+    assert runtime.calls == ["cleanup"]
+    assert runtime.cleanups[0].prepared.workspace.workspace == _WORKSPACE
+
+
+def test_review_interrupted_graph_cleanup_is_removable_by_the_git_manager(tmp_path):
+    from orchestrator.application.review.service import ReviewRuntime
+    from orchestrator.infra.git import client as git_client
+    from orchestrator.infra.git.workspace import GitWorkspaceManager
+
+    removed = []
+
+    class FakeGitClient:
+        def remove_worktree(self, repo_dir, workspace, branch):
+            removed.append((repo_dir, workspace, branch))
+
+    workspace_path = tmp_path / "review-wt"
+    target = _review_target(
+        Context({
+            "github": {"pr_number": 4},
+            "git": {"workspace": str(workspace_path), "revision": "abc"},
+        })
+    )
+
+    def interrupted_run(_target):
+        raise KeyboardInterrupt
+
+    app = ReviewApplication(
+        SimpleNamespace(poll=lambda: [target]),
+        runtime=ReviewRuntime(None, GitWorkspaceManager(git_client=FakeGitClient()), None),
+        run_workflow=interrupted_run,
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        app.poll_once()
+
+    assert removed == [
+        (git_client.base_repo_dir("company/backend"), workspace_path, "")
+    ]
 
 
 # --- triage -----------------------------------------------------------------
@@ -398,11 +475,12 @@ def test_triage_application_graph_path_isolates_failed_targets():
 
 
 class FakeDiscussionRuntime:
-    def __init__(self, *, fail_answer: bool = False):
+    def __init__(self, *, fail_answer: bool = False, interrupt_answer: bool = False):
         self.calls: list[str] = []
         self.requests = []
         self.prompts: list[str] = []
         self.fail_answer = fail_answer
+        self.interrupt_answer = interrupt_answer
 
     def prepare(self, request):
         self.calls.append("prepare")
@@ -416,6 +494,8 @@ class FakeDiscussionRuntime:
     def answer(self, request, prepared, *, prompt=None, node="discussion"):
         self.calls.append("answer")
         self.prompts.append(prompt or "")
+        if self.interrupt_answer:
+            raise KeyboardInterrupt
         if self.fail_answer:
             raise RuntimeError("discussion executor failed")
         return DiscussionResult(True, "the answer", context=prepared.context)
@@ -512,6 +592,7 @@ def test_cli_discussion_comment_runs_the_graph_and_cleans_up():
     assert result["status"] == COMPLETED
     assert result["output"]["response"] == "the answer"
     assert runtime.calls == ["prepare", "answer", "publish", "cleanup"]
+    assert runtime.calls.count("cleanup") == 1
 
 
 def test_cli_discussion_comment_cleans_up_after_a_failed_answer():
@@ -527,6 +608,80 @@ def test_cli_discussion_comment_cleans_up_after_a_failed_answer():
 
     assert result["status"] == FAILED
     assert runtime.calls == ["prepare", "answer", "cleanup"]
+
+
+def test_cli_discussion_comment_cleans_up_after_an_interrupted_answer():
+    from orchestrator.main import cli
+
+    runtime = FakeDiscussionRuntime(interrupt_answer=True)
+    steps = list(default_steps("discuss"))
+    deps = discussion_steps.DiscussionStageDeps(runtime=runtime)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli._run_discussion_comment(
+            _discussion_seed(), "company/backend#7", runtime=runtime, steps=steps, deps=deps,
+        )
+
+    assert runtime.calls == ["prepare", "answer", "cleanup"]
+
+
+def test_discussion_cleanup_candidate_ignores_a_missing_workspace():
+    state = _discussion_seed()
+    state["workspace"] = {
+        "path": str(Path(_WORKSPACE) / "missing"),
+        "branch": "ai/issue-7",
+        "base_branch": "main",
+        "context": {},
+    }
+
+    assert discussion_steps.cleanup_candidate(state) is None
+
+
+def test_discussion_interrupted_checkout_cleanup_is_removable_by_the_git_manager(tmp_path):
+    from orchestrator.application.discussion.service import DiscussionRuntime
+    from orchestrator.infra.git import client as git_client
+    from orchestrator.infra.git.workspace import GitWorkspaceManager
+    from orchestrator.main import cli
+
+    removed = []
+
+    class FakeGitClient:
+        def remove_worktree(self, repo_dir, workspace, branch):
+            removed.append((repo_dir, workspace, branch))
+
+    class InterruptingWorkspaceManager:
+        def __init__(self, manager):
+            self.manager = manager
+
+        def prepare(self, request):
+            raise KeyboardInterrupt
+
+        def cleanup(self, result):
+            self.manager.cleanup(result)
+
+    workspace_path = tmp_path / "discussion-wt"
+    workspace_path.mkdir()
+    seed = _discussion_seed()
+    seed["input"]["data"]["context"]["git"].update({
+        "workspace": str(workspace_path),
+        "branch": "ai/issue-7",
+    })
+    runtime = DiscussionRuntime(
+        None,
+        InterruptingWorkspaceManager(GitWorkspaceManager(git_client=FakeGitClient())),
+        None,
+    )
+    steps = list(default_steps("discuss"))
+
+    with pytest.raises(KeyboardInterrupt):
+        cli._run_discussion_comment(
+            seed, "company/backend#7", runtime=runtime, steps=steps,
+            deps=discussion_steps.DiscussionStageDeps(runtime=runtime),
+        )
+
+    assert removed == [
+        (git_client.base_repo_dir("company/backend"), workspace_path, "")
+    ]
 
 
 # --- comment implementation -------------------------------------------------

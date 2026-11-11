@@ -56,6 +56,7 @@ def test_compose_comment_impl_workflow_loads_prompt_files(
         "    comments:\n"
         "      impl:\n"
         "        workflow:\n"
+        "          require_publication: false\n"
         "          steps:\n"
         "            - {name: checkout, type: checkout}\n"
         "            - {name: implement, type: implement_comment, prompt_file: prompts/comment.md}\n"

@@ -323,6 +323,48 @@ def _triage_labels(pipeline: dict[str, Any]) -> TriageLabelConfig:
     )
 
 
+_PIPELINE_SECTION_KEYS = ("execution", "review", "triage")
+_EXECUTION_SECTION_KEYS = (
+    "input_source",
+    "executor",
+    "workspace_manager",
+    "destination",
+    "labels",
+    "workflow",
+    "comments",
+)
+_REVIEW_SECTION_KEYS = (
+    "input_source",
+    "executor",
+    "workspace_manager",
+    "destination",
+    "labels",
+    "workflow",
+)
+_TRIAGE_SECTION_KEYS = ("input_source", "executor", "destination", "labels", "workflow")
+_COMMENT_SECTION_KEYS = ("impl", "discuss")
+_COMMENT_WORKFLOW_KEYS = ("workflow",)
+_WORKFLOW_KEYS = ("steps", "require_publication")
+
+
+def _validated_mapping(value: Any, *, path: str, allowed: tuple[str, ...]) -> dict[str, Any]:
+    """Reject unknown keys in one workflow-stage config section.
+
+    Sections are fail-fast: an unknown key is a typo that would otherwise be
+    silently ignored.  Provider option mappings and ``labels`` internals are
+    deliberately free-form and never routed through this helper.
+    """
+    if not isinstance(value, dict):
+        raise ValueError(f"{path} must be a mapping; got {type(value).__name__}")
+    unknown = sorted({str(key) for key in value} - set(allowed))
+    if unknown:
+        raise ValueError(
+            f"{path}: unknown key(s) {', '.join(repr(key) for key in unknown)} "
+            f"(allowed: {', '.join(sorted(allowed))})"
+        )
+    return value
+
+
 _STEP_ENTRY_KEYS = ("name", "type")
 _STEP_OPTIONAL_KEYS = (
     "on_failure",
@@ -449,16 +491,27 @@ def _workflow_steps(
 ) -> tuple[StepSpec, ...]:
     """Parse one optional ``workflow`` config section into validated steps.
 
-    An absent section (or an empty mapping) keeps the built-in step sequence;
-    otherwise the raw YAML becomes :class:`StepSpec` entries revalidated by
-    :func:`validate_steps` against the stage catalog.
+    An absent section (or ``null``) keeps the built-in step sequence.  A
+    present mapping must carry a ``steps`` list; a bare step list is accepted
+    as shorthand.  The raw YAML becomes :class:`StepSpec` entries revalidated
+    by :func:`validate_steps` against the stage catalog.
     """
     if value is None:
         return default_steps(stage)
+    require_publication = True
     if isinstance(value, dict):
-        raw_steps = value.get("steps")
-        if raw_steps is None:
-            return default_steps(stage)
+        workflow = _validated_mapping(value, path=path, allowed=_WORKFLOW_KEYS)
+        # Validation-only flag: deliberately not carried on StepSpec or any
+        # pipeline dataclass.
+        require_publication = workflow.get("require_publication", True)
+        if not isinstance(require_publication, bool):
+            raise ValueError(
+                f"{path}.require_publication must be a boolean; "
+                f"got {require_publication!r}"
+            )
+        if "steps" not in workflow:
+            raise ValueError(f"{path}: missing required 'steps' list")
+        raw_steps = workflow["steps"]
     elif isinstance(value, list):
         raw_steps = value
     else:
@@ -474,6 +527,11 @@ def _workflow_steps(
     for index, entry in enumerate(raw_steps):
         steps.append(_step_entry(entry, index=index, path=path, registry=registry))
     validate_steps(steps, allowed_types, stage=stage)
+    if require_publication and not any(step.type == "publish" for step in steps):
+        raise ValueError(
+            f"{path}: workflow has no 'publish' step; add one or set "
+            "require_publication: false"
+        )
     return tuple(steps)
 
 
@@ -482,9 +540,11 @@ def _comment_workflow_steps(
     registry: ProviderRegistry,
 ) -> tuple[StepSpec, ...]:
     """Parse one ``pipeline.execution.comments.<section>.workflow`` section."""
-    raw = comments.get(section) or {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"pipeline.execution.comments.{section} must be a mapping")
+    raw = _validated_mapping(
+        comments.get(section) or {},
+        path=f"pipeline.execution.comments.{section}",
+        allowed=_COMMENT_WORKFLOW_KEYS,
+    )
     return _workflow_steps(
         raw.get("workflow"),
         stage=stage,
@@ -513,9 +573,14 @@ def _provider_config(
 
 
 def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineConfig:
-    comments = pipeline.get("comments") or {}
-    if not isinstance(comments, dict):
-        raise ValueError("pipeline.execution.comments must be a mapping")
+    pipeline = _validated_mapping(
+        pipeline, path="pipeline.execution", allowed=_EXECUTION_SECTION_KEYS,
+    )
+    comments = _validated_mapping(
+        pipeline.get("comments") or {},
+        path="pipeline.execution.comments",
+        allowed=_COMMENT_SECTION_KEYS,
+    )
     return ExecutionPipelineConfig(
         input_source=_provider_config("input_source", pipeline, INPUT_PROVIDERS),
         executor=_provider_config(
@@ -546,6 +611,9 @@ def _execution_pipeline_config(pipeline: dict[str, Any]) -> ExecutionPipelineCon
 
 
 def _review_pipeline_config(pipeline: dict[str, Any]) -> ReviewPipelineConfig:
+    pipeline = _validated_mapping(
+        pipeline, path="pipeline.review", allowed=_REVIEW_SECTION_KEYS,
+    )
     return ReviewPipelineConfig(
         input_source=_provider_config("input_source", pipeline, REVIEW_INPUT_PROVIDERS),
         executor=_provider_config(
@@ -568,6 +636,9 @@ def _review_pipeline_config(pipeline: dict[str, Any]) -> ReviewPipelineConfig:
 
 
 def _triage_pipeline_config(pipeline: dict[str, Any]) -> TriagePipelineConfig:
+    pipeline = _validated_mapping(
+        pipeline, path="pipeline.triage", allowed=_TRIAGE_SECTION_KEYS,
+    )
     return TriagePipelineConfig(
         input_source=_provider_config("input_source", pipeline, TRIAGE_INPUT_PROVIDERS),
         executor=_provider_config("executor", pipeline, TRIAGE_EXECUTOR_PROVIDERS, "ORCHESTRATOR_EXECUTOR_TRIAGE"),
@@ -591,7 +662,9 @@ def load_pipeline_config() -> PipelineConfig:
     else:
         with CONFIG_FILE.open() as fh:
             data = yaml.safe_load(fh) or {}
-    pipeline = data.get("pipeline") or {}
+    pipeline = _validated_mapping(
+        data.get("pipeline") or {}, path="pipeline", allowed=_PIPELINE_SECTION_KEYS,
+    )
     return PipelineConfig(
         execution=_execution_pipeline_config(pipeline.get("execution") or {}),
         review=_review_pipeline_config(pipeline.get("review") or {}),

@@ -41,6 +41,27 @@ def _prepared_from_state(
     )
 
 
+def _cleanup_candidate(target: ReviewTarget) -> PrepareReviewResult | None:
+    """Derive a cleanup-only prepared review from the target's git context.
+
+    The candidate carries the repository identity the workspace manager needs
+    to locate the base clone (``repo_dir`` is derived from it). Review
+    checkouts are revision checkouts, so the branch stays empty (branch
+    deletion disabled). This covers runs that raised before a prepared state
+    existed, such as an interrupted graph runner.
+    """
+    git_context = target.context.namespace("git")
+    workspace = str(git_context.get("workspace") or "")
+    if not workspace:
+        return None
+    context = target.context.merge_namespace("git", {"repository": target.repository})
+    return PrepareReviewResult(
+        target,
+        WorkspaceResult(workspace, "", context, str(git_context.get("base_branch") or "")),
+        context,
+    )
+
+
 @dataclass(init=False)
 class ReviewApplication:
     """Coordinate review events while delegating concrete steps to a runtime."""
@@ -116,9 +137,10 @@ class ReviewApplication:
             except Exception as exc:
                 print(f"[review] {target.id}: {exc}", flush=True)
             finally:
-                if prepared is not None:
+                cleanup = prepared or _cleanup_candidate(target)
+                if cleanup is not None:
                     try:
-                        self.runtime.cleanup_review(CleanupReviewRequest(prepared))
+                        self.runtime.cleanup_review(CleanupReviewRequest(cleanup))
                     except Exception as exc:
                         print(f"[review] cleanup {target.id}: {exc}", flush=True)
         return processed

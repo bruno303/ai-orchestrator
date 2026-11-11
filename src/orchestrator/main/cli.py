@@ -135,19 +135,27 @@ def _run_discussion_comment(
         steps = list(default_steps("discuss"))
     if deps is None:
         deps = discussion_steps.DiscussionStageDeps(runtime=runtime)
+    seeded = _seed_workspace(seed)
     result: dict = {}
+    raised = False
     try:
         result = run_workflow_graph(
-            _seed_workspace(seed), task_id, steps=steps, deps=deps,
+            seeded, task_id, steps=steps, deps=deps,
             factories=discussion_steps.STEP_FACTORIES,
             state_schema=state_mod.DiscussionState,
         )
         result.setdefault("task_id", task_id)
         return result
     except Exception as exc:
+        raised = True
         return {"task_id": task_id, "status": state_mod.FAILED, "error": str(exc)}
+    except BaseException:
+        raised = True
+        raise
     finally:
         prepared = discussion_steps.prepared_for_cleanup(result, steps)
+        if prepared is None and raised and any(step.type == "checkout" for step in steps):
+            prepared = discussion_steps.cleanup_candidate(seeded)
         if prepared is not None:
             try:
                 runtime.cleanup(prepared)

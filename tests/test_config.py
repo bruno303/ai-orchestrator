@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from orchestrator.application.workflow import StepConfigError, StepSpec, default_steps
 from orchestrator.main import config
 
@@ -370,11 +372,13 @@ def test_pipeline_config_workflow_defaults_match_built_in_steps(allowlist):
     assert pipeline.triage.workflow == default_steps("triage")
 
 
-def test_pipeline_config_empty_workflow_section_falls_back_to_defaults(allowlist):
+def test_pipeline_config_empty_workflow_section_is_rejected(allowlist):
     config.CONFIG_FILE.write_text("pipeline:\n  review:\n    workflow: {}\n")
     _clear_pipeline_cache()
 
-    assert config.load_pipeline_config().review.workflow == default_steps("review")
+    message = _pipeline_error()
+
+    assert "pipeline.review.workflow: missing required 'steps' list" in message
 
 
 def test_pipeline_config_parses_workflow_steps_into_step_specs(allowlist):
@@ -387,6 +391,7 @@ def test_pipeline_config_parses_workflow_steps_into_step_specs(allowlist):
         "        - {name: plan, type: plan, model: {name: verboo/deepseek-v4-flash, variant: high}}\n"
         "        - {name: document, type: agent, executor: claude, prompt_file: prompts/document.md, agent: writer}\n"
         "        - {name: tests-script, type: command, command: ./scripts/verify.sh, timeout_seconds: 900}\n"
+        "        - {name: create_pr, type: publish}\n"
         "        - {name: cleanup, type: cleanup, on_failure: continue}\n"
     )
     _clear_pipeline_cache()
@@ -394,7 +399,9 @@ def test_pipeline_config_parses_workflow_steps_into_step_specs(allowlist):
     workflow = config.load_pipeline_config().execution.workflow
 
     assert all(isinstance(step, StepSpec) for step in workflow)
-    assert [step.name for step in workflow] == ["checkout", "plan", "document", "tests-script", "cleanup"]
+    assert [step.name for step in workflow] == [
+        "checkout", "plan", "document", "tests-script", "create_pr", "cleanup",
+    ]
     assert workflow[1].model_name == "verboo/deepseek-v4-flash"
     assert workflow[1].model_variant == "high"
     assert workflow[2].executor_type == "claude"
@@ -402,8 +409,8 @@ def test_pipeline_config_parses_workflow_steps_into_step_specs(allowlist):
     assert workflow[2].agent == "writer"
     assert workflow[3].command == "./scripts/verify.sh"
     assert workflow[3].timeout_seconds == 900
-    assert workflow[4].on_failure == "continue"
-    assert all(step.on_failure == "abort" for step in workflow[:4])
+    assert workflow[5].on_failure == "continue"
+    assert all(step.on_failure == "abort" for step in workflow[:5])
 
 
 def test_pipeline_config_accepts_bare_step_lists_and_both_executor_forms(allowlist):
@@ -414,6 +421,7 @@ def test_pipeline_config_accepts_bare_step_lists_and_both_executor_forms(allowli
         "      - {name: checkout, type: checkout}\n"
         "      - {name: implement, type: implement, executor: claude}\n"
         "      - {name: codex-task, type: agent, executor: {type: codex}, prompt_file: prompts/faq.md}\n"
+        "      - {name: publish, type: publish}\n"
     )
     _clear_pipeline_cache()
 
@@ -432,17 +440,25 @@ def test_pipeline_config_parses_comment_workflows_independently(allowlist):
         "        workflow:\n"
         "          steps:\n"
         "            - {name: implement, type: implement_comment}\n"
+        "            - {name: publish, type: publish}\n"
         "      discuss:\n"
         "        workflow:\n"
         "          steps:\n"
         "            - {name: answer, type: discuss}\n"
+        "            - {name: publish, type: publish}\n"
     )
     _clear_pipeline_cache()
 
     execution = config.load_pipeline_config().execution
 
-    assert execution.comment_impl_workflow == (StepSpec("implement", "implement_comment"),)
-    assert execution.comment_discuss_workflow == (StepSpec("answer", "discuss"),)
+    assert execution.comment_impl_workflow == (
+        StepSpec("implement", "implement_comment"),
+        StepSpec("publish", "publish"),
+    )
+    assert execution.comment_discuss_workflow == (
+        StepSpec("answer", "discuss"),
+        StepSpec("publish", "publish"),
+    )
 
 
 def test_pipeline_config_comment_workflow_on_one_path_keeps_the_other_default(allowlist):
@@ -454,12 +470,16 @@ def test_pipeline_config_comment_workflow_on_one_path_keeps_the_other_default(al
         "        workflow:\n"
         "          steps:\n"
         "            - {name: implement, type: implement_comment}\n"
+        "            - {name: publish, type: publish}\n"
     )
     _clear_pipeline_cache()
 
     execution = config.load_pipeline_config().execution
 
-    assert execution.comment_impl_workflow == (StepSpec("implement", "implement_comment"),)
+    assert execution.comment_impl_workflow == (
+        StepSpec("implement", "implement_comment"),
+        StepSpec("publish", "publish"),
+    )
     assert execution.comment_discuss_workflow == default_steps("discuss")
 
 
@@ -694,9 +714,306 @@ def test_pipeline_config_accepts_review_workflow_executor_from_review_registry(a
         "    workflow:\n"
         "      steps:\n"
         "        - {name: review, type: review, executor: opencode}\n"
+        "        - {name: publish, type: publish}\n"
     )
     _clear_pipeline_cache()
 
     workflow = config.load_pipeline_config().review.workflow
 
-    assert workflow == (StepSpec("review", "review", executor_type="opencode"),)
+    assert workflow == (
+        StepSpec("review", "review", executor_type="opencode"),
+        StepSpec("publish", "publish"),
+    )
+
+
+_PUBLISH_LESS_WORKFLOWS = (
+    (
+        "pipeline.execution.workflow",
+        "pipeline:\n  execution:\n    workflow:\n",
+        "      steps:\n"
+        "        - {name: checkout, type: checkout}\n"
+        "        - {name: implement, type: implement}\n"
+        "        - {name: cleanup, type: cleanup, on_failure: continue}\n",
+    ),
+    (
+        "pipeline.execution.comments.impl.workflow",
+        "pipeline:\n  execution:\n    comments:\n      impl:\n        workflow:\n",
+        "          steps:\n"
+        "            - {name: checkout, type: checkout}\n"
+        "            - {name: implement, type: implement_comment}\n"
+        "            - {name: cleanup, type: cleanup, on_failure: continue}\n",
+    ),
+    (
+        "pipeline.execution.comments.discuss.workflow",
+        "pipeline:\n  execution:\n    comments:\n      discuss:\n        workflow:\n",
+        "          steps:\n"
+        "            - {name: checkout, type: checkout}\n"
+        "            - {name: answer, type: discuss}\n",
+    ),
+    (
+        "pipeline.review.workflow",
+        "pipeline:\n  review:\n    workflow:\n",
+        "      steps:\n"
+        "        - {name: checkout, type: checkout}\n"
+        "        - {name: review, type: review}\n",
+    ),
+    (
+        "pipeline.triage.workflow",
+        "pipeline:\n  triage:\n    workflow:\n",
+        "      steps:\n"
+        "        - {name: assess, type: assess}\n",
+    ),
+)
+
+_PUBLISH_CONTINUE_WORKFLOWS = (
+    "pipeline:\n  execution:\n    workflow:\n      steps:\n"
+    "        - {name: publish, type: publish, on_failure: continue}\n",
+    "pipeline:\n  execution:\n    comments:\n      impl:\n        workflow:\n          steps:\n"
+    "            - {name: publish, type: publish, on_failure: continue}\n",
+    "pipeline:\n  execution:\n    comments:\n      discuss:\n        workflow:\n          steps:\n"
+    "            - {name: publish, type: publish, on_failure: continue}\n",
+    "pipeline:\n  review:\n    workflow:\n      steps:\n"
+    "        - {name: publish, type: publish, on_failure: continue}\n",
+    "pipeline:\n  triage:\n    workflow:\n      steps:\n"
+    "        - {name: publish, type: publish, on_failure: continue}\n",
+)
+
+
+def _pipeline_error() -> str:
+    try:
+        config.load_pipeline_config()
+    except ValueError as exc:
+        return str(exc)
+    raise AssertionError("expected pipeline configuration error")
+
+
+@pytest.mark.parametrize(("path", "header", "body"), _PUBLISH_LESS_WORKFLOWS)
+def test_pipeline_config_requires_a_publish_step(allowlist, path, header, body):
+    config.CONFIG_FILE.write_text(header + body)
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert path in message
+    assert "workflow has no 'publish' step" in message
+    assert "require_publication: false" in message
+
+
+@pytest.mark.parametrize(("path", "header", "body"), _PUBLISH_LESS_WORKFLOWS)
+def test_pipeline_config_allows_opting_out_of_publication(allowlist, path, header, body):
+    indent = body[: len(body) - len(body.lstrip())]
+    config.CONFIG_FILE.write_text(f"{header}{indent}require_publication: false\n{body}")
+    _clear_pipeline_cache()
+
+    config.load_pipeline_config()
+
+
+def test_pipeline_config_rejects_publish_less_bare_step_lists(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n  execution:\n    workflow:\n"
+        "      - {name: checkout, type: checkout}\n"
+        "      - {name: implement, type: implement}\n"
+    )
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert "pipeline.execution.workflow" in message
+    assert "workflow has no 'publish' step" in message
+
+
+@pytest.mark.parametrize("yaml_text", _PUBLISH_CONTINUE_WORKFLOWS)
+def test_pipeline_config_rejects_publish_with_on_failure_continue(allowlist, yaml_text):
+    config.CONFIG_FILE.write_text(yaml_text)
+    _clear_pipeline_cache()
+
+    with pytest.raises(
+        StepConfigError, match="'publish' steps cannot use 'on_failure: continue'"
+    ):
+        config.load_pipeline_config()
+
+
+@pytest.mark.parametrize("value", ['"false"', "1", "0"])
+def test_pipeline_config_rejects_non_boolean_require_publication(allowlist, value):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        f"      require_publication: {value}\n"
+        "      steps:\n"
+        "        - {name: publish, type: publish}\n"
+    )
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert "pipeline.execution.workflow.require_publication" in message
+    assert "must be a boolean" in message
+
+
+def test_example_config_loads_without_publication_errors(allowlist):
+    example = config.REPO_ROOT / "config" / "config.example.yaml"
+    config.CONFIG_FILE.write_text(example.read_text())
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+
+    assert pipeline.execution.workflow == default_steps("execution")
+    assert pipeline.execution.comment_impl_workflow == default_steps("comment_impl")
+    assert pipeline.execution.comment_discuss_workflow == default_steps("discuss")
+    assert pipeline.review.workflow == default_steps("review")
+    assert pipeline.triage.workflow == default_steps("triage")
+
+
+def test_pipeline_config_rejects_unknown_pipeline_keys(allowlist):
+    config.CONFIG_FILE.write_text("pipeline:\n  executon: {}\n")
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert "pipeline: unknown key(s) 'executon'" in message
+    assert "(allowed: execution, review, triage)" in message
+
+
+@pytest.mark.parametrize(
+    ("stage", "allowed"),
+    (
+        (
+            "execution",
+            "comments, destination, executor, input_source, labels, workflow, workspace_manager",
+        ),
+        ("review", "destination, executor, input_source, labels, workflow, workspace_manager"),
+        ("triage", "destination, executor, input_source, labels, workflow"),
+    ),
+)
+def test_pipeline_config_rejects_unknown_stage_keys(allowlist, stage, allowed):
+    config.CONFIG_FILE.write_text(f"pipeline:\n  {stage}:\n    worfklow: {{}}\n")
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert f"pipeline.{stage}: unknown key(s) 'worfklow'" in message
+    assert f"(allowed: {allowed})" in message
+
+
+def test_pipeline_config_rejects_unknown_comment_keys(allowlist):
+    config.CONFIG_FILE.write_text("pipeline:\n  execution:\n    comments:\n      review: {}\n")
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert "pipeline.execution.comments: unknown key(s) 'review'" in message
+    assert "(allowed: discuss, impl)" in message
+
+
+@pytest.mark.parametrize("section", ("impl", "discuss"))
+def test_pipeline_config_rejects_unknown_comment_section_keys(allowlist, section):
+    config.CONFIG_FILE.write_text(
+        f"pipeline:\n  execution:\n    comments:\n      {section}:\n        steps: []\n"
+    )
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert f"pipeline.execution.comments.{section}: unknown key(s) 'steps'" in message
+    assert "(allowed: workflow)" in message
+
+
+def test_pipeline_config_rejects_misspelled_execution_workflow_keys(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    workflow:\n"
+        "      stpes:\n"
+        "        - {name: publish, type: publish}\n"
+    )
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert "pipeline.execution.workflow: unknown key(s) 'stpes'" in message
+    assert "(allowed: require_publication, steps)" in message
+
+
+@pytest.mark.parametrize(("path", "header", "body"), _PUBLISH_LESS_WORKFLOWS)
+def test_pipeline_config_rejects_unknown_workflow_mapping_keys(allowlist, path, header, body):
+    indent = body[: len(body) - len(body.lstrip())]
+    config.CONFIG_FILE.write_text(
+        f"{header}{indent}stpes:\n{indent}  - {{name: publish, type: publish}}\n"
+    )
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert f"{path}: unknown key(s) 'stpes'" in message
+    assert "(allowed: require_publication, steps)" in message
+
+
+@pytest.mark.parametrize(("path", "header", "body"), _PUBLISH_LESS_WORKFLOWS)
+def test_pipeline_config_rejects_workflow_mapping_without_steps(allowlist, path, header, body):
+    config.CONFIG_FILE.write_text(header.removesuffix("workflow:\n") + "workflow: {}\n")
+    _clear_pipeline_cache()
+
+    message = _pipeline_error()
+
+    assert f"{path}: missing required 'steps' list" in message
+
+
+_WORKFLOW_STAGE_BY_PATH = {
+    "pipeline.execution.workflow": "execution",
+    "pipeline.execution.comments.impl.workflow": "comment_impl",
+    "pipeline.execution.comments.discuss.workflow": "discuss",
+    "pipeline.review.workflow": "review",
+    "pipeline.triage.workflow": "triage",
+}
+
+
+@pytest.mark.parametrize(("path", "header", "body"), _PUBLISH_LESS_WORKFLOWS)
+def test_pipeline_config_null_workflow_keeps_built_in_steps(allowlist, path, header, body):
+    config.CONFIG_FILE.write_text(header)
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+    workflows = {
+        "execution": pipeline.execution.workflow,
+        "comment_impl": pipeline.execution.comment_impl_workflow,
+        "discuss": pipeline.execution.comment_discuss_workflow,
+        "review": pipeline.review.workflow,
+        "triage": pipeline.triage.workflow,
+    }
+    stage = _WORKFLOW_STAGE_BY_PATH[path]
+
+    assert workflows[stage] == default_steps(stage)
+
+
+def test_pipeline_config_accepts_bare_workflow_step_lists(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n  review:\n    workflow:\n"
+        "      - {name: checkout, type: checkout}\n"
+        "      - {name: publish, type: publish}\n"
+    )
+    _clear_pipeline_cache()
+
+    workflow = config.load_pipeline_config().review.workflow
+
+    assert [step.name for step in workflow] == ["checkout", "publish"]
+
+
+def test_pipeline_config_keeps_provider_option_and_label_keys_free_form(allowlist):
+    config.CONFIG_FILE.write_text(
+        "pipeline:\n"
+        "  execution:\n"
+        "    input_source: {type: github_polling, surprise_option: true}\n"
+        "    executor: {type: opencode, unknown_looking: 30}\n"
+        "    labels:\n"
+        "      select: [ai-agent]\n"
+        "      mystery: kept\n"
+    )
+    _clear_pipeline_cache()
+
+    pipeline = config.load_pipeline_config()
+
+    assert pipeline.execution.input_source.options == {"surprise_option": True}
+    assert pipeline.execution.executor.options == {"unknown_looking": 30}
+    assert pipeline.execution.labels.select == ("ai-agent",)
+

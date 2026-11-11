@@ -128,6 +128,11 @@ def validate_steps(
                 f"{stage} step {step.name!r}: invalid step name "
                 f"(must match '{_STEP_NAME_PATTERN.pattern}')"
             )
+        if step.name == "end":
+            raise StepConfigError(
+                f"{stage} step 'end': step name 'end' is reserved for the workflow "
+                "router; choose another name"
+            )
         if step.name in seen:
             raise StepConfigError(
                 f"{stage} step '{step.name}': duplicate step name (names must be unique)"
@@ -142,6 +147,11 @@ def validate_steps(
             raise StepConfigError(
                 f"{stage} step '{step.name}': invalid 'on_failure' {step.on_failure!r} "
                 f"(must be one of {', '.join(_ON_FAILURE_VALUES)})"
+            )
+        if step.type == "publish" and step.on_failure == "continue":
+            raise StepConfigError(
+                f"{stage} step '{step.name}': 'publish' steps cannot use "
+                "'on_failure: continue' (publication failures must abort)"
             )
         if step.type == "command":
             if not isinstance(step.command, str) or not step.command.strip():

@@ -39,7 +39,13 @@ pipeline:
       output:
         add: [ai-developed]
     # These are the built-in default workflows. Keep them, edit them, or
-    # remove a `workflow` section to fall back to its built-in sequence.
+    # remove a `workflow` section (or set it to `null`) to fall back to its
+    # built-in sequence. A present `workflow` must be a mapping with a `steps`
+    # list, or a bare list of step mappings; unknown workflow keys abort at
+    # startup.
+    # A configured workflow in any stage must contain a `publish` step; set
+    # `require_publication: false` on the workflow mapping to opt out.
+    # `publish` steps cannot use `on_failure: continue`.
     workflow:
       steps:
         - {name: prepare_workspace, type: checkout}

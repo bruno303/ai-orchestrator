@@ -197,6 +197,32 @@ def test_build_workflow_executes_a_custom_step_sequence():
     assert result["step_results"]["plan"]["status"] == "succeeded"
 
 
+def test_step_named_end_runs_like_any_other_name():
+    runtime = FakeRuntime()
+    command_runtime = CommandRuntime(0, stdout="ok")
+    started = []
+    steps = [
+        StepSpec("checkout", "checkout"),
+        StepSpec("end", "command", command="echo step-named-end"),
+        StepSpec("publish", "publish"),
+    ]
+    deps = ExecutionStageDeps(
+        runtime=runtime, step_runtimes={"end": command_runtime},
+    )
+    graph = build_workflow(
+        steps, STEP_FACTORIES, deps,
+        on_node_start=lambda name, _state: started.append(name),
+    )
+
+    result = graph.invoke(_seed())
+
+    assert started == ["checkout", "end", "publish"]
+    assert runtime.nodes == ["prepare_workspace", "create_pr"]
+    assert result["status"] == state_mod.COMPLETED
+    assert sorted(result["step_results"]) == ["checkout", "end", "publish"]
+    assert result["step_results"]["end"]["status"] == "succeeded"
+
+
 def test_renamed_plan_step_uses_its_name_for_executor_logs():
     class RecordingPlanRuntime(FakeRuntime):
         def plan(self, request):
@@ -240,6 +266,26 @@ def test_build_workflow_aborts_when_the_plan_step_fails():
     assert plan_result["error"] == "planning completed without creating .agents/plans/plan.md"
     assert plan_result["duration_s"] >= 0
     assert "publish" not in result["step_results"]
+
+
+def test_abort_failure_stays_failed_and_skips_the_finalizer():
+    started = []
+    steps = [
+        StepSpec("checkout", "checkout"),
+        StepSpec("plan", "plan"),
+        StepSpec("publish", "publish"),
+    ]
+    graph = build_workflow(
+        steps, STEP_FACTORIES, ExecutionStageDeps(runtime=FailingPlanRuntime()),
+        on_node_start=lambda name, _state: started.append(name),
+    )
+
+    result = graph.invoke(_seed())
+
+    assert started == ["checkout", "plan"]
+    assert result["status"] == state_mod.FAILED
+    assert "publish" not in result["step_results"]
+    assert "__finalize__" not in result["step_results"]
 
 
 def test_cleanup_failure_with_continue_reaches_end_and_stays_completed():
@@ -313,6 +359,26 @@ def test_command_step_reports_success_snippets_and_processing_context():
     assert requests["lint"].timeout_seconds == 30  # step timeout falls back to deps default
     assert requests["tests"].timeout_seconds == 60  # explicit step timeout wins
     assert requests["tests"].workspace == _WORKSPACE_PATH
+
+
+def test_workflow_with_a_command_tail_finalizes_as_completed():
+    command_runtime = CommandRuntime(0, stdout="all tests passed")
+    started = []
+    steps = [StepSpec("tests", "command", command="pytest -q")]
+    deps = ExecutionStageDeps(
+        runtime=FakeRuntime(), step_runtimes={"tests": command_runtime},
+    )
+    graph = build_workflow(
+        steps, STEP_FACTORIES, deps,
+        on_node_start=lambda name, _state: started.append(name),
+    )
+
+    result = graph.invoke(_seed(prepared_workspace=_WORKSPACE_PATH))
+
+    assert started == ["tests"]
+    assert result["status"] == state_mod.COMPLETED
+    assert sorted(result["step_results"]) == ["tests"]
+    assert "__finalize__" not in result["step_results"]
 
 
 def test_command_step_failure_aborts_the_run():
@@ -477,5 +543,7 @@ def test_on_node_start_errors_are_swallowed():
 
     result = graph.invoke(_seed())
 
-    assert result["status"] == state_mod.PREPARING
+    # The run is a success; intermediate step statuses no longer leak out as
+    # the final workflow status.
+    assert result["status"] == state_mod.COMPLETED
     assert result["step_results"]["checkout"]["status"] == "succeeded"

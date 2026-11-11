@@ -112,6 +112,30 @@ def prepared_for_cleanup(
         return None
 
 
+def cleanup_candidate(state: DiscussionState) -> PreparedDiscussion | None:
+    """Return a cleanup-only workspace derived from the seeded state.
+
+    The workspace carries the repository identity the manager needs to locate
+    the base clone (``repo_dir`` is derived from it) and an empty branch, so a
+    revision checkout never deletes the seeded local branch. This is a
+    fallback for runs that raised before recording a checkout step (for
+    example an interrupted answer). A missing workspace is a no-op.
+    """
+    try:
+        prepared = _prepared(state)
+        repository = _item(state).repository
+    except (ValueError, WorkspaceNotPreparedError):
+        return None
+    context = prepared.context.merge_namespace("git", {"repository": repository})
+    return PreparedDiscussion(
+        prepared.request,
+        WorkspaceResult(
+            prepared.workspace.workspace, "", context, prepared.workspace.base_branch,
+        ),
+        context,
+    )
+
+
 @dataclass(frozen=True)
 class DiscussionStageDeps:
     """Shared discussion runtime plus per-step overrides and prompt templates."""

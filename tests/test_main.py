@@ -295,6 +295,7 @@ def test_compose_execution_workflow_builds_runtime_variants_only_for_overridden_
         "  execution:\n"
         "    executor: {type: opencode, timeout: 30}\n"
         "    workflow:\n"
+        "      require_publication: false\n"
         "      steps:\n"
         "        - {name: checkout, type: checkout}\n"
         "        - {name: plan, type: plan, model: {name: verboo/deepseek-v4-flash}}\n"
@@ -338,6 +339,7 @@ def test_compose_execution_workflow_loads_prompt_files(allowlist, tmp_path, monk
         "pipeline:\n"
         "  execution:\n"
         "    workflow:\n"
+        "      require_publication: false\n"
         "      steps:\n"
         "        - {name: plan, type: plan, prompt_file: prompts/plan.md}\n"
     )
@@ -358,6 +360,7 @@ def test_compose_execution_workflow_fails_fast_on_a_missing_prompt_file(
         "pipeline:\n"
         "  execution:\n"
         "    workflow:\n"
+        "      require_publication: false\n"
         "      steps:\n"
         "        - {name: plan, type: plan, prompt_file: prompts/missing.md}\n"
     )
@@ -458,6 +461,7 @@ def test_compose_execution_runtime_wires_the_workspace_command_runner(allowlist)
         "pipeline:\n"
         "  execution:\n"
         "    workflow:\n"
+        "      require_publication: false\n"
         "      steps:\n"
         "        - {name: scripts, type: command, command: ./scripts/verify.sh}\n"
         "        - {name: implement, type: implement, executor: claude}\n"

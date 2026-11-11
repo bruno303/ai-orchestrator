@@ -132,10 +132,13 @@ Paths, limits, model and loop detection (env overrides):
 
 ## Configurable workflow steps
 
-Every stage's processing steps are declared in `config/config.yaml` as a
-`workflow.steps` list. Omitting the list (or a whole stage) keeps the built-in
-default sequence, byte-compatible with releases before this feature. The
-configured workflows drive the issue-triggered execution, the
+Every stage's processing steps are declared in `config/config.yaml` under
+`workflow`. Omitting the `workflow` key (or setting it to `null`) keeps the
+built-in default sequence for that stage, byte-compatible with releases before
+this feature. A *present* `workflow` mapping must contain a `steps` list; a
+mapping without one (`workflow: {}`) aborts at startup. A bare step list
+(`workflow:` followed directly by `- {name: ...}` entries) is accepted as
+shorthand. The configured workflows drive the issue-triggered execution, the
 `/ai-agent-impl` and `/ai-agent-discuss` comment commands, review, and triage.
 All workflow sections are validated and composed once at startup, so a bad
 configuration aborts before polling:
@@ -211,6 +214,75 @@ publishes the change, `cleanup` removes the worktree, `review` inspects a
 pull request for the JSON review outcome, `assess` produces the triage JSON,
 `discuss` answers a read-only discussion, and the generic `command` step runs a
 shell command in the task workspace (a non-zero exit fails the step).
+
+### Terminal status
+
+- A run ends `COMPLETED` when no step failed fatally. That includes workflows
+  whose tail sets no status: a final `command` step (or any other step that
+  only records its result) is completed by the graph's finalizer.
+- An `abort` failure ends the run `FAILED` and skips every remaining step,
+  including the terminal finalizer.
+- `on_failure: continue` records the failure in the step results without ending
+  the run, so the final status can still be `COMPLETED`.
+
+### Publication requirement
+
+Every stage workflow must contain at least one `publish` step unless the
+workflow mapping sets `require_publication: false`; the check aborts at startup
+with a message naming the config path. The flag is validation-only: it is not
+carried into the step model or any runtime dataclass. For example:
+
+```yaml
+pipeline:
+  execution:
+    workflow:
+      require_publication: false
+      steps:
+        - {name: implement, type: implement}
+```
+
+`publish` steps cannot use `on_failure: continue`; publication failures must
+abort.
+
+### Reserved step name
+
+`end` is reserved for the workflow router and is rejected by validation. It can
+no longer truncate a workflow early; shape the sequence with step order and
+`on_failure` instead.
+
+### Validated configuration keys
+
+Unknown keys abort at startup at the `pipeline` level, at each stage
+(`execution`/`review`/`triage`), at `pipeline.execution.comments`, at each
+comment section (`impl`/`discuss`), and at each `workflow` level. Provider
+option mappings (for example `input_source`, `executor`,
+`workspace_manager`, `destination`) and `labels` internals remain free-form.
+
+| Level | Allowed keys |
+|---|---|
+| `pipeline` | `execution`, `review`, `triage` |
+| `pipeline.execution` | `input_source`, `executor`, `workspace_manager`, `destination`, `labels`, `workflow`, `comments` |
+| `pipeline.review` | `input_source`, `executor`, `workspace_manager`, `destination`, `labels`, `workflow` |
+| `pipeline.triage` | `input_source`, `executor`, `destination`, `labels`, `workflow` |
+| `pipeline.execution.comments` | `impl`, `discuss` |
+| comment section | `workflow` |
+| `workflow` | `steps`, `require_publication` |
+
+### Default steps and log files
+
+| Stage | Built-in steps | Agent log files |
+|---|---|---|
+| `execution` | `prepare_workspace`, `plan`, `implement`, `create_pr`, `cleanup` | `plan.log`, `implement.log` |
+| comment impl | `checkout`, `implement`, `publish`, `cleanup` | `implement.log`, shared with the issue run's implement phase (same node name) |
+| discussion | `checkout`, `answer`, `publish` | `answer.log` |
+| review | `checkout`, `review`, `publish` | `review.log` |
+| triage | `assess`, `publish` | `assess.log` for the assessment; the triage application's start/finish lines stay in `triage.log` |
+
+Each agent step writes `<step-name>.log` under the task's log directory, so a
+renamed step also renames its log file. Node names changed from
+`implement-comment` → `implement`, `discussion` → `answer`, and `triage` →
+`assess`; scripts that pass those old values to
+`orchestrator logs TASK --node <name>` must be updated.
 
 Behavior:
 
