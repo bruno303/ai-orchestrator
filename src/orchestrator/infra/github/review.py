@@ -78,6 +78,8 @@ class GitHubReviewInputSource:
                         source_ref=detail.head_ref,
                         target_ref=detail.base_ref,
                         revision=detail.head_sha,
+                        url=detail.url,
+                        changed_files=tuple(path for path, _ in detail.files),
                         input_provider=self.provider_type,
                         context=Context({
                             "github": {

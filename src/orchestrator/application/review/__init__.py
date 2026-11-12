@@ -19,7 +19,7 @@ from orchestrator.application.execution.models import (
     PrepareReviewResult,
     PublishReviewRequest,
 )
-from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
+from orchestrator.application.review.service import ReviewRuntime
 
 _COMPLETED = "COMPLETED"
 
@@ -122,7 +122,7 @@ class ReviewApplication:
                         continue
                 else:
                     prepared = self.runtime.prepare(PrepareReviewRequest(target))
-                    execution = self.runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
+                    execution = self.runtime.execute_review(ExecuteReviewRequest(prepared))
                     self.runtime.publish_review(PublishReviewRequest(prepared, execution))
                 processed.append(target)
                 self.write_task_log(

@@ -398,9 +398,13 @@ also runs one review pass on every poll iteration.
 The GitHub input source skips pull requests carrying the stage's suppressed
 labels (`ai-reviewed` by default). The completion label is added only after
 the review comment has been published, so a failed review or publication is retried on the next
-poll. Remove that label to request a fresh review. Reviews publish one
-standard comment containing the verdict, summary, findings, and checks; valid
-findings on changed diff lines may also be published as inline comments.
+poll. Remove that label to request a fresh review. By default, the review prompt
+is scoped to the pull request's base/head refs, head revision, and changed files,
+and gives the agent exact `git diff` commands so it does not have to discover the
+change by scanning the repository. A step `prompt_file` replaces that default
+prompt. Reviews publish one standard comment containing the verdict, summary,
+findings, and checks; valid findings on changed diff lines may also be published
+as inline comments.
 Inline comments are limited to lines GitHub reports as changed and do not
 support arbitrary unchanged-file locations.
 
@@ -559,10 +563,10 @@ Context namespace. Do not put service-specific values in generic fields.
 - **Plan**: the selected provider analyzes the issue and writes the plan
   to `.agents/plans/plan.md` (skill `plan-implementation`).
 - **Implement**: the selected provider explicitly uses the
-  `plan-implementation` skill to execute `.agents/plans/plan.md` and modify the
-  workspace. The agent must run the repository's appropriate tests and quality
-  checks during implementation, fix failures, and must not stop after creating,
-  revising, or saving a plan.
+  `subagent-plan-execution` skill to execute `.agents/plans/plan.md` and modify
+  the workspace. The agent must not re-plan the approved work. It must run the
+  repository's appropriate tests and quality checks during implementation, fix
+  failures, and must not stop after reviewing or summarizing the plan.
 - **Model**: issue phases use the configured `execution` model and pull-request
   reviews use the configured `review` model. The model and variant are logged for each phase (visible via
   `orchestrator logs <task> --node <node>`).

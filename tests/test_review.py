@@ -192,6 +192,8 @@ def test_github_input_skips_broken_pr_metadata_and_continues():
     source = GitHubReviewInputSource(Client(), SimpleNamespace(allowed_repositories=lambda: ["r"]))
     events = source.poll()
     assert [event.context.namespace("github")["pr_number"] for event in events] == [2]
+    assert events[0].url == "url"
+    assert events[0].changed_files == ("a.py",)
 
 
 def test_github_review_input_excludes_completed_reviews():
