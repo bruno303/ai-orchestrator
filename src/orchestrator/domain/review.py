@@ -16,6 +16,8 @@ class ReviewTarget:
     source_ref: str = ""
     target_ref: str = ""
     revision: str = ""
+    url: str = ""
+    changed_files: tuple[str, ...] = ()
     input_provider: str = ""
     context: Context = field(default_factory=Context)
 
@@ -26,6 +28,9 @@ class ReviewTarget:
             raise ValueError("review target repository must be a non-empty string")
         object.__setattr__(self, "id", self.id.strip())
         object.__setattr__(self, "repository", self.repository.strip())
+        object.__setattr__(
+            self, "changed_files", tuple(str(path) for path in self.changed_files)
+        )
         if not isinstance(self.context, Context):
             object.__setattr__(self, "context", Context.from_dict(self.context))
 
@@ -34,6 +39,7 @@ class ReviewTarget:
             "id": self.id, "repository": self.repository, "title": self.title,
             "description": self.description, "source_ref": self.source_ref,
             "target_ref": self.target_ref, "revision": self.revision,
+            "url": self.url, "changed_files": list(self.changed_files),
             "input_provider": self.input_provider, "context": self.context.to_dict(),
         }
 

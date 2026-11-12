@@ -165,7 +165,7 @@ class PrepareReviewResult:
 @dataclass(frozen=True)
 class ExecuteReviewRequest:
     prepared: PrepareReviewResult
-    prompt: str
+    prompt: str = ""
     node: str = "review"
 
 

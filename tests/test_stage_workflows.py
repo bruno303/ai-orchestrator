@@ -96,6 +96,8 @@ def _review_target(context: Context | None = None) -> ReviewTarget:
     return ReviewTarget(
         "review:company/backend#4", "company/backend", source_ref="feature",
         target_ref="main", revision="abc",
+        url="https://github.com/company/backend/pull/4",
+        changed_files=("src/app.py",),
         context=context or Context({"github": {"pr_number": 4}}),
     )
 
@@ -118,6 +120,8 @@ def test_default_review_graph_runs_checkout_review_publish():
     assert result["status"] == COMPLETED
     assert result["output"]["external_id"] == "9"
     assert sorted(result["step_results"]) == ["checkout", "publish", "review"]
+    assert runtime.requests[0].prepared.target.changed_files == ("src/app.py",)
+    assert runtime.requests[0].prepared.target.url.endswith("/pull/4")
 
 
 def test_review_graph_aborts_publication_when_the_review_step_fails():

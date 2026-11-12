@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from orchestrator.domain import Context, PublishedReview, ReviewOutcome
+from orchestrator.domain import Context, PublishedReview, ReviewOutcome, ReviewTarget
 from pathlib import Path
+import shlex
 from typing import Callable
 
 from orchestrator.application.ports import ReviewDestination, ReviewExecutor, ReviewRequest, WorkspaceManager, WorkspaceRequest, WorkspaceResult
@@ -24,6 +25,77 @@ from orchestrator.application.execution.models import (
 REVIEW_PROMPT = """Use only the `/code-review` skill to review this change. Follow its instructions, then return ONLY valid JSON with this schema:
 {"verdict":"approve|request_changes|comment","summary":"...","findings":[{"message":"...","path":"optional","line":0,"side":"RIGHT|LEFT","severity":"info|warning|error"}],"checks":[{"name":"...","status":"pass|fail|skip"}]}
 """
+
+_REVIEW_DESCRIPTION_LIMIT = 4000
+_REVIEW_FILE_LIMIT = 50
+
+
+def _bounded(text: str, limit: int) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def review_prompt(target: ReviewTarget, *, workspace: str = "") -> str:
+    """Build a review prompt scoped to one pull request.
+
+    The target carries the immutable PR identity and changed-file list, so the
+    reviewer does not need to discover the change by scanning the repository.
+    """
+    reference = target.url or target.id
+    title = _bounded(target.title, 500) or "<untitled>"
+    description = _bounded(target.description, _REVIEW_DESCRIPTION_LIMIT) or "(no description)"
+    files = list(target.changed_files)
+    shown_files = files[:_REVIEW_FILE_LIMIT]
+    file_list = "\n".join(f"- {path}" for path in shown_files) or (
+        "- (no file list returned; use `git diff --name-status` below)"
+    )
+    if len(files) > len(shown_files):
+        file_list += f"\n- ... and {len(files) - len(shown_files)} more files"
+
+    base_ref = f"origin/{target.target_ref}" if target.target_ref else "HEAD^"
+    revision = target.revision or "<unknown>"
+    if target.target_ref:
+        stat_command = f"`git diff --stat {base_ref}...HEAD`"
+        names_command = f"`git diff --name-status {base_ref}...HEAD`"
+        if shown_files and len(files) <= _REVIEW_FILE_LIMIT:
+            paths = " ".join(shlex.quote(path) for path in shown_files)
+            diff_command = f"`git diff {base_ref}...HEAD -- {paths}`"
+        else:
+            diff_command = f"`git diff {base_ref}...HEAD`"
+    else:
+        stat_command = "`git diff --stat HEAD^`"
+        names_command = "`git diff --name-status HEAD^`"
+        diff_command = "`git diff HEAD^`"
+
+    return f"""Review only pull request {reference} in {target.repository}.
+
+Title: {title}
+Base: {target.target_ref or "<unknown>"} -> Head: {target.source_ref or "<unknown>"}
+Head revision: {revision}
+Workspace: {workspace or "the current workspace"}
+
+{description}
+
+Changed files:
+{file_list}
+
+Before reviewing, run `git rev-parse HEAD`. If it does not equal {revision}, do
+not review unrelated code; return valid JSON with verdict "comment" and a
+summary explaining the workspace mismatch.
+
+Scope the review to this pull request:
+- {stat_command}
+- {names_command}
+- {diff_command}
+
+Inspect the changed files and only the surrounding code needed to understand
+them. Do not list or read the whole repository, do not inspect unrelated
+commits, and do not review pre-existing code outside this diff. If the file
+list is truncated, use the name-status command to enumerate the rest.
+
+{REVIEW_PROMPT}"""
 
 
 class ReviewRuntime:
@@ -65,11 +137,14 @@ class ReviewRuntime:
 
     def execute_review(self, request: ExecuteReviewRequest) -> ExecuteReviewResult:
         prepared = request.prepared
+        prompt = request.prompt or review_prompt(
+            prepared.target, workspace=prepared.workspace.workspace
+        )
         review_request = ReviewRequest(
             task_id=prepared.target.id,
             repository=prepared.target.repository,
             workspace=prepared.workspace.workspace,
-            prompt=request.prompt,
+            prompt=prompt,
             context=prepared.context,
             log_file=str(self.task_log_path(prepared.target.id, request.node)),
         )

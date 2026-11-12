@@ -19,7 +19,7 @@ from orchestrator.application.execution.models import (
     PublishReviewRequest,
 )
 from orchestrator.application.ports import ExecutionResult, WorkspaceResult
-from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
+from orchestrator.application.review.service import ReviewRuntime
 from orchestrator.application.workflow import StepSpec
 from orchestrator.domain import Context, ReviewTarget
 from orchestrator.infra.langgraph.builder import NodeFn
@@ -56,6 +56,8 @@ def _target(state: ReviewState) -> ReviewTarget:
         source_ref=data.get("source_ref", ""),
         target_ref=data.get("target_ref", ""),
         revision=data.get("revision", ""),
+        url=data.get("url", ""),
+        changed_files=tuple(data.get("changed_files") or ()),
         input_provider=data.get("input_provider", value.get("provider", "")),
         context=Context.from_dict(data.get("context") or value.get("context") or {}),
     )
@@ -145,7 +147,7 @@ def _review_node(step: StepSpec, deps: ReviewStageDeps) -> NodeFn:
         prepared = _prepared(state)
         execution = deps.runtime_for(step).execute_review(ExecuteReviewRequest(
             prepared,
-            deps.prompts.get(step.name, REVIEW_PROMPT),
+            deps.prompts.get(step.name, ""),
             node=step.name,
         ))
         return {

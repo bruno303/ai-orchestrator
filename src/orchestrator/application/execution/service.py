@@ -76,8 +76,9 @@ Description:
 {work.body}
 {_extra_context(work)}
 The implementation plan is at {plan_path}. Execute it using the
-/plan-implementation skill to implement this work item. Do not stop after
-creating, revising, or saving a plan: modify the workspace to complete the
+/subagent-plan-execution skill to implement this work item. Do not create,
+revise, or re-plan the implementation; the plan is approved. Do not stop after
+reviewing or summarizing the plan: modify the workspace to complete the
 implementation. During implementation, run the repository's appropriate tests,
 linters, and other relevant quality checks. Fix any failures and only finish
 when the implementation and its validation are complete. Work only in this

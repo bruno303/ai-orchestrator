@@ -24,7 +24,7 @@ from orchestrator.application.execution.models import (
     PublishReviewRequest,
     WorkContext,
 )
-from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime
+from orchestrator.application.review.service import REVIEW_PROMPT, ReviewRuntime, review_prompt
 from orchestrator.infra.filesystem.command import run_workspace_command
 
 
@@ -125,12 +125,13 @@ def test_execution_runtime_uses_requested_plan_path(tmp_path):
 def test_implementation_prompt_requires_execution_with_plan_skill():
     prompt = implement_prompt(_context())
 
-    assert "/plan-implementation" in prompt
+    assert "/subagent-plan-execution" in prompt
+    assert "/plan-implementation" not in prompt
     assert ".agents/plans/plan.md" in prompt
-    assert "Do not stop after" in prompt
+    assert "Do not create" in prompt
+    assert "re-plan" in prompt
     assert "tests" in prompt
     assert "quality checks" in prompt
-    assert "subagent-plan-execution" not in prompt
 
 
 def test_cleanup_preserves_custom_workspace_context(tmp_path):
@@ -203,21 +204,55 @@ def test_review_runtime_keeps_review_workspace_mode_explicit(tmp_path):
         def publish(self, request, result):
             captured["published"] = True
 
-    event = ReviewTarget("event-1", "company/backend", revision="sha", context=Context({"github": {"pr_number": 3}}))
+    event = ReviewTarget(
+        "review:company/backend#3", "company/backend",
+        title="Fix the thing", source_ref="fix/3", target_ref="main",
+        revision="sha", url="https://github.com/company/backend/pull/3",
+        changed_files=("src/app.py",),
+        context=Context({"github": {"pr_number": 3}}),
+    )
     runtime = ReviewRuntime(ReviewExecutor(), ReviewWorkspace(), ReviewDestination())
     prepared = runtime.prepare(PrepareReviewRequest(event, "review:company/backend#3"))
-    execution = runtime.execute_review(ExecuteReviewRequest(prepared, REVIEW_PROMPT))
+    execution = runtime.execute_review(ExecuteReviewRequest(prepared))
     runtime.publish_review(PublishReviewRequest(prepared, execution))
     runtime.cleanup_review(CleanupReviewRequest(prepared))
 
     assert captured["purpose"] == "review"
     assert captured["request"].log_file.endswith("review.log")
+    assert "https://github.com/company/backend/pull/3" in captured["request"].prompt
+    assert "git diff origin/main...HEAD" in captured["request"].prompt
+    assert "src/app.py" in captured["request"].prompt
     assert captured["published"] and captured["cleaned"]
 
 
 def test_review_prompt_requires_code_review_skill():
     assert "/code-review" in REVIEW_PROMPT
     assert "ONLY valid JSON" in REVIEW_PROMPT
+
+
+def test_review_prompt_is_scoped_to_the_pull_request():
+    target = ReviewTarget(
+        "review:company/backend#42", "company/backend",
+        title="Fix the thing", description="Detailed body",
+        source_ref="fix/42", target_ref="main", revision="abc123",
+        url="https://github.com/company/backend/pull/42",
+        changed_files=("src/app.py", "tests/test_app.py"),
+    )
+
+    prompt = review_prompt(target, workspace="/workspaces/review-42")
+
+    assert "https://github.com/company/backend/pull/42" in prompt
+    assert "Fix the thing" in prompt
+    assert "Detailed body" in prompt
+    assert "/workspaces/review-42" in prompt
+    assert "git rev-parse HEAD" in prompt
+    assert "origin/main...HEAD" in prompt
+    assert "git diff origin/main...HEAD --" in prompt
+    assert "src/app.py" in prompt
+    assert "tests/test_app.py" in prompt
+    assert "Do not list or read the whole repository" in prompt
+    assert "/code-review" in prompt
+    assert "ONLY valid JSON" in prompt
 
 
 def test_review_runtime_turns_executor_failure_into_typed_error(tmp_path):
